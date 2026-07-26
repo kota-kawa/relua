@@ -1,0 +1,1 @@
+"""All Job MVP backend."""

@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 
 import { ArrowLeft, CalendarDays, ExternalLink, MapPin } from "@/components/icons";
 import { ApiError, getOpportunity } from "@/lib/api";
-import { deadlineLabel, formatDate } from "@/lib/format";
+import { deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -44,7 +44,7 @@ export default async function OpportunityDetail({ params }: Props) {
           <header className="detail-hero">
             <div className="detail-hero-main">
               <div className="card-badges">
-                <span className="status">{item.recruitment_status.name}</span>
+                <span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>
                 <span className="type-badge">{item.event_type.name}</span>
               </div>
               <p className="company-name">{item.company.name}</p>
@@ -58,10 +58,15 @@ export default async function OpportunityDetail({ params }: Props) {
             <aside className="deadline-box">
               <span>応募締め切り</span>
               <strong>{deadlineLabel(item.deadline)}</strong>
-              <small>{formatDate(item.deadline)}</small>
-              {item.entry_url && (
+              {deadlineIsRelative(item.deadline) && <small>{formatDate(item.deadline)}</small>}
+              {/* Without an entry URL there would otherwise be no call to action at all. */}
+              {item.entry_url ? (
                 <a className="entry-button" href={item.entry_url} target="_blank" rel="noopener noreferrer">
                   エントリーする <ExternalLink size={17} />
+                </a>
+              ) : (
+                <a className="entry-button entry-button-secondary" href={item.homepage_url ?? item.source_url} target="_blank" rel="noopener noreferrer">
+                  募集ページを開く <ExternalLink size={17} />
                 </a>
               )}
             </aside>
@@ -70,14 +75,12 @@ export default async function OpportunityDetail({ params }: Props) {
           <div className="detail-layout">
             <div className="detail-content">
               <section className="prose-section">
-                <p className="section-number">01</p>
                 <h2>募集内容</h2>
                 <p>{item.description}</p>
               </section>
 
               {item.selection_process && (
                 <section className="prose-section">
-                  <p className="section-number">02</p>
                   <h2>選考フロー</h2>
                   <div className="process-flow">
                     {item.selection_process.split("→").map((step, index) => (
@@ -89,7 +92,6 @@ export default async function OpportunityDetail({ params }: Props) {
 
               {item.requirements && (
                 <section className="prose-section">
-                  <p className="section-number">03</p>
                   <h2>募集要件</h2>
                   <p>{item.requirements}</p>
                   {item.audience_note && <p className="note-box">{item.audience_note}</p>}
@@ -98,7 +100,6 @@ export default async function OpportunityDetail({ params }: Props) {
 
               {item.compensation && (
                 <section className="prose-section">
-                  <p className="section-number">04</p>
                   <h2>待遇・サポート</h2>
                   <p>{item.compensation}</p>
                 </section>

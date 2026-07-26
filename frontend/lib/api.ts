@@ -30,6 +30,9 @@ export async function getOpportunities(params: SearchParams): Promise<Opportunit
   allowed.forEach((key) => appendValues(query, key, params[key]));
   const rawView = Array.isArray(params.view) ? params.view[0] : params.view;
   query.set("per_page", rawView === "calendar" ? "60" : rawView === "list" ? "30" : "12");
+  // The calendar groups items into months in iteration order, so it only makes
+  // sense over a deadline-sorted result set.
+  if (rawView === "calendar") query.set("sort", "deadline");
   return apiFetch<OpportunityList>(`/opportunities?${query.toString()}`);
 }
 

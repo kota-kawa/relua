@@ -1,16 +1,20 @@
 import Link from "next/link";
 
+const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+
 export function Footer() {
   return (
     <footer className="site-footer">
       <div className="shell footer-inner">
         <div>
-          <p className="footer-brand">JOB HARBOR</p>
-          <p>出典と更新履歴を大切にする、オープンな就活情報データベース。</p>
+          <p className="footer-brand">relua</p>
+          <p className="footer-tagline">Relay information. Reveal possibilities.</p>
+          <p>散らばった募集情報をつなぎ、次の可能性を見えるようにする。</p>
         </div>
         <div className="footer-links">
           <Link href="/">募集を探す</Link>
-          <a href="http://localhost:8000/docs">API Docs</a>
+          <Link href="/about">Why Relua?</Link>
+          {apiUrl && <a href={`${apiUrl}/docs`} target="_blank" rel="noreferrer">API Docs</a>}
           <span>掲載情報は必ず公式サイトでご確認ください</span>
         </div>
       </div>

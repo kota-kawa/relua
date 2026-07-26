@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { ArrowRight, CalendarDays, MapPin } from "@/components/icons";
-import { deadlineLabel } from "@/lib/format";
+import { deadlineIsRelative, deadlineLabel } from "@/lib/format";
 import type { Opportunity } from "@/lib/types";
 
 const monthFormatter = new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "long", timeZone: "Asia/Tokyo" });
@@ -45,9 +45,11 @@ export function DeadlineCalendar({ items }: { items: Opportunity[] }) {
                   </div>
                   <div className="calendar-content">
                     <div className="calendar-badges">
-                      <span className={`status status-${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>
+                      <span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>
                       <span>{item.event_type.name}</span>
-                      <b>{deadlineLabel(item.deadline)}</b>
+                      {/* The date column already states the date; only the
+                          urgency phrasing adds anything here. */}
+                      {deadlineIsRelative(item.deadline) && <b>{deadlineLabel(item.deadline)}</b>}
                     </div>
                     <p>{item.company.name}</p>
                     <h3><Link href={`/opportunities/${item.id}`}>{item.event_name}</Link></h3>
@@ -68,7 +70,7 @@ export function DeadlineCalendar({ items }: { items: Opportunity[] }) {
               <article className="calendar-item" key={item.id}>
                 <div className="calendar-date"><strong>—</strong><span>未定</span></div>
                 <div className="calendar-content">
-                  <div className="calendar-badges"><span className={`status status-${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span><span>{item.event_type.name}</span></div>
+                  <div className="calendar-badges"><span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span><span>{item.event_type.name}</span></div>
                   <p>{item.company.name}</p>
                   <h3><Link href={`/opportunities/${item.id}`}>{item.event_name}</Link></h3>
                 </div>

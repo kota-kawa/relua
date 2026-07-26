@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { ArrowRight, MapPin } from "@/components/icons";
-import { deadlineLabel, formatDate } from "@/lib/format";
+import { deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 import type { Opportunity } from "@/lib/types";
 
 export function OpportunityTable({ items }: { items: Opportunity[] }) {
@@ -22,7 +22,7 @@ export function OpportunityTable({ items }: { items: Opportunity[] }) {
           {items.map((item) => (
             <tr key={item.id}>
               <td data-label="状況">
-                <span className={`status status-${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>
+                <span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>
               </td>
               <td className="table-opportunity" data-label="募集">
                 <span>{item.company.name}</span>
@@ -31,7 +31,8 @@ export function OpportunityTable({ items }: { items: Opportunity[] }) {
               </td>
               <td className="table-deadline" data-label="締切">
                 <strong>{deadlineLabel(item.deadline)}</strong>
-                {item.deadline && <small>{formatDate(item.deadline, "")}</small>}
+                {/* Only add the date when the label above is a relative phrase. */}
+                {deadlineIsRelative(item.deadline) && <small>{formatDate(item.deadline, "")}</small>}
               </td>
               <td data-label="形式">
                 <strong className="table-type">{item.event_type.name}</strong>

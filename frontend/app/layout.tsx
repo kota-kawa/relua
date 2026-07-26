@@ -8,15 +8,31 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3100"),
   title: {
-    default: "JOB HARBOR | インターン・本選考情報を横断検索",
-    template: "%s | JOB HARBOR",
+    default: "relua | インターン・本選考情報を横断検索",
+    template: "%s | relua",
   },
-  description: "主要企業のインターン・本選考・説明会情報を、ログインなしで検索できる就活情報データベース。",
+  description: "主要企業のインターン・本選考・説明会情報を、ログインなしで検索できる就活情報データベース。散らばった募集情報をつなぎ、次の可能性を見えるようにします。",
+  applicationName: "relua",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/favicon.png", type: "image/png", sizes: "211x204" },
+    ],
+    apple: "/favicon.png",
+  },
   openGraph: {
-    title: "JOB HARBOR",
-    description: "次の一歩が見つかる、就活情報の港。",
+    title: "relua — Find what's next.",
+    description: "Relay information. Reveal possibilities. 散らばった募集情報をつなぎ、次の可能性を見えるようにする就活情報データベース。",
+    siteName: "relua",
+    images: ["/relua-logo.png"],
     type: "website",
     locale: "ja_JP",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "relua — Find what's next.",
+    description: "散らばった募集情報をつなぎ、次の可能性を見えるようにする就活情報データベース。",
+    images: ["/relua-logo.png"],
   },
   robots: { index: true, follow: true },
 };

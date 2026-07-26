@@ -1,0 +1,79 @@
+import Link from "next/link";
+
+import { X } from "@/components/icons";
+import { FILTER_KEYS, valuesOf, withoutAllFilters, withoutFilter } from "@/lib/format";
+import type { MasterItem, Masters, SearchParams } from "@/lib/types";
+
+const GROUP_LABEL: Record<string, string> = {
+  status: "募集状況",
+  graduation_year: "卒業年度",
+  event_type: "募集種別",
+  industry: "業界",
+  job_category: "職種",
+  event_format: "開催形式",
+};
+
+const GROUP_SOURCE: Record<string, keyof Masters> = {
+  status: "recruitment_statuses",
+  graduation_year: "graduation_years",
+  event_type: "event_types",
+  industry: "industries",
+  job_category: "job_categories",
+  event_format: "event_formats",
+};
+
+/**
+ * The one place that shows what the result set is currently narrowed by.
+ * Before this existed the state lived only in the sidebar checkboxes, which are
+ * collapsed on mobile — so applied filters were effectively invisible there.
+ */
+export function ActiveFilters({ masters, params, total }: { masters: Masters; params: SearchParams; total: number }) {
+  const chips = FILTER_KEYS.flatMap((key) => {
+    const items = masters[GROUP_SOURCE[key]] as MasterItem[];
+    return valuesOf(params, key).map((slug) => ({
+      key,
+      slug,
+      group: GROUP_LABEL[key],
+      name: items.find((item) => item.slug === slug)?.name ?? slug,
+    }));
+  });
+
+  const query = valuesOf(params, "q")[0];
+
+  if (!chips.length && !query) {
+    return (
+      <p className="filter-summary">
+        <strong>{total.toLocaleString("ja-JP")}</strong> 件の募集をすべて表示中
+      </p>
+    );
+  }
+
+  return (
+    <div className="active-filters">
+      <span className="active-filters-label">絞り込み中</span>
+      <ul>
+        {query && (
+          <li>
+            <Link href={withoutFilter(params, "q", query)}>
+              <b>キーワード</b> {query}
+              <X size={13} aria-label="この条件を外す" />
+            </Link>
+          </li>
+        )}
+        {chips.map((chip) => (
+          <li key={`${chip.key}-${chip.slug}`}>
+            <Link href={withoutFilter(params, chip.key, chip.slug)}>
+              <b>{chip.group}</b> {chip.name}
+              <X size={13} aria-label="この条件を外す" />
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {chips.length > 0 && (
+        <Link className="clear-all" href={withoutAllFilters(params)}>
+          すべて解除
+        </Link>
+      )}
+    </div>
+  );
+}

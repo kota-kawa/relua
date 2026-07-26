@@ -9,6 +9,7 @@ htmlcov/
 node_modules/
 .next/
 frontend/out/
+*.tsbuildinfo
 postgres_data/
 redis_data/
 .DS_Store

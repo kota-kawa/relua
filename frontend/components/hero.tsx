@@ -7,7 +7,6 @@ export function Hero({ defaultQuery }: { defaultQuery?: string }) {
       <div className="shell hero-inner">
         <div className="hero-copy">
           <h1>インターン・本選考・イベントを横断検索</h1>
-          <p className="hero-lead">締切・卒業年度・職種で絞り込み。出典リンク付き、登録不要。</p>
         </div>
 
         <form action="/" method="get" className="hero-search" role="search">

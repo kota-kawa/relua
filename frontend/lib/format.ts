@@ -179,3 +179,45 @@ export function labelledSectors(masters: Masters): MasterItem[] {
     return { ...sector, name: `${sector.name}（${parent}）` };
   });
 }
+
+/** "不明" is a data-quality state, not something anyone sets out to search for
+ *  ("募集状況が不明な募集だけ見たい" is not a goal). Hiding it from the filter
+ *  does not hide those listings: with no status selected, every status shows.
+ *  Slug per backend/app/master_data.py (status-01..05). */
+const UNSEARCHABLE_STATUS = "status-05";
+
+/**
+ * Drops filter options nobody can act on, while keeping any option the current
+ * URL already selects so it stays visible and can be unchecked.
+ */
+export function searchableStatuses(items: MasterItem[], selected: string[]): MasterItem[] {
+  return items.filter((item) => item.slug !== UNSEARCHABLE_STATUS || selected.includes(item.slug));
+}
+
+/**
+ * Graduation cohorts whose March has already passed are dead options — 26卒 is
+ * not job-hunting in July 2026. Derived from the label rather than hardcoded so
+ * the list stays correct on its own as the master gains 31卒, 32卒…
+ * (要件定義書_v2.md 6.3 only ever adds years, it never removes them).
+ *
+ * The year is read in Asia/Tokyo on both server and client so SSR and hydration
+ * agree regardless of where either runs. Labels that are not a cohort
+ * ("学年不問") are always kept, as is anything the URL already selects.
+ */
+export function currentGraduationYears(items: MasterItem[], selected: string[], now = new Date()): MasterItem[] {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "numeric",
+  }).formatToParts(now);
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  /* Japanese academic years end in March, so a cohort is spent once April of
+     its graduation year has begun. */
+  const oldestLive = month >= 4 ? year + 1 : year;
+  return items.filter((item) => {
+    if (selected.includes(item.slug)) return true;
+    const cohort = /^(\d{2})卒$/.exec(item.name);
+    return !cohort || 2000 + Number(cohort[1]) >= oldestLive;
+  });
+}

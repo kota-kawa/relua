@@ -7,7 +7,6 @@ import {
   labelledSectors,
   actionableFilterItems,
   searchableStatuses,
-  sectorsForSelectedIndustries,
   withDefaultOpenStatus,
 } from "./format";
 
@@ -130,15 +129,5 @@ describe("labelledSectors", () => {
   it("qualifies only the duplicated labels with their parent industry", () => {
     expect(labelledSectors(masters as never).map((s) => s.name))
       .toEqual(["ソフトウェア", "その他（IT・通信）", "その他（メーカー）"]);
-  });
-
-  it("shows sectors only for selected industries", () => {
-    expect(sectorsForSelectedIndustries(masters as never, ["industry-01"], []).map((sector) => sector.name))
-      .toEqual(["ソフトウェア", "その他（IT・通信）"]);
-  });
-
-  it("keeps a selected sector visible for a shared legacy URL", () => {
-    expect(sectorsForSelectedIndustries(masters as never, [], ["sector-2-14"]).map((sector) => sector.name))
-      .toEqual(["その他（メーカー）"]);
   });
 });

@@ -104,6 +104,9 @@ button, summary, select { cursor: pointer; }
 .discovery-inner { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 11px 0; }
 .filter-summary { margin: 0; color: var(--muted); font-size: 13px; }
 .filter-summary strong { color: var(--ink); font-family: Georgia, serif; font-size: 16px; }
+/* Shown only on mobile, where the chips move to their own row and would
+   otherwise leave the result count with nowhere to live. */
+.filter-summary-compact { display: none; }
 .active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
 .active-filters-label { flex: none; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .04em; }
 .active-filters ul { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
@@ -325,7 +328,7 @@ button, summary, select { cursor: pointer; }
 
 /* Detail */
 .detail-page { padding: 35px 0 100px; }
-.back-link { display: inline-flex; align-items: center; gap: 7px; margin-bottom: 32px; color: var(--muted); font-size: 13px; font-weight: 700; }
+.back-link { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; margin-bottom: 20px; color: var(--muted); font-size: 13px; font-weight: 700; }
 .detail-hero { display: grid; grid-template-columns: minmax(0,1fr) 255px; gap: 55px; padding: 48px 52px; color: white; background: var(--ink); border-radius: 12px; box-shadow: var(--shadow); }
 .detail-hero .company-name { margin-top: 28px; }
 .detail-hero h1 { max-width: 700px; margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: clamp(27px, 4vw, 42px); font-weight: 500; line-height: 1.42; }
@@ -576,8 +579,9 @@ button, summary, select { cursor: pointer; }
   .result-layout { display: block; }
   .desktop-filter { display: none; }
   .filter-fab { display: inline-flex; }
-  /* Extra bottom room so the floating filter button never covers the pagination. */
-  .results-section { padding-bottom: 120px; }
+  /* Only the last element of the page can stay hidden under a fixed bar, so the
+     clearance belongs to the footer — not to the scrolling content above it. */
+  body:has(.filter-fab) .site-footer { padding-bottom: calc(48px + 78px + env(safe-area-inset-bottom)); }
   .toast-region { bottom: calc(88px + env(safe-area-inset-bottom)); }
   .mobile-filter { display: block; margin-bottom: 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--white); }
   .mobile-filter summary { display: flex; align-items: center; gap: 8px; padding: 14px 16px; font-size: 13px; font-weight: 800; list-style: none; }
@@ -612,6 +616,13 @@ button, summary, select { cursor: pointer; }
   .quick-filters::-webkit-scrollbar { display: none; }
   .quick-filters a { flex: none; }
   .discovery-inner { width: calc(100% - 18px); min-height: 56px; gap: 10px; }
+  /* With chips present the bar becomes two rows: sharing one line clipped the
+     chips (and their remove buttons) behind the view switcher. */
+  .discovery-inner:has(.active-filters) { flex-wrap: wrap; gap: 4px 10px; }
+  /* flex-basis, not width — the `flex: 1` below would otherwise win and re-clip the row. */
+  .discovery-inner:has(.active-filters) .active-filters { order: 3; flex: 0 0 100%; }
+  .discovery-inner:has(.active-filters) .view-switcher { order: 2; }
+  .filter-summary-compact { display: block; order: 1; margin-right: auto; }
   /* Active filter chips scroll horizontally instead of growing the sticky bar. */
   .active-filters { flex: 1; flex-wrap: nowrap; overflow-x: auto; gap: 8px; padding: 4px 0; scrollbar-width: none; }
   .active-filters::-webkit-scrollbar { display: none; }
@@ -622,7 +633,7 @@ button, summary, select { cursor: pointer; }
   .filter-summary { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .view-switcher a { min-width: 44px; min-height: 40px; justify-content: center; padding: 8px; }
   .view-switcher a span { display: none; }
-  .results-section { padding: 30px 0 120px; }
+  .results-section { padding: 30px 0 65px; }
   .mobile-filter-body { grid-template-columns: 1fr; }
   .mobile-filter-body .filter-submit { grid-column: auto; }
   .results-toolbar { flex-direction: column; align-items: flex-start; gap: 12px; }
@@ -656,7 +667,8 @@ button, summary, select { cursor: pointer; }
   .pagination { gap: 12px; }
   .page-numbers { display: none; }
   .page-position { display: block; }
-  .detail-page { padding-top: 24px; padding-bottom: calc(110px + env(safe-area-inset-bottom)); }
+  .detail-page { padding-top: 24px; }
+  body:has(.detail-cta-bar) .site-footer { padding-bottom: calc(48px + 84px + env(safe-area-inset-bottom)); }
   .detail-cta-bar {
     position: fixed; z-index: 30; inset: auto 0 0; display: flex; align-items: center; gap: 12px;
     padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
@@ -664,9 +676,9 @@ button, summary, select { cursor: pointer; }
   }
   .cta-deadline { flex: none; min-width: 0; }
   .cta-deadline span { display: block; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; }
-  .cta-deadline strong { display: block; margin-top: 2px; color: var(--orange); font-family: Georgia, "Yu Mincho", serif; font-size: 16px; white-space: nowrap; }
+  .cta-deadline strong { display: block; margin-top: 2px; color: var(--orange); font-family: Georgia, "Yu Mincho", serif; font-size: 15px; white-space: nowrap; }
   .detail-cta-bar .bookmark-button.compact { flex: none; width: 44px; min-height: 44px; border: 1px solid var(--line); box-shadow: none; }
-  .detail-cta-bar .entry-button { flex: 1; margin-top: 0; min-height: 48px; padding: 0 12px; }
+  .detail-cta-bar .entry-button { flex: 1; margin-top: 0; min-height: 48px; padding: 0 12px; white-space: nowrap; }
   .detail-hero { margin-inline: -3px; padding: 30px 24px; border-radius: 8px; }
   .detail-hero h1 { font-size: 27px; }
   .detail-layout { margin-top: 45px; }

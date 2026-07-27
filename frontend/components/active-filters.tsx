@@ -53,31 +53,37 @@ export function ActiveFilters({ masters, params, total }: { masters: Masters; pa
   }
 
   return (
-    <div className="active-filters">
-      <span className="active-filters-label">絞り込み中</span>
-      <ul>
-        {query && (
-          <li>
-            <Link href={withoutFilter(params, "q", query)}>
-              <b>キーワード</b> {query}
-              <X size={13} aria-label="この条件を外す" />
-            </Link>
-          </li>
+    <>
+      {/* Mobile puts the chips on their own row; this keeps the count on the first one. */}
+      <p className="filter-summary filter-summary-compact">
+        <strong>{total.toLocaleString("ja-JP")}</strong> 件
+      </p>
+      <div className="active-filters">
+        <span className="active-filters-label">絞り込み中</span>
+        <ul>
+          {query && (
+            <li>
+              <Link href={withoutFilter(params, "q", query)}>
+                <b>キーワード</b> {query}
+                <X size={13} aria-label="この条件を外す" />
+              </Link>
+            </li>
+          )}
+          {chips.map((chip) => (
+            <li key={`${chip.key}-${chip.slug}`}>
+              <Link href={withoutFilter(params, chip.key, chip.slug)}>
+                <b>{chip.group}</b> {chip.name}
+                <X size={13} aria-label="この条件を外す" />
+              </Link>
+            </li>
+          ))}
+        </ul>
+        {chips.length > 0 && (
+          <Link className="clear-all" href={withoutAllFilters(params)}>
+            すべて解除
+          </Link>
         )}
-        {chips.map((chip) => (
-          <li key={`${chip.key}-${chip.slug}`}>
-            <Link href={withoutFilter(params, chip.key, chip.slug)}>
-              <b>{chip.group}</b> {chip.name}
-              <X size={13} aria-label="この条件を外す" />
-            </Link>
-          </li>
-        ))}
-      </ul>
-      {chips.length > 0 && (
-        <Link className="clear-all" href={withoutAllFilters(params)}>
-          すべて解除
-        </Link>
-      )}
-    </div>
+      </div>
+    </>
   );
 }

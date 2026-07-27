@@ -7,7 +7,7 @@ import { CalendarDays, ExternalLink, MapPin } from "@/components/icons";
 import { OpportunityActions } from "@/components/opportunity-actions";
 import { RecentTracker } from "@/components/recent-tracker";
 import { ApiError, getOpportunity } from "@/lib/api";
-import { deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
+import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -136,11 +136,11 @@ export default async function OpportunityDetail({ params }: Props) {
       <div className="detail-cta-bar">
         <div className="cta-deadline">
           <span>締切</span>
-          <strong>{deadlineLabel(item.deadline)}</strong>
+          <strong>{deadlineCompactLabel(item.deadline)}</strong>
         </div>
         <BookmarkButton id={item.id} compact />
         <a className="entry-button" href={entryHref} target="_blank" rel="noopener noreferrer">
-          {item.entry_url ? "エントリーする" : "募集ページを開く"} <ExternalLink size={16} />
+          {item.entry_url ? "エントリー" : "募集ページ"} <ExternalLink size={16} />
         </a>
       </div>
     </main>

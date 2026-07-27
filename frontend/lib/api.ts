@@ -1,6 +1,8 @@
+import "server-only";
+
 import type { Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
 
-const baseUrl = process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const baseUrl = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -9,9 +11,10 @@ export class ApiError extends Error {
 }
 
 async function apiFetch<T>(path: string): Promise<T> {
+  const internalToken = process.env.API_INTERNAL_TOKEN ?? "local-development-internal-token";
   const response = await fetch(`${baseUrl}/api/v1${path}`, {
     next: { revalidate: 60 },
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", "X-Internal-API-Token": internalToken },
   });
   if (!response.ok) {
     throw new ApiError(response.status, `API request failed: ${response.status}`);

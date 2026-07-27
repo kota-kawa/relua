@@ -1,6 +1,6 @@
 # JOB HARBOR — All Job MVP
 
-インターン・本選考情報を、ログインなしで検索できる公開型の就活情報サービスです。募集情報の追加・更新はMCP経由に限定し、固定値マスタ、厳格な入力検証、冪等性、監査ログによってデータ品質を保ちます。
+インターン・本選考情報を、ログインなしで検索できる公開型の就活情報サービスです。募集情報の追加・更新は運営者本人の認証済みMCP接続に限定し、固定値マスタ、厳格な入力検証、冪等性、監査ログによってデータ品質を保ちます。
 
 このリポジトリは [`要件定義書_v2.md`](./要件定義書_v2.md) の **v0.1（MVP）** と、19章のローカル保存・端末間共有機能を実装しています。ユーザーアカウントやサーバー側ブックマークは設けていません。
 
@@ -13,7 +13,7 @@
   - デバイスの既定カレンダーへ渡すICS生成、JSON・CSVバックアップとインポート
   - デスクトップ・タブレット・モバイル対応
 - FastAPI / SQLAlchemy / PostgreSQL
-  - 読み取り専用の公開REST API
+  - Next.jsからのみ利用する非公開REST API
   - マスタ参照、日付・URL・自由記述の検証、DB制約
   - 企業名・タグの正規化と再利用
 - 公式MCP Python SDK（Streamable HTTP）
@@ -21,7 +21,7 @@
   - `get_master_values`
   - `add_opportunity`
   - `update_opportunity`
-  - Redisレート制限、request IDによる冪等化、成功・失敗監査ログ
+  - Bearerトークン認証、Redisレート制限、request IDによる冪等化、成功・失敗監査ログ
 - Alembic初期マイグレーション、固定値マスタ投入
 - 締め切り超過を「締切」に更新する運用ジョブ
 - Docker Compose、GitHub Actions、バックエンド自動テスト
@@ -38,9 +38,9 @@ docker compose up --build
 ```
 
 - Web: <http://localhost:3100>
-- REST API / OpenAPI: <http://localhost:8000/docs>
-- MCP Streamable HTTP: `http://localhost:8000/mcp/`
-- Health check: <http://localhost:8000/api/v1/health>
+- 運営者用MCP（ローカルホスト限定）: `http://localhost:8000/mcp/`
+
+PostgreSQLとRedisはホストへポートを公開しません。FastAPIも`127.0.0.1`だけにバインドされ、REST APIは内部トークン、MCPは運営者用Bearerトークンがなければ利用できません。
 
 初回起動時にAlembicが固定値マスタまで投入します。本番用の募集情報は空の状態です。
 
@@ -54,11 +54,17 @@ docker compose exec api python -m app.scripts.seed_demo
 
 ## MCPクライアント設定
 
-ローカルで接続する場合、MCPクライアントに次のURLをStreamable HTTPサーバーとして登録します。
+ローカルで接続する場合、MCPクライアントに次のURLとヘッダーをStreamable HTTPサーバーとして登録します。
 
 ```text
 http://localhost:8000/mcp/
 ```
+
+```text
+Authorization: Bearer <MCP_API_TOKENの値>
+```
+
+APIポートはループバック限定のため、別端末やインターネットからは直接接続できません。リモートサーバー上で運用する場合は、SSHポートフォワードまたは運営者専用VPNを通して接続してください。MCPを一般公開するリバースプロキシ設定は行わないでください。
 
 推奨操作順は次のとおりです。
 
@@ -69,9 +75,9 @@ http://localhost:8000/mcp/
 
 `add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換です。
 
-## REST API
+## 内部REST API
 
-公開REST APIに書き込みエンドポイントはありません。
+REST APIは公開せず、Next.jsサーバーと運用コマンドだけが`X-Internal-API-Token`ヘッダーを付けて利用します。ブラウザはAll Job APIへ直接接続せず、必要な公開情報だけをNext.jsの同一オリジン経由で取得します。
 
 ```text
 GET /api/v1/health
@@ -120,8 +126,10 @@ Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止�
 
 ## 本番公開前の設定
 
-- `.env` のDBパスワードと各公開URLを本番値へ変更する
-- PostgreSQLとRedisを外部公開しない
+- `.env` のDBパスワードを本番固有値へ変更する
+- `API_INTERNAL_TOKEN`と`MCP_API_TOKEN`に、それぞれ異なる十分に長いランダム値を設定する
+- `ENVIRONMENT=production`を設定する（開発用トークンのままではAPIが起動しない）
+- PostgreSQL、Redis、FastAPIの公開ポートを追加しない
 - FastAPIとNext.jsの前段でTLS、CDN、リクエストサイズ制限を設定する
-- MCPエンドポイントに接続元制御または認証を追加する
+- MCP接続にはSSHポートフォワードまたは運営者専用VPNを使用する
 - 実在企業10社分をChatGPT・Claudeの両方から登録し、要件定義書17.4の受入試験を行う

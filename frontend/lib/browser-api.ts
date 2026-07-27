@@ -1,12 +1,10 @@
 import type { Opportunity } from "@/lib/types";
 
-const publicApiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 export type LoadedOpportunities = { items: Opportunity[]; missingIds: string[]; failedIds: string[] };
 
 async function loadOne(id: string): Promise<{ id: string; item?: Opportunity; status: "ok" | "missing" | "failed" }> {
   try {
-    const response = await fetch(`${publicApiUrl}/api/v1/opportunities/${encodeURIComponent(id)}`, {
+    const response = await fetch(`/api/opportunities/${encodeURIComponent(id)}`, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });

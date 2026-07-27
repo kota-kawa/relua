@@ -32,6 +32,8 @@ def test_create_search_and_idempotent_replay(db):
     result = search_opportunities(db, q="テスト", industry=["industry-01"])
     assert result.total == 1
     assert result.items[0].company.name == "株式会社テスト"
+    assert search_opportunities(db, degree=["degree-01"]).total == 1
+    assert search_opportunities(db, degree=["degree-06"]).total == 0
 
 
 def test_company_normalization_reuses_existing_company(db):

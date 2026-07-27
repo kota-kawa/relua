@@ -26,7 +26,7 @@ function appendValues(target: URLSearchParams, key: string, value: string | stri
 
 export async function getOpportunities(params: SearchParams): Promise<OpportunityList> {
   const query = new URLSearchParams();
-  const allowed = ["q", "status", "industry", "sector", "event_type", "event_format", "job_category", "graduation_year", "sort", "page"];
+  const allowed = ["q", "status", "industry", "sector", "event_type", "event_format", "job_category", "graduation_year", "degree", "sort", "page"];
   allowed.forEach((key) => appendValues(query, key, params[key]));
   const rawView = Array.isArray(params.view) ? params.view[0] : params.view;
   query.set("per_page", rawView === "calendar" ? "60" : rawView === "list" ? "30" : "12");

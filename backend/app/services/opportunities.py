@@ -78,6 +78,7 @@ def search_opportunities(
     event_format: list[str] | None = None,
     job_category: list[str] | None = None,
     graduation_year: list[str] | None = None,
+    degree: list[str] | None = None,
     sort: str = "deadline",
     page: int = 1,
     per_page: int = 20,
@@ -115,6 +116,8 @@ def search_opportunities(
                 or_(GraduationYear.slug.in_(graduation_year), GraduationYear.name.in_(graduation_year))
             )
         )
+    if degree:
+        filters.append(Opportunity.degrees.any(or_(Degree.slug.in_(degree), Degree.name.in_(degree))))
     if filters:
         stmt = stmt.where(*filters)
         count_stmt = count_stmt.where(*filters)

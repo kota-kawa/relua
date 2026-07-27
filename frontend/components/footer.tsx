@@ -13,6 +13,7 @@ export function Footer() {
         </div>
         <div className="footer-links">
           <Link href="/">募集を探す</Link>
+          <Link href="/saved">保存した募集</Link>
           <Link href="/about">Why Relua?</Link>
           {apiUrl && <a href={`${apiUrl}/docs`} target="_blank" rel="noreferrer">API Docs</a>}
           <span>掲載情報は必ず公式サイトでご確認ください</span>

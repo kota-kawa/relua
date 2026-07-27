@@ -2,13 +2,15 @@
 
 インターン・本選考情報を、ログインなしで検索できる公開型の就活情報サービスです。募集情報の追加・更新はMCP経由に限定し、固定値マスタ、厳格な入力検証、冪等性、監査ログによってデータ品質を保ちます。
 
-このリポジトリは [`要件定義書_v2.md`](./要件定義書_v2.md) の **v0.1（MVP）** を実装しています。Googleログインとブックマークは意図的に含めていません。
+このリポジトリは [`要件定義書_v2.md`](./要件定義書_v2.md) の **v0.1（MVP）** と、19章のローカル保存・端末間共有機能を実装しています。ユーザーアカウントやサーバー側ブックマークは設けていません。
 
 ## 実装範囲
 
 - Next.js 16 / React 19 / TypeScript / Tailwind CSS 4
   - 未ログインの一覧、キーワード検索、複合絞り込み、並び替え、ページング、詳細
   - Server ComponentsによるSSR、共有可能なURL、SEOメタデータ
+  - ブラウザ内ブックマーク、最近見た募集、URL・QRコードによる端末間移行と共有リスト
+  - Googleカレンダー・ICS追加、JSON・CSVバックアップとインポート
   - デスクトップ・タブレット・モバイル対応
 - FastAPI / SQLAlchemy / PostgreSQL
   - 読み取り専用の公開REST API
@@ -78,7 +80,17 @@ GET /api/v1/opportunities
 GET /api/v1/opportunities/{id}
 ```
 
-一覧では `q`、`status`、`industry`、`sector`、`event_type`、`event_format`、`job_category`、`graduation_year`、`sort`、`page`、`per_page` を利用できます。複数選択する条件は同じクエリ名を繰り返します。
+一覧では `q`、`status`、`industry`、`sector`、`event_type`、`event_format`、`job_category`、`graduation_year`、`degree`、`sort`、`page`、`per_page` を利用できます。複数選択する条件は同じクエリ名を繰り返します。
+
+## ローカル保存と共有
+
+募集カードまたは詳細画面の「保存」から、募集情報IDだけをブラウザの `localStorage` に保存します。保存・解除時にIDをサーバーへ送信せず、個人識別情報とも紐付けません。
+
+- `/saved`: ブックマーク、最近見た募集、QR移行、共有URL、JSON・CSVバックアップ
+- `/import#b=...`: 別端末の保存データを確認後にマージ
+- `/list#jobs=...`: ログイン不要の共有リスト
+
+QRコードはブラウザ内で生成します。URLフラグメントはサーバーへ送信されず、インポート時は存在する募集IDだけを既存データへ追加します。
 
 ## 運用
 

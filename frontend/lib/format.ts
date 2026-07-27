@@ -71,7 +71,9 @@ export const FILTER_KEYS = [
   "graduation_year",
   "event_type",
   "industry",
+  "sector",
   "job_category",
+  "degree",
   "event_format",
 ] as const;
 

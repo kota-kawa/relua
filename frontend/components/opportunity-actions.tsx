@@ -1,9 +1,8 @@
 "use client";
 
-import { useState } from "react";
-
 import { BookmarkButton } from "@/components/bookmark-button";
-import { CalendarPlus, Check, Share2 } from "@/components/icons";
+import { CalendarPlus, Share2 } from "@/components/icons";
+import { showToast } from "@/components/toast";
 import { calendarDetails } from "@/lib/local-data";
 import type { Opportunity } from "@/lib/types";
 
@@ -17,19 +16,17 @@ function openCalendarFile(name: string, content: string) {
 }
 
 export function OpportunityActions({ item }: { item: Opportunity }) {
-  const [notice, setNotice] = useState("");
-
   async function share() {
     const data = { title: `${item.company.name} ${item.event_name}`, url: window.location.href };
     try {
       if (navigator.share) await navigator.share(data);
       else {
         await navigator.clipboard.writeText(data.url);
-        setNotice("URLをコピーしました");
+        showToast("URLをコピーしました");
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      setNotice("共有できませんでした");
+      showToast("共有できませんでした");
     }
   }
 
@@ -39,7 +36,7 @@ export function OpportunityActions({ item }: { item: Opportunity }) {
     const calendar = calendarDetails(item, window.location.href);
     if (!calendar) return;
     openCalendarFile(`relua-${item.id}.ics`, calendar.ics);
-    setNotice("カレンダーファイルを開いて追加してください");
+    showToast("カレンダーファイルを開いて追加してください");
   }
 
   return (
@@ -49,7 +46,6 @@ export function OpportunityActions({ item }: { item: Opportunity }) {
       <button type="button" className="secondary-action" onClick={addToDeviceCalendar} disabled={!hasCalendarDate}>
         <CalendarPlus size={18} /> デバイスのカレンダーに追加
       </button>
-      {notice && <span className="action-notice"><Check size={14} /> {notice}</span>}
     </div>
   );
 }

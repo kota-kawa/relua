@@ -3,11 +3,12 @@
 import Image from "next/image";
 import Link from "next/link";
 import QRCode from "qrcode";
-import { ChangeEvent, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { notifyLocalDataChanged } from "@/components/bookmark-button";
-import { Check, FileDown, FileUp, History, QrCode, Share2, Smartphone, Trash2, X } from "@/components/icons";
+import { Check, Download, FileDown, FileUp, History, QrCode, Share2, Smartphone, Trash2, X } from "@/components/icons";
 import { OpportunityCard } from "@/components/opportunity-card";
+import { showToast } from "@/components/toast";
 import { loadOpportunities } from "@/lib/browser-api";
 import {
   BOOKMARKS_KEY,
@@ -63,9 +64,15 @@ async function shareOrCopy(url: string, title: string) {
   return "URLをコピーしました";
 }
 
-function QrPanel({ url, onClose }: { url: string; onClose: () => void }) {
+function QrDialog({ url, onClose }: { url: string; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const [dataUrl, setDataUrl] = useState("");
   const [error, setError] = useState(false);
+  /* Native <dialog>: Escape, focus trap and the backdrop come for free. */
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+  }, []);
   useEffect(() => {
     let active = true;
     QRCode.toDataURL(url, { width: 320, margin: 2, errorCorrectionLevel: "L" })
@@ -74,14 +81,22 @@ function QrPanel({ url, onClose }: { url: string; onClose: () => void }) {
     return () => { active = false; };
   }, [url]);
   return (
-    <div className="qr-panel" role="dialog" aria-modal="true" aria-label="端末間移行用QRコード">
-      <button type="button" className="panel-close" onClick={onClose} aria-label="閉じる"><X size={18} /></button>
-      <p className="eyebrow">DEVICE TRANSFER</p>
-      <h2>QRコードを読み取る</h2>
-      <p>別の端末で読み取ると、追加前の確認画面が開きます。</p>
-      {dataUrl ? <Image src={dataUrl} width={320} height={320} unoptimized alt="端末間移行用QRコード" /> : <div className="qr-placeholder">{error ? "保存件数が多いためQRコードに収まりません。「他の端末へ送る」でURLを共有してください。" : "生成中…"}</div>}
-      <small>{url}</small>
-    </div>
+    <dialog
+      ref={dialogRef}
+      className="qr-dialog"
+      aria-label="端末間移行用QRコード"
+      onClose={onClose}
+      onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <div className="qr-panel">
+        <button type="button" className="panel-close" onClick={onClose} aria-label="閉じる"><X size={18} /></button>
+        <p className="eyebrow">DEVICE TRANSFER</p>
+        <h2>QRコードを読み取る</h2>
+        <p>別の端末で読み取ると、追加前の確認画面が開きます。</p>
+        {dataUrl ? <Image src={dataUrl} width={320} height={320} unoptimized alt="端末間移行用QRコード" /> : <div className="qr-placeholder">{error ? "保存件数が多いためQRコードに収まりません。「他の端末へ送る」でURLを共有してください。" : "生成中…"}</div>}
+        <small>{url}</small>
+      </div>
+    </dialog>
   );
 }
 
@@ -152,12 +167,18 @@ export function SavedDashboard() {
         </header>
 
         <section className="local-tools" aria-label="保存データの操作">
-          <button type="button" disabled={!ids.length} onClick={async () => setNotice(await shareOrCopy(importUrl, "reluaの保存データ"))}><Smartphone size={18} /> 他の端末へ送る</button>
+          <button type="button" disabled={!ids.length} onClick={async () => showToast(await shareOrCopy(importUrl, "reluaの保存データ"))}><Smartphone size={18} /> 他の端末へ送る</button>
           <button type="button" disabled={!ids.length} onClick={() => setShowQr(true)}><QrCode size={18} /> QRコードを表示</button>
-          <button type="button" disabled={!ids.length} onClick={async () => setNotice(await shareOrCopy(listUrl, "reluaの共有リスト"))}><Share2 size={18} /> 共有リストを作成</button>
-          <button type="button" disabled={!ids.length} onClick={() => download("relua-bookmarks.json", bookmarkJson(ids), "application/json;charset=utf-8")}><FileDown size={18} /> JSONでバックアップ</button>
-          <button type="button" disabled={!ids.length} onClick={() => download("relua-bookmarks.csv", bookmarkCsv(ids), "text/csv;charset=utf-8")}><FileDown size={18} /> CSVでバックアップ</button>
-          <label className="file-import"><FileUp size={18} /> バックアップを読込<input type="file" accept=".json,.csv,application/json,text/csv" onChange={handleImport} /></label>
+          <button type="button" disabled={!ids.length} onClick={async () => showToast(await shareOrCopy(listUrl, "reluaの共有リスト"))}><Share2 size={18} /> 共有リストを作成</button>
+          {/* Backup and restore matter but are rare; folding them keeps the primary actions scannable. */}
+          <details className="local-tools-more">
+            <summary><Download size={18} /> バックアップと復元</summary>
+            <div className="local-tools-more-body">
+              <button type="button" disabled={!ids.length} onClick={() => download("relua-bookmarks.json", bookmarkJson(ids), "application/json;charset=utf-8")}><FileDown size={18} /> JSONでバックアップ</button>
+              <button type="button" disabled={!ids.length} onClick={() => download("relua-bookmarks.csv", bookmarkCsv(ids), "text/csv;charset=utf-8")}><FileDown size={18} /> CSVでバックアップ</button>
+              <label className="file-import"><FileUp size={18} /> バックアップを読込<input type="file" accept=".json,.csv,application/json,text/csv" onChange={handleImport} /></label>
+            </div>
+          </details>
         </section>
 
         {notice && <p className="local-notice"><Check size={16} /> {notice}</p>}
@@ -186,7 +207,7 @@ export function SavedDashboard() {
           ) : <p className="local-empty">閲覧履歴はありません。</p>}
         </section>
       </div>
-      {showQr && <div className="panel-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowQr(false); }}><QrPanel url={importUrl} onClose={() => setShowQr(false)} /></div>}
+      {showQr && <QrDialog url={importUrl} onClose={() => setShowQr(false)} />}
     </main>
   );
 }

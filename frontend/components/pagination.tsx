@@ -22,6 +22,8 @@ export function Pagination({ page, totalPages, params }: { page: number; totalPa
           </span>
         ))}
       </div>
+      {/* Mobile replaces the number list with a compact position indicator. */}
+      <span className="page-position">{page} / {totalPages}</span>
       {page < totalPages ? (
         <Link className="page-arrow" href={withQuery(params, { page: String(page + 1) })}>次へ <ArrowRight size={17} /></Link>
       ) : <span className="page-arrow disabled">次へ <ArrowRight size={17} /></span>}

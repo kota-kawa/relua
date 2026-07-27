@@ -97,6 +97,22 @@ export function activeFilterCount(params: Record<string, string | string[] | und
   return FILTER_KEYS.reduce((total, key) => total + valuesOf(params, key).length, 0);
 }
 
+/** Same params plus one filter value — used by the quick filter chips. */
+export function withFilter(
+  params: Record<string, string | string[] | undefined>,
+  key: string,
+  value: string,
+) {
+  const next = new URLSearchParams();
+  Object.entries(params).forEach(([entryKey, entryValue]) => {
+    if (entryKey === "page") return;
+    const list = Array.isArray(entryValue) ? entryValue : entryValue ? [entryValue] : [];
+    list.forEach((entry) => next.append(entryKey, entry));
+  });
+  next.append(key, value);
+  return `/?${next.toString()}#listings`;
+}
+
 /** Same params minus one filter value — used by the chips' remove links. */
 export function withoutFilter(
   params: Record<string, string | string[] | undefined>,

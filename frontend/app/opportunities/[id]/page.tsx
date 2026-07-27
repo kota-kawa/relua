@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { ArrowLeft, CalendarDays, ExternalLink, MapPin } from "@/components/icons";
+import { BackLink } from "@/components/back-link";
+import { BookmarkButton } from "@/components/bookmark-button";
+import { CalendarDays, ExternalLink, MapPin } from "@/components/icons";
 import { OpportunityActions } from "@/components/opportunity-actions";
 import { RecentTracker } from "@/components/recent-tracker";
 import { ApiError, getOpportunity } from "@/lib/api";
@@ -38,11 +39,13 @@ export default async function OpportunityDetail({ params }: Props) {
     throw error;
   }
 
+  const entryHref = item.entry_url ?? item.homepage_url ?? item.source_url;
+
   return (
     <main className="detail-page">
       <RecentTracker id={item.id} />
       <div className="shell">
-        <Link className="back-link" href="/"><ArrowLeft size={17} /> 募集一覧に戻る</Link>
+        <BackLink>募集一覧に戻る</BackLink>
         <article>
           <header className="detail-hero">
             <div className="detail-hero-main">
@@ -127,6 +130,18 @@ export default async function OpportunityDetail({ params }: Props) {
             </aside>
           </div>
         </article>
+      </div>
+
+      {/* Mobile-only sticky bar: the entry CTA stays reachable however far the page is scrolled. */}
+      <div className="detail-cta-bar">
+        <div className="cta-deadline">
+          <span>締切</span>
+          <strong>{deadlineLabel(item.deadline)}</strong>
+        </div>
+        <BookmarkButton id={item.id} compact />
+        <a className="entry-button" href={entryHref} target="_blank" rel="noopener noreferrer">
+          {item.entry_url ? "エントリーする" : "募集ページを開く"} <ExternalLink size={16} />
+        </a>
       </div>
     </main>
   );

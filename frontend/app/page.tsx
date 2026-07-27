@@ -7,6 +7,7 @@ import { Hero } from "@/components/hero";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { OpportunityTable } from "@/components/opportunity-table";
 import { Pagination } from "@/components/pagination";
+import { QuickFilters } from "@/components/quick-filters";
 import { SortForm } from "@/components/sort-form";
 import { getMasters, getOpportunities } from "@/lib/api";
 import type { SearchParams } from "@/lib/types";
@@ -32,11 +33,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
 
   return (
     <main>
-      <Hero defaultQuery={query} />
+      <Hero defaultQuery={query}>
+        <QuickFilters masters={masters} params={params} />
+      </Hero>
       <DiscoveryNav masters={masters} params={params} view={view} total={result.total} />
       <section className={`results-section view-${view}`}>
         <div className="shell result-layout">
-          <FilterPanel masters={masters} params={params} />
+          <FilterPanel masters={masters} params={params} total={result.total} />
           <div className="results-main">
             <div className="results-toolbar">
               <h2>

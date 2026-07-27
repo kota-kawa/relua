@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useTransition, type FormEvent } from "reac
 import { useRouter } from "next/navigation";
 
 import { Filter, X } from "@/components/icons";
-import { FILTER_KEYS, activeFilterCount, filterHref, valuesOf, withoutAllFilters } from "@/lib/format";
+import { FILTER_KEYS, activeFilterCount, filterHref, labelledSectors, valuesOf, withoutAllFilters } from "@/lib/format";
 import type { MasterItem, Masters, SearchParams } from "@/lib/types";
 
 function CheckboxGroup({
@@ -63,7 +63,7 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
       <CheckboxGroup title="募集種別" name="event_type" items={masters.event_types} current={params} />
       <CheckboxGroup title="職種" name="job_category" items={masters.job_categories} current={params} collapsed />
       <CheckboxGroup title="業界" name="industry" items={masters.industries} current={params} collapsed />
-      <CheckboxGroup title="業種" name="sector" items={masters.sectors} current={params} collapsed />
+      <CheckboxGroup title="業種" name="sector" items={labelledSectors(masters)} current={params} collapsed />
       <CheckboxGroup title="対象学位" name="degree" items={masters.degrees} current={params} collapsed />
       <CheckboxGroup title="開催形式" name="event_format" items={masters.event_formats} current={params} collapsed />
     </>

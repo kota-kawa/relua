@@ -1,3 +1,5 @@
+import type { MasterItem, Masters } from "@/lib/types";
+
 export function formatDate(value: string | null, fallback = "日程未定") {
   if (!value) return fallback;
   return new Intl.DateTimeFormat("ja-JP", {
@@ -154,4 +156,26 @@ export function withoutAllFilters(params: Record<string, string | string[] | und
   });
   const query = next.toString();
   return query ? `/?${query}#listings` : "/#listings";
+}
+
+/**
+ * Every industry carries its own "その他" sector, so the flat 業種 filter list
+ * renders 14 checkboxes all labelled "その他" with nothing to tell them apart.
+ * Qualify only the ambiguous names with their parent industry; sector names
+ * that are already unique are returned untouched.
+ *
+ * Display only — the checkbox value stays the slug, so the submitted filter is
+ * unchanged.
+ */
+export function labelledSectors(masters: Masters): MasterItem[] {
+  const occurrences = new Map<string, number>();
+  masters.sectors.forEach((sector) => {
+    occurrences.set(sector.name, (occurrences.get(sector.name) ?? 0) + 1);
+  });
+  const industryName = new Map(masters.industries.map((industry) => [industry.id, industry.name]));
+  return masters.sectors.map((sector) => {
+    const parent = industryName.get(sector.industry_id);
+    if ((occurrences.get(sector.name) ?? 0) < 2 || !parent) return sector;
+    return { ...sector, name: `${sector.name}（${parent}）` };
+  });
 }

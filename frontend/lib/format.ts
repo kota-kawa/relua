@@ -44,6 +44,20 @@ export function deadlineChipLabel(value: string | null) {
   return `締切 ${formatDate(value, "")}`;
 }
 
+/**
+ * Sticky-bar variant: the bar shares one line with the entry button, so a
+ * distant deadline is shortened to "8月7日(金)" instead of the full date.
+ */
+export function deadlineCompactLabel(value: string | null) {
+  if (deadlineIsRelative(value) || value === null) return deadlineLabel(value);
+  return new Intl.DateTimeFormat("ja-JP", {
+    month: "short",
+    day: "numeric",
+    weekday: "short",
+    timeZone: "Asia/Tokyo",
+  }).format(new Date(`${value}T00:00:00+09:00`));
+}
+
 export function selected(params: Record<string, string | string[] | undefined>, key: string, value: string) {
   const current = params[key];
   return Array.isArray(current) ? current.includes(value) : current === value;

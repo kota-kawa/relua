@@ -17,7 +17,7 @@ export function Hero({ defaultQuery, children }: { defaultQuery?: string; childr
             type="search"
             name="q"
             defaultValue={defaultQuery}
-            placeholder="企業名、職種、キーワードで検索"
+            placeholder="企業名・職種で検索"
             autoComplete="off"
           />
           <button type="submit">検索する</button>

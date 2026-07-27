@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { filterHref } from "./format";
+import { deadlineCompactLabel, filterHref } from "./format";
 
 describe("filterHref", () => {
   it("preserves selected filters and resets pagination", () => {
@@ -15,5 +15,21 @@ describe("filterHref", () => {
 
   it("returns the listing anchor when every filter is removed", () => {
     expect(filterHref([["page", "2"]])).toBe("/#listings");
+  });
+});
+
+describe("deadlineCompactLabel", () => {
+  it("drops the year from a distant deadline so it fits the sticky bar", () => {
+    vi.setSystemTime(new Date("2026-07-27T09:00:00+09:00"));
+    expect(deadlineCompactLabel("2026-08-07")).toBe("8月7日(金)");
+    vi.useRealTimers();
+  });
+
+  it("keeps the relative phrase when the deadline is near", () => {
+    vi.setSystemTime(new Date("2026-07-27T09:00:00+09:00"));
+    /* The deadline runs to the end of the 29th, so the 29th itself counts. */
+    expect(deadlineCompactLabel("2026-07-29")).toBe("あと3日");
+    expect(deadlineCompactLabel(null)).toBe("締切未定");
+    vi.useRealTimers();
   });
 });

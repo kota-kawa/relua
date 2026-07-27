@@ -164,16 +164,18 @@ button, summary, select { cursor: pointer; }
 .mobile-filter { display: none; }
 
 /* Mobile filter: floating trigger + bottom sheet (native <dialog>) */
+/* Bottom-right, not bottom-centre: centred it sat squarely over the middle of
+   every card's description while scrolling. The right edge keeps the start of
+   each line — where reading begins — permanently clear. */
 .filter-fab {
-  position: fixed; z-index: 40; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  display: none; align-items: center; gap: 8px; min-height: 50px; padding: 0 24px;
+  position: fixed; z-index: 40; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom));
+  display: none; align-items: center; gap: 8px; min-height: 50px; padding: 0 22px;
   border: 0; border-radius: 99px; color: white; background: var(--ink);
   box-shadow: 0 14px 34px rgba(22,39,61,.4); font-size: 14px; font-weight: 800;
   transition: transform .15s;
 }
 .filter-fab b { display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 99px; color: white; background: var(--orange); font-size: 11px; }
-.filter-fab:active { transform: translateX(-50%) scale(.95); }
+.filter-fab:active { transform: scale(.95); }
 .filter-sheet { width: 100%; max-width: 100%; margin: auto 0 0; border: 0; border-radius: 16px 16px 0 0; padding: 0; background: var(--paper); }
 .filter-sheet[open] { display: flex; flex-direction: column; max-height: 82dvh; animation: sheet-up .28s ease; }
 .filter-sheet::backdrop { background: rgba(15,25,39,.55); }
@@ -205,17 +207,21 @@ button, summary, select { cursor: pointer; }
 .table-shell { overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--white); }
 .opportunity-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .opportunity-table th { padding: 12px 13px; color: #7a7f87; background: #f0eee7; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-align: left; }
+/* The deadline and the location are both single unbreakable facts. At the old
+   142px/17% every date split before its weekday ("2026年8月7日" / "(金)") and
+   every location lost its last kanji to the next line; the title column has
+   the slack to give back. */
 .opportunity-table th:nth-child(1) { width: 104px; }
-.opportunity-table th:nth-child(2) { width: 31%; }
-.opportunity-table th:nth-child(3) { width: 142px; }
-.opportunity-table th:nth-child(4) { width: 17%; }
+.opportunity-table th:nth-child(2) { width: 28%; }
+.opportunity-table th:nth-child(3) { width: 160px; }
+.opportunity-table th:nth-child(4) { width: 19%; }
 .opportunity-table th:nth-child(6) { width: 48px; }
 .opportunity-table td { padding: 16px 13px; border-top: 1px solid #e7e8e2; color: #3f4753; font-size: 12px; line-height: 1.45; vertical-align: middle; }
 .opportunity-table tbody tr { transition: background .18s; }
 .opportunity-table td small { display: block; margin-top: 5px; color: #77837e; font-size: 11px; line-height: 1.5; }
 .table-opportunity > span { display: block; margin-bottom: 4px; color: var(--orange); font-size: 11px; font-weight: 750; }
 .table-opportunity > a { display: inline; color: var(--ink-deep); font-family: Georgia, "Yu Mincho", serif; font-size: 14px; font-weight: 650; line-height: 1.55; }
-.table-deadline strong { display: block; color: var(--ink); font-size: 13px; }
+.table-deadline strong { display: block; color: var(--ink); font-size: 13px; white-space: nowrap; }
 .table-deadline small { font-family: Georgia, serif; }
 .table-type { color: var(--ink); font-size: 12px; }
 .table-location { display: flex !important; align-items: flex-start; gap: 4px; }
@@ -274,7 +280,9 @@ button, summary, select { cursor: pointer; }
 .bookmark-button.compact.saved { background: var(--orange-soft); }
 .bookmark-button:disabled, .secondary-action:disabled { cursor: not-allowed; opacity: .45; }
 .card-badges { display: flex; align-items: center; gap: 7px; }
-.status, .type-badge { display: inline-flex; padding: 5px 8px; border-radius: 3px; font-size: 11px; font-weight: 800; letter-spacing: .04em; }
+/* Badge labels are single tokens ("募集中", "説明会・セミナー") — breaking them
+   mid-word turns the card's top line into three ragged rows on narrow screens. */
+.status, .type-badge { display: inline-flex; padding: 5px 8px; border-radius: 3px; font-size: 11px; font-weight: 800; letter-spacing: .04em; white-space: nowrap; }
 /* Recruitment status is the single most decision-relevant field, so each state
    gets its own colour rather than sharing one neutral badge. Slugs come from
    the API master data (status-01 .. status-05). */
@@ -285,7 +293,7 @@ button, summary, select { cursor: pointer; }
 .status.status-04 { color: #21385a; background: #e3e8ef; }   /* 通年募集 */
 .status.status-05 { color: #6b7686; background: #eceae4; }   /* 不明 */
 .type-badge { color: #5a615e; background: #edeae7; }
-.deadline-chip { color: #6d7773; font-family: Georgia, serif; font-size: 12px; font-weight: 700; }
+.deadline-chip { color: #6d7773; font-family: Georgia, serif; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .deadline-hot { padding: 5px 8px; border-radius: 3px; color: #bf7213; background: #fdebd6; }
 .deadline-warm { color: #cd7a15; }
 .company-name { margin: 18px 0 7px; color: var(--orange); font-size: 13px; font-weight: 750; letter-spacing: .03em; }
@@ -349,7 +357,9 @@ button, summary, select { cursor: pointer; }
 .detail-content { display: grid; gap: 48px; }
 .prose-section { position: relative; padding-left: 20px; border-left: 2px solid var(--line); }
 .prose-section h2 { margin: 0 0 22px; font-family: Georgia, "Yu Mincho", serif; font-size: 24px; font-weight: 600; }
-.prose-section > p { margin: 0; color: #434b56; font-size: 14px; line-height: 2.05; white-space: pre-wrap; }
+/* Cap the measure: the content column runs ~1160px wide on a large desktop,
+   which is roughly 80 Japanese characters per line — far past comfortable. */
+.prose-section > p { max-width: 46em; margin: 0; color: #434b56; font-size: 14px; line-height: 2.05; white-space: pre-wrap; }
 .process-flow { display: flex; flex-wrap: wrap; gap: 10px; }
 .process-flow span { display: inline-flex; align-items: center; gap: 8px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 4px; background: var(--white); font-size: 13px; }
 .process-flow span:not(:last-child)::after { content: "→"; position: relative; right: -19px; color: var(--orange); }
@@ -596,6 +606,32 @@ button, summary, select { cursor: pointer; }
   .honeycomb-section { grid-template-columns: 1fr; gap: 32px; }
   .honeycomb-figure { padding: 26px; }
   .honeycomb-figure img { max-width: 120px; }
+
+  /* Below this width the six-column table has nowhere left to go: once the
+     sidebar collapses the table still only gets ~740px, which crushed the
+     対象・職種 column to ~80px and broke "ソフトウェアエンジニア" across three
+     lines. Each row becomes a stacked card instead. */
+  .table-shell { overflow: visible; border: 0; background: transparent; }
+  .opportunity-table, .opportunity-table tbody { display: block; }
+  .opportunity-table thead { display: none; }
+  .opportunity-table tbody { display: grid; gap: 10px; }
+  /* The deadline takes exactly the width its date needs; the rest goes to the
+     format cell, whose location string was wrapping onto a lone trailing 区. */
+  .opportunity-table tr { position: relative; display: grid; grid-template-columns: max-content minmax(0,1fr); column-gap: 18px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--white); }
+  .opportunity-table td { display: block; padding: 5px 0; border: 0; }
+  .opportunity-table td:first-child { grid-column: 1/-1; }
+  .opportunity-table .table-opportunity { grid-column: 1/-1; padding: 7px 38px 12px 0; border-bottom: 1px solid #e7e8e2; }
+  .table-opportunity > a { font-size: 14px; }
+  .opportunity-table .table-deadline { padding-top: 12px; }
+  /* The header row is hidden here, so these two cells carry their own label —
+     a bare "2026年8月7日(金)" gave no clue it was the deadline. */
+  .opportunity-table .table-deadline::before,
+  .opportunity-table td[data-label="形式"]::before {
+    content: attr(data-label); display: block; margin-bottom: 5px;
+    color: #848990; font-size: 10px; font-weight: 800; letter-spacing: .06em;
+  }
+  .opportunity-table .table-target { grid-column: 1/-1; padding-top: 10px; }
+  .opportunity-table .table-action { position: absolute; top: 44px; right: 14px; }
 }
 
 @media (max-width: 640px) {
@@ -636,24 +672,19 @@ button, summary, select { cursor: pointer; }
   .results-section { padding: 30px 0 65px; }
   .mobile-filter-body { grid-template-columns: 1fr; }
   .mobile-filter-body .filter-submit { grid-column: auto; }
-  .results-toolbar { flex-direction: column; align-items: flex-start; gap: 12px; }
-  .results-toolbar h2 { font-size: 18px; gap: 9px; }
+  /* Heading and sort share one row. Stacking them cost ~60px of the first
+     screen, and the count is already stated in the sticky bar just above. */
+  .results-toolbar { flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+  .results-toolbar h2 { flex: 1 1 auto; min-width: 0; font-size: 17px; gap: 9px; }
+  .results-toolbar h2 span { display: none; }
+  .sort-form { flex: none; }
   .sort-form svg { display: none; }
   .card-grid { grid-template-columns: 1fr; }
+  /* The badges and the deadline wrap onto separate rows rather than being
+     squeezed into one line that breaks each label mid-word. */
+  .card-topline { flex-wrap: wrap; gap: 8px; }
   /* Cards take their natural height on mobile to keep the scroll short. */
   .opportunity-card { min-height: 0; }
-  .table-shell { overflow: visible; border: 0; background: transparent; }
-  .opportunity-table, .opportunity-table tbody { display: block; }
-  .opportunity-table thead { display: none; }
-  .opportunity-table tbody { display: grid; gap: 10px; }
-  .opportunity-table tr { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 15px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--white); }
-  .opportunity-table td { display: block; padding: 5px 0; border: 0; }
-  .opportunity-table td:first-child { grid-column: 1/-1; }
-  .opportunity-table .table-opportunity { grid-column: 1/-1; padding: 7px 38px 12px 0; border-bottom: 1px solid #e7e8e2; }
-  .table-opportunity > a { font-size: 14px; }
-  .opportunity-table .table-deadline { padding-top: 12px; }
-  .opportunity-table .table-target { grid-column: 1/-1; padding-top: 10px; }
-  .opportunity-table .table-action { position: absolute; top: 44px; right: 14px; }
   .calendar-intro { display: grid; gap: 6px; }
   .calendar-month { grid-template-columns: 1fr; gap: 10px; }
   .calendar-month-title { position: static; display: flex; align-items: baseline; gap: 8px; }
@@ -682,8 +713,10 @@ button, summary, select { cursor: pointer; }
   .detail-hero { margin-inline: -3px; padding: 30px 24px; border-radius: 8px; }
   .detail-hero h1 { font-size: 27px; }
   .detail-layout { margin-top: 45px; }
-  .detail-actions { align-items: stretch; }
-  .detail-actions > .bookmark-button, .detail-actions > .secondary-action { flex: 1; }
+  /* 保存 / 共有 share a row; the calendar button takes the full width so
+     "デバイスのカレンダーに追加" stops wrapping onto three lines. */
+  .detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .detail-actions > .secondary-action:last-child { grid-column: 1 / -1; }
   .prose-section { padding-left: 16px; }
   .process-flow { display: grid; }
   .process-flow span:not(:last-child)::after { content: "↓"; position: absolute; right: auto; margin-top: 38px; margin-left: 3px; }

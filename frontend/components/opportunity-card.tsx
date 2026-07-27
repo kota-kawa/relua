@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { BookmarkButton } from "@/components/bookmark-button";
 import { ArrowRight, CalendarDays, MapPin } from "@/components/icons";
 import { daysUntil, deadlineChipLabel, formatDate } from "@/lib/format";
 import type { Opportunity } from "@/lib/types";
@@ -14,6 +15,7 @@ function urgencyClass(deadline: string | null) {
 export function OpportunityCard({ item }: { item: Opportunity }) {
   return (
     <article className="opportunity-card">
+      <div className="card-bookmark"><BookmarkButton id={item.id} compact /></div>
       <div className="card-topline">
         <div className="card-badges">
           <span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>

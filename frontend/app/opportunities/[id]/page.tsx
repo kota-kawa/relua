@@ -3,6 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ArrowLeft, CalendarDays, ExternalLink, MapPin } from "@/components/icons";
+import { OpportunityActions } from "@/components/opportunity-actions";
+import { RecentTracker } from "@/components/recent-tracker";
 import { ApiError, getOpportunity } from "@/lib/api";
 import { deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 
@@ -38,6 +40,7 @@ export default async function OpportunityDetail({ params }: Props) {
 
   return (
     <main className="detail-page">
+      <RecentTracker id={item.id} />
       <div className="shell">
         <Link className="back-link" href="/"><ArrowLeft size={17} /> 募集一覧に戻る</Link>
         <article>
@@ -71,6 +74,8 @@ export default async function OpportunityDetail({ params }: Props) {
               )}
             </aside>
           </header>
+
+          <OpportunityActions item={item} />
 
           <div className="detail-layout">
             <div className="detail-content">

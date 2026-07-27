@@ -9,7 +9,9 @@ const GROUP_LABEL: Record<string, string> = {
   graduation_year: "卒業年度",
   event_type: "募集種別",
   industry: "業界",
+  sector: "業種",
   job_category: "職種",
+  degree: "対象学位",
   event_format: "開催形式",
 };
 
@@ -18,7 +20,9 @@ const GROUP_SOURCE: Record<string, keyof Masters> = {
   graduation_year: "graduation_years",
   event_type: "event_types",
   industry: "industries",
+  sector: "sectors",
   job_category: "job_categories",
+  degree: "degrees",
   event_format: "event_formats",
 };
 

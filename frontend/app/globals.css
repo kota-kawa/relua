@@ -153,6 +153,10 @@ button, summary, select { cursor: pointer; }
 }
 .filter-group-collapsible[open] > .filter-options { margin-top: 14px; }
 .filter-options { display: grid; gap: 8px; }
+.filter-hint { margin: 0; padding: 13px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.filter-more { margin-top: 13px; }
+.filter-more > summary { color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer; }
+.filter-more > .filter-options { margin-top: 12px; }
 .check-row { display: flex; align-items: center; gap: 10px; color: #454c56; font-size: 13px; cursor: pointer; }
 .check-row input { position: absolute; opacity: 0; pointer-events: none; }
 .custom-check { position: relative; width: 16px; height: 16px; border: 1px solid #adb2b8; border-radius: 3px; background: white; transition: .15s; }

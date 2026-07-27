@@ -5,7 +5,10 @@ import {
   deadlineCompactLabel,
   filterHref,
   labelledSectors,
+  actionableFilterItems,
   searchableStatuses,
+  sectorsForSelectedIndustries,
+  withDefaultOpenStatus,
 } from "./format";
 
 describe("filterHref", () => {
@@ -90,6 +93,27 @@ describe("searchableStatuses", () => {
   });
 });
 
+describe("withDefaultOpenStatus", () => {
+  it("uses 募集中 as the listing baseline unless all statuses were explicitly requested", () => {
+    expect(withDefaultOpenStatus({})).toEqual({ status: "status-02" });
+    expect(withDefaultOpenStatus({ status_scope: "all" })).toEqual({ status_scope: "all" });
+    expect(withDefaultOpenStatus({ status: "status-01" })).toEqual({ status: "status-01" });
+  });
+});
+
+describe("actionableFilterItems", () => {
+  const items = [
+    { id: 1, slug: "online", name: "オンライン" },
+    { id: 2, slug: "other", name: "その他" },
+    { id: 3, slug: "unknown", name: "不明" },
+  ];
+
+  it("hides generic buckets but keeps a selected value removable", () => {
+    expect(actionableFilterItems(items, []).map((item) => item.name)).toEqual(["オンライン"]);
+    expect(actionableFilterItems(items, ["other"]).map((item) => item.name)).toEqual(["オンライン", "その他"]);
+  });
+});
+
 describe("labelledSectors", () => {
   const masters = {
     industries: [
@@ -106,5 +130,15 @@ describe("labelledSectors", () => {
   it("qualifies only the duplicated labels with their parent industry", () => {
     expect(labelledSectors(masters as never).map((s) => s.name))
       .toEqual(["ソフトウェア", "その他（IT・通信）", "その他（メーカー）"]);
+  });
+
+  it("shows sectors only for selected industries", () => {
+    expect(sectorsForSelectedIndustries(masters as never, ["industry-01"], []).map((sector) => sector.name))
+      .toEqual(["ソフトウェア", "その他（IT・通信）"]);
+  });
+
+  it("keeps a selected sector visible for a shared legacy URL", () => {
+    expect(sectorsForSelectedIndustries(masters as never, [], ["sector-2-14"]).map((sector) => sector.name))
+      .toEqual(["その他（メーカー）"]);
   });
 });

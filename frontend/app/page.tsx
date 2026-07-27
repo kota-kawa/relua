@@ -10,6 +10,7 @@ import { Pagination } from "@/components/pagination";
 import { QuickFilters } from "@/components/quick-filters";
 import { SortForm } from "@/components/sort-form";
 import { getMasters, getOpportunities } from "@/lib/api";
+import { withDefaultOpenStatus } from "@/lib/format";
 import type { SearchParams } from "@/lib/types";
 
 function first(params: SearchParams, key: string) {
@@ -18,7 +19,7 @@ function first(params: SearchParams, key: string) {
 }
 
 export default async function Home({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const params = await searchParams;
+  const params = withDefaultOpenStatus(await searchParams);
   const requestedView = first(params, "view");
   const view: ViewMode = requestedView === "list" || requestedView === "calendar" ? requestedView : "cards";
   let data;

@@ -1,4 +1,4 @@
-import type { MasterItem, Masters } from "@/lib/types";
+import type { MasterItem, Masters, SectorItem } from "@/lib/types";
 
 export function formatDate(value: string | null, fallback = "日程未定") {
   if (!value) return fallback;
@@ -104,6 +104,18 @@ export const FILTER_KEYS = [
   "event_format",
 ] as const;
 
+/** The listing is useful by default only when it shows opportunities people
+ * can apply to now. `status_scope=all` is the explicit opt-out used when the
+ * user unchecks that baseline. It is intentionally a UI-only parameter, so
+ * the API continues to receive only real status values. */
+export const OPEN_STATUS_SLUG = "status-02";
+export const ALL_STATUS_SCOPE = "all";
+
+export function withDefaultOpenStatus(params: Record<string, string | string[] | undefined>) {
+  if (valuesOf(params, "status").length || valuesOf(params, "status_scope").includes(ALL_STATUS_SCOPE)) return params;
+  return { ...params, status: OPEN_STATUS_SLUG };
+}
+
 export function valuesOf(params: Record<string, string | string[] | undefined>, key: string) {
   const value = params[key];
   return Array.isArray(value) ? value : value ? [value] : [];
@@ -167,7 +179,7 @@ export function withoutAllFilters(params: Record<string, string | string[] | und
  * Display only — the checkbox value stays the slug, so the submitted filter is
  * unchanged.
  */
-export function labelledSectors(masters: Masters): MasterItem[] {
+export function labelledSectors(masters: Masters): SectorItem[] {
   const occurrences = new Map<string, number>();
   masters.sectors.forEach((sector) => {
     occurrences.set(sector.name, (occurrences.get(sector.name) ?? 0) + 1);
@@ -178,6 +190,21 @@ export function labelledSectors(masters: Masters): MasterItem[] {
     if ((occurrences.get(sector.name) ?? 0) < 2 || !parent) return sector;
     return { ...sector, name: `${sector.name}（${parent}）` };
   });
+}
+
+/** Returns only the sectors belonging to the industries selected above it.
+ * A selected legacy URL value remains visible so it can always be cleared. */
+export function sectorsForSelectedIndustries(
+  masters: Masters,
+  industrySlugs: string[],
+  selectedSectors: string[],
+): SectorItem[] {
+  const selectedIndustryIds = new Set(
+    masters.industries.filter((industry) => industrySlugs.includes(industry.slug)).map((industry) => industry.id),
+  );
+  return labelledSectors(masters).filter((sector) => (
+    selectedSectors.includes(sector.slug) || selectedIndustryIds.has(sector.industry_id)
+  ));
 }
 
 /** "不明" is a data-quality state, not something anyone sets out to search for
@@ -192,6 +219,12 @@ const UNSEARCHABLE_STATUS = "status-05";
  */
 export function searchableStatuses(items: MasterItem[], selected: string[]): MasterItem[] {
   return items.filter((item) => item.slug !== UNSEARCHABLE_STATUS || selected.includes(item.slug));
+}
+
+/** "その他" and "不明" describe a data bucket rather than an intent to search.
+ * Preserve an already-selected value so older shared URLs remain reversible. */
+export function actionableFilterItems(items: MasterItem[], selected: string[]): MasterItem[] {
+  return items.filter((item) => selected.includes(item.slug) || (item.name !== "その他" && item.name !== "不明"));
 }
 
 /**

@@ -1,7 +1,5 @@
 import Link from "next/link";
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
 export function Footer() {
   return (
     <footer className="site-footer">
@@ -15,7 +13,6 @@ export function Footer() {
           <Link href="/">募集を探す</Link>
           <Link href="/saved">保存した募集</Link>
           <Link href="/about">Why Relua?</Link>
-          {apiUrl && <a href={`${apiUrl}/docs`} target="_blank" rel="noreferrer">API Docs</a>}
           <span>掲載情報は必ず公式サイトでご確認ください</span>
         </div>
       </div>

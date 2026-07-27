@@ -1,7 +1,11 @@
+"use client";
+
 import Link from "next/link";
+import { useTransition, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 
 import { Filter, X } from "@/components/icons";
-import { activeFilterCount, valuesOf, withoutAllFilters } from "@/lib/format";
+import { activeFilterCount, filterHref, valuesOf, withoutAllFilters } from "@/lib/format";
 import type { MasterItem, Masters, SearchParams } from "@/lib/types";
 
 function CheckboxGroup({
@@ -68,27 +72,42 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
 
 export function FilterPanel({ masters, params }: { masters: Masters; params: SearchParams }) {
   const activeCount = activeFilterCount(params);
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  function applyFilters(form: HTMLFormElement) {
+    const entries = Array.from(new FormData(form).entries()).flatMap(([key, value]) => (
+      typeof value === "string" ? [[key, value] as [string, string]] : []
+    ));
+    startTransition(() => router.replace(filterHref(entries), { scroll: false }));
+  }
+
+  function handleChange(event: FormEvent<HTMLFormElement>) {
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.type === "checkbox") applyFilters(event.currentTarget);
+  }
 
   return (
     <>
-      <aside className="filter-panel desktop-filter" aria-label="検索条件">
+      <aside className={`filter-panel desktop-filter${isPending ? " is-updating" : ""}`} aria-label="検索条件" aria-busy={isPending}>
         <div className="filter-title">
           <span><Filter size={17} /> 絞り込み</span>
+          {isPending && <small className="filter-updating" role="status">更新中…</small>}
           {activeCount > 0 && (
             <Link href={withoutAllFilters(params)}><X size={14} /> 解除</Link>
           )}
         </div>
-        <form action="/" method="get">
+        <form action="/" method="get" onChange={handleChange} onSubmit={(event) => { event.preventDefault(); applyFilters(event.currentTarget); }}>
           <Fields masters={masters} params={params} />
-          <button className="filter-submit" type="submit">この条件で表示</button>
+          <noscript><button className="filter-submit" type="submit">この条件で表示</button></noscript>
         </form>
       </aside>
 
-      <details className="mobile-filter">
+      <details className={`mobile-filter${isPending ? " is-updating" : ""}`} aria-busy={isPending}>
         <summary><Filter size={17} /> 絞り込み {activeCount > 0 && <b>{activeCount}</b>}</summary>
-        <form action="/" method="get" className="mobile-filter-body">
+        <form action="/" method="get" className="mobile-filter-body" onChange={handleChange} onSubmit={(event) => { event.preventDefault(); applyFilters(event.currentTarget); }}>
           <Fields masters={masters} params={params} />
-          <button className="filter-submit" type="submit">この条件で表示</button>
+          <noscript><button className="filter-submit" type="submit">この条件で表示</button></noscript>
         </form>
       </details>
     </>

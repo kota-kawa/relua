@@ -65,6 +65,17 @@ export function withQuery(
   return `/?${next.toString()}`;
 }
 
+/** Builds a listing URL from the current filter form and always resets pagination. */
+export function filterHref(entries: Iterable<[string, string]>) {
+  const next = new URLSearchParams();
+  for (const [key, value] of entries) {
+    if (key === "page" || !value) continue;
+    next.append(key, value);
+  }
+  const query = next.toString();
+  return query ? `/?${query}#listings` : "/#listings";
+}
+
 /** Every query key that narrows the result set, in the order chips are shown. */
 export const FILTER_KEYS = [
   "status",

@@ -115,8 +115,9 @@ button, summary, select { cursor: pointer; }
 .view-list .result-layout, .view-calendar .result-layout { grid-template-columns: 210px minmax(0,1fr); gap: 34px; }
 .result-layout { display: grid; grid-template-columns: 232px minmax(0,1fr); gap: 48px; align-items: start; }
 .filter-panel { position: sticky; top: 24px; }
-.filter-title { display: flex; justify-content: space-between; align-items: center; padding-bottom: 17px; border-bottom: 2px solid var(--ink); }
+.filter-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-bottom: 17px; border-bottom: 2px solid var(--ink); }
 .filter-title > span { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800; }
+.filter-updating { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 700; }
 .filter-title a { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 13px; }
 .filter-group { margin: 0; padding: 17px 0; border: 0; border-bottom: 1px solid var(--line); }
 .filter-group legend { margin-bottom: 14px; font-size: 13px; font-weight: 800; letter-spacing: .04em; }
@@ -143,6 +144,7 @@ button, summary, select { cursor: pointer; }
 .check-row input:checked + .custom-check { border-color: var(--ink); background: var(--ink); }
 .check-row input:checked + .custom-check::after { content: ""; position: absolute; left: 4px; top: 1px; width: 5px; height: 9px; border: solid white; border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .check-row input:focus-visible + .custom-check { outline: 3px solid rgba(239,153,49,.25); }
+.filter-panel.is-updating .filter-options, .mobile-filter.is-updating .filter-options { opacity: .58; }
 .filter-submit { width: 100%; margin-top: 22px; padding: 13px; border: 0; border-radius: 5px; color: white; background: var(--ink); font-size: 13px; font-weight: 750; }
 .filter-submit:hover { background: var(--orange); }
 .mobile-filter { display: none; }

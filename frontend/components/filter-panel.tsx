@@ -12,8 +12,8 @@ import {
   ALL_STATUS_SCOPE,
   currentGraduationYears,
   filterHref,
+  labelledSectors,
   OPEN_STATUS_SLUG,
-  sectorsForSelectedIndustries,
   searchableStatuses,
   valuesOf,
   withoutAllFilters,
@@ -105,12 +105,8 @@ function StatusGroup({ items, current }: { items: MasterItem[]; current: SearchP
 }
 
 function Fields({ masters, params }: { masters: Masters; params: SearchParams }) {
-  const selectedIndustries = valuesOf(params, "industry");
   const selectedSectors = valuesOf(params, "sector");
-  const sectors = actionableFilterItems(
-    sectorsForSelectedIndustries(masters, selectedIndustries, selectedSectors),
-    selectedSectors,
-  );
+  const sectors = actionableFilterItems(labelledSectors(masters), selectedSectors);
   return (
     <>
       {valuesOf(params, "q").map((value) => <input key={`q-${value}`} type="hidden" name="q" value={value} />)}
@@ -133,6 +129,8 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
         items={actionableFilterItems(masters.event_types, valuesOf(params, "event_type"))}
         current={params}
       />
+      <CheckboxGroup title="業界" name="industry" items={masters.industries} current={params} collapsed />
+      <CheckboxGroup title="業種" name="sector" items={sectors} current={params} collapsed />
       <CheckboxGroup
         title="職種"
         name="job_category"
@@ -140,12 +138,6 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
         current={params}
         collapsed
       />
-      <CheckboxGroup title="業界" name="industry" items={masters.industries} current={params} collapsed />
-      {sectors.length ? (
-        <CheckboxGroup title="業種" name="sector" items={sectors} current={params} collapsed />
-      ) : (
-        <p className="filter-hint">業界を選ぶと、業種を選択できます。</p>
-      )}
       <CheckboxGroup title="対象学位" name="degree" items={masters.degrees} current={params} collapsed />
       <CheckboxGroup
         title="開催形式"
@@ -177,15 +169,6 @@ export function FilterPanel({ masters, params, total }: { masters: Masters; para
     let entries = Array.from(new FormData(form).entries()).flatMap(([key, value]) => (
       typeof value === "string" ? [[key, value] as [string, string]] : []
     ));
-    const selectedIndustries = new Set(entries.filter(([key]) => key === "industry").map(([, value]) => value));
-    const sectorIndustries = new Map(masters.sectors.map((sector) => [sector.slug, sector.industry_id]));
-    const industryIds = new Map(masters.industries.map((industry) => [industry.slug, industry.id]));
-
-    /* A sector cannot belong to an industry that was just unchecked. */
-    entries = entries.filter(([key, value]) => (
-      key !== "sector" || [...selectedIndustries].some((slug) => industryIds.get(slug) === sectorIndustries.get(value))
-    ));
-
     const hasStatus = entries.some(([key]) => key === "status");
     entries = entries.filter(([key]) => key !== "status_scope");
     if (!hasStatus) entries.push(["status_scope", ALL_STATUS_SCOPE]);

@@ -192,21 +192,6 @@ export function labelledSectors(masters: Masters): SectorItem[] {
   });
 }
 
-/** Returns only the sectors belonging to the industries selected above it.
- * A selected legacy URL value remains visible so it can always be cleared. */
-export function sectorsForSelectedIndustries(
-  masters: Masters,
-  industrySlugs: string[],
-  selectedSectors: string[],
-): SectorItem[] {
-  const selectedIndustryIds = new Set(
-    masters.industries.filter((industry) => industrySlugs.includes(industry.slug)).map((industry) => industry.id),
-  );
-  return labelledSectors(masters).filter((sector) => (
-    selectedSectors.includes(sector.slug) || selectedIndustryIds.has(sector.industry_id)
-  ));
-}
-
 /** "不明" is a data-quality state, not something anyone sets out to search for
  *  ("募集状況が不明な募集だけ見たい" is not a goal). Hiding it from the filter
  *  does not hide those listings: with no status selected, every status shows.

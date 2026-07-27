@@ -10,7 +10,7 @@
   - 未ログインの一覧、キーワード検索、複合絞り込み、並び替え、ページング、詳細
   - Server ComponentsによるSSR、共有可能なURL、SEOメタデータ
   - ブラウザ内ブックマーク、最近見た募集、URL・QRコードによる端末間移行と共有リスト
-  - Googleカレンダー・ICS追加、JSON・CSVバックアップとインポート
+  - デバイスの既定カレンダーへ渡すICS生成、JSON・CSVバックアップとインポート
   - デスクトップ・タブレット・モバイル対応
 - FastAPI / SQLAlchemy / PostgreSQL
   - 読み取り専用の公開REST API

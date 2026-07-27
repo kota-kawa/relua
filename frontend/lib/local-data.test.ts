@@ -4,6 +4,7 @@ import {
   bookmarkCsv,
   bookmarkJson,
   buildFragmentUrl,
+  calendarDetails,
   mergeBookmarks,
   normalizeIds,
   parseBookmarkFile,
@@ -13,6 +14,7 @@ import {
   removeBookmarks,
   toggleBookmark,
 } from "./local-data";
+import type { Opportunity } from "./types";
 
 function memoryStorage() {
   const data = new Map<string, string>();
@@ -55,5 +57,21 @@ describe("local bookmark data", () => {
     expect(parseBookmarkFile(json, "backup.json")).toEqual(["1", "2"]);
     expect(parseBookmarkFile(bookmarkCsv(["1", "2"]), "backup.csv")).toEqual(["1", "2"]);
     expect(parseBookmarkFile('{"version":2,"bookmarks":[1]}', "backup.json")).toEqual([]);
+  });
+
+  it("creates a device-neutral calendar file without a Google-specific URL", () => {
+    const item = {
+      id: "job-1",
+      company: { id: 1, name: "Example" },
+      event_name: "Internship",
+      deadline: "2026-08-01",
+      event_start_date: null,
+      event_end_date: null,
+      entry_url: null,
+    } as Opportunity;
+    const calendar = calendarDetails(item, "https://example.com/opportunities/job-1");
+    expect(calendar?.ics).toContain("DTSTART;VALUE=DATE:20260801");
+    expect(calendar?.ics).toContain("SUMMARY:Example Internship 応募締切");
+    expect(calendar).not.toHaveProperty("googleUrl");
   });
 });

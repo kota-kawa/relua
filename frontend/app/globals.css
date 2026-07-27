@@ -304,10 +304,6 @@ button, summary, select { cursor: pointer; }
 .detail-layout { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 70px; align-items: start; margin-top: 66px; }
 .detail-actions { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
 .detail-actions .bookmark-button, .detail-actions .secondary-action { background: transparent; }
-.calendar-action-wrap { position: relative; }
-.calendar-menu { position: absolute; z-index: 5; top: calc(100% + 8px); left: 0; display: grid; width: 220px; padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--white); box-shadow: var(--shadow); }
-.calendar-menu a, .calendar-menu button { display: flex; align-items: center; gap: 8px; padding: 10px; border: 0; border-radius: 4px; color: var(--ink); background: transparent; font-size: 12px; font-weight: 700; text-align: left; }
-.calendar-menu a:hover, .calendar-menu button:hover { color: var(--orange); background: var(--orange-soft); }
 .action-notice { display: inline-flex; align-items: center; gap: 5px; color: #2f7552; font-size: 12px; }
 .detail-content { display: grid; gap: 48px; }
 .prose-section { position: relative; padding-left: 20px; border-left: 2px solid var(--line); }
@@ -558,8 +554,7 @@ button, summary, select { cursor: pointer; }
   .detail-hero h1 { font-size: 27px; }
   .detail-layout { margin-top: 45px; }
   .detail-actions { align-items: stretch; }
-  .detail-actions > .bookmark-button, .detail-actions > .secondary-action, .calendar-action-wrap, .calendar-action-wrap > .secondary-action { flex: 1; }
-  .calendar-menu { right: 0; left: auto; }
+  .detail-actions > .bookmark-button, .detail-actions > .secondary-action { flex: 1; }
   .prose-section { padding-left: 16px; }
   .process-flow { display: grid; }
   .process-flow span:not(:last-child)::after { content: "↓"; position: absolute; right: auto; margin-top: 38px; margin-left: 3px; }

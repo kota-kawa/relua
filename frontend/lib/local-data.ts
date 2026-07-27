@@ -142,11 +142,6 @@ export function calendarDetails(item: Opportunity, detailUrl: string) {
     `募集詳細: ${detailUrl}`,
     item.entry_url ? `公式応募ページ: ${item.entry_url}` : null,
   ].filter(Boolean).join("\n");
-  const google = new URL("https://calendar.google.com/calendar/render");
-  google.searchParams.set("action", "TEMPLATE");
-  google.searchParams.set("text", title);
-  google.searchParams.set("dates", `${compactDate(start)}/${compactDate(end)}`);
-  google.searchParams.set("details", description);
   const uid = `${item.id}@relua.local`;
   const ics = [
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//relua//Local Calendar//JA", "CALSCALE:GREGORIAN",
@@ -155,5 +150,5 @@ export function calendarDetails(item: Opportunity, detailUrl: string) {
     `SUMMARY:${icsEscape(title)}`, `DESCRIPTION:${icsEscape(description)}`, `URL:${icsEscape(detailUrl)}`,
     "END:VEVENT", "END:VCALENDAR", "",
   ].join("\r\n");
-  return { googleUrl: google.toString(), ics, title };
+  return { ics, title };
 }

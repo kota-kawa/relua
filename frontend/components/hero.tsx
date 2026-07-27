@@ -1,6 +1,6 @@
 import { Search } from "@/components/icons";
 
-export function Hero({ defaultQuery }: { defaultQuery?: string }) {
+export function Hero({ defaultQuery, children }: { defaultQuery?: string; children?: React.ReactNode }) {
   return (
     <section className="hero">
       <div className="hero-grid" aria-hidden="true" />
@@ -22,6 +22,8 @@ export function Hero({ defaultQuery }: { defaultQuery?: string }) {
           />
           <button type="submit">検索する</button>
         </form>
+
+        {children}
       </div>
     </section>
   );

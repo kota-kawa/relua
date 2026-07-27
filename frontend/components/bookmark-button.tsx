@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from "react";
 
 import { Bookmark } from "@/components/icons";
+import { showToast } from "@/components/toast";
 import { BOOKMARKS_KEY, LOCAL_DATA_EVENT, normalizeIds, toggleBookmark } from "@/lib/local-data";
 
 function subscribe(callback: () => void) {
@@ -46,6 +47,10 @@ export function BookmarkButton({ id, compact = false }: { id: string; compact?: 
         event.stopPropagation();
         toggleBookmark(window.localStorage, id);
         notifyLocalDataChanged();
+        if (saved) showToast("保存を解除しました");
+        /* Linking back to /saved from /saved would be noise. */
+        else if (window.location.pathname.startsWith("/saved")) showToast("保存しました");
+        else showToast("保存しました", { label: "保存一覧を見る", href: "/saved" });
       }}
     >
       <Bookmark size={compact ? 17 : 18} fill={saved ? "currentColor" : "none"} />

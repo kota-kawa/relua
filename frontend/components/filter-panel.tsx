@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useTransition, type FormEvent } from "react";
+import { useEffect, useRef, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
 import { Filter, X } from "@/components/icons";
-import { activeFilterCount, filterHref, valuesOf, withoutAllFilters } from "@/lib/format";
+import { FILTER_KEYS, activeFilterCount, filterHref, valuesOf, withoutAllFilters } from "@/lib/format";
 import type { MasterItem, Masters, SearchParams } from "@/lib/types";
 
 function CheckboxGroup({
@@ -70,10 +70,20 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
   );
 }
 
-export function FilterPanel({ masters, params }: { masters: Masters; params: SearchParams }) {
+export function FilterPanel({ masters, params, total }: { masters: Masters; params: SearchParams; total: number }) {
   const activeCount = activeFilterCount(params);
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const sheetRef = useRef<HTMLDialogElement>(null);
+
+  /* The sheet is a native <dialog>: focus trap, Escape and backdrop come free. */
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    if (sheetOpen && !sheet.open) sheet.showModal();
+    else if (!sheetOpen && sheet.open) sheet.close();
+  }, [sheetOpen]);
 
   function applyFilters(form: HTMLFormElement) {
     const entries = Array.from(new FormData(form).entries()).flatMap(([key, value]) => (
@@ -87,6 +97,10 @@ export function FilterPanel({ masters, params }: { masters: Masters; params: Sea
     if (target instanceof HTMLInputElement && target.type === "checkbox") applyFilters(event.currentTarget);
   }
 
+  /* Checkboxes are uncontrolled; remounting the form when the URL's filters
+     change keeps them in sync with "clear" links clicked outside the form. */
+  const fieldsKey = FILTER_KEYS.map((key) => valuesOf(params, key).join(",")).join("|");
+
   return (
     <>
       <aside className={`filter-panel desktop-filter${isPending ? " is-updating" : ""}`} aria-label="検索条件" aria-busy={isPending}>
@@ -97,19 +111,61 @@ export function FilterPanel({ masters, params }: { masters: Masters; params: Sea
             <Link href={withoutAllFilters(params)}><X size={14} /> 解除</Link>
           )}
         </div>
-        <form action="/" method="get" onChange={handleChange} onSubmit={(event) => { event.preventDefault(); applyFilters(event.currentTarget); }}>
+        <form key={fieldsKey} action="/" method="get" onChange={handleChange} onSubmit={(event) => { event.preventDefault(); applyFilters(event.currentTarget); }}>
           <Fields masters={masters} params={params} />
           <noscript><button className="filter-submit" type="submit">この条件で表示</button></noscript>
         </form>
       </aside>
 
-      <details className={`mobile-filter${isPending ? " is-updating" : ""}`} aria-busy={isPending}>
-        <summary><Filter size={17} /> 絞り込み {activeCount > 0 && <b>{activeCount}</b>}</summary>
-        <form action="/" method="get" className="mobile-filter-body" onChange={handleChange} onSubmit={(event) => { event.preventDefault(); applyFilters(event.currentTarget); }}>
-          <Fields masters={masters} params={params} />
-          <noscript><button className="filter-submit" type="submit">この条件で表示</button></noscript>
+      <button type="button" className="filter-fab" onClick={() => setSheetOpen(true)}>
+        <Filter size={18} /> 絞り込み
+        {activeCount > 0 && <b>{activeCount}</b>}
+      </button>
+
+      <dialog
+        ref={sheetRef}
+        className="filter-sheet"
+        aria-label="検索条件"
+        onClose={() => setSheetOpen(false)}
+        onPointerDown={(event) => { if (event.target === event.currentTarget) setSheetOpen(false); }}
+      >
+        <header className="filter-sheet-header">
+          <span><Filter size={17} /> 絞り込み</span>
+          {activeCount > 0 && (
+            <Link className="filter-sheet-clear" href={withoutAllFilters(params)}><X size={14} /> すべて解除</Link>
+          )}
+          <button type="button" className="panel-close" onClick={() => setSheetOpen(false)} aria-label="閉じる"><X size={18} /></button>
+        </header>
+        <form
+          key={fieldsKey}
+          action="/"
+          method="get"
+          className={isPending ? "is-updating" : ""}
+          aria-busy={isPending}
+          onChange={handleChange}
+          onSubmit={(event) => { event.preventDefault(); applyFilters(event.currentTarget); }}
+        >
+          <div className="filter-sheet-body">
+            <Fields masters={masters} params={params} />
+          </div>
+          {/* Every checkbox applies instantly; this button reports the live count and closes the sheet. */}
+          <footer className="filter-sheet-footer">
+            <button type="button" className="filter-sheet-apply" onClick={() => setSheetOpen(false)}>
+              {isPending ? "検索中…" : `${total.toLocaleString("ja-JP")}件を表示`}
+            </button>
+          </footer>
         </form>
-      </details>
+      </dialog>
+
+      <noscript>
+        <details className="mobile-filter">
+          <summary><Filter size={17} /> 絞り込み {activeCount > 0 && <b>{activeCount}</b>}</summary>
+          <form action="/" method="get" className="mobile-filter-body">
+            <Fields masters={masters} params={params} />
+            <button className="filter-submit" type="submit">この条件で表示</button>
+          </form>
+        </details>
+      </noscript>
     </>
   );
 }

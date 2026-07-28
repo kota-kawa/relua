@@ -1,9 +1,10 @@
+import { HeroHoneycomb } from "@/components/hero-honeycomb";
 import { Search } from "@/components/icons";
 
 export function Hero({ defaultQuery, children }: { defaultQuery?: string; children?: React.ReactNode }) {
   return (
     <section className="hero">
-      <div className="hero-grid" aria-hidden="true" />
+      <HeroHoneycomb />
       <div className="shell hero-inner">
         <div className="hero-copy">
           <h1>インターン・本選考・イベントを横断検索</h1>

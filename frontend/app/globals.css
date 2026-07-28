@@ -59,13 +59,48 @@ button, summary, select { cursor: pointer; }
   position: relative; overflow: hidden; color: var(--paper);
   background: var(--ink);
 }
-.hero::before, .hero::after { content: ""; position: absolute; border-radius: 50%; filter: blur(2px); }
-.hero::before { right: -5%; top: -84%; width: 430px; height: 430px; border: 1px solid rgba(247,245,238,.12); }
-.hero::after { right: 8%; top: -56%; width: 270px; height: 270px; border: 1px solid rgba(239,153,49,.34); }
-.hero-grid {
-  position: absolute; inset: 0; opacity: .075;
-  background-image: linear-gradient(rgba(255,255,255,.8) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.8) 1px, transparent 1px);
-  background-size: 72px 72px; mask-image: linear-gradient(to right, transparent, black 48%, black);
+/* Honeycomb from the relua mark. The lattice holds still and the light travels:
+   cells ignite column by column, so the motion reads as a search sweeping across
+   the listings. Every offset derives from --hex-r, and --wave-step sets how long
+   the front takes to cross one column. See components/hero-honeycomb.tsx. */
+.hive {
+  --hex-r: 34px;
+  --wave-step: .17s;
+  --sqrt3: 1.7320508;
+  position: absolute; inset: 0; overflow: hidden;
+  mask-image: linear-gradient(to right, transparent, black 38%, black);
+}
+.hive-lattice {
+  position: absolute; inset: 0; opacity: .07;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20102%2058.8897'%3E%3Cpath%20d='M34%200L17%2029.44L-17%2029.44L-34%200L-17%20-29.44L17%20-29.44ZM34%2058.89L17%2088.33L-17%2088.33L-34%2058.89L-17%2029.44L17%2029.44ZM85%2029.44L68%2058.89L34%2058.89L17%2029.44L34%200L68%200ZM85%20-29.44L68%200L34%200L17%20-29.44L34%20-58.89L68%20-58.89ZM85%2088.33L68%20117.78L34%20117.78L17%2088.33L34%2058.89L68%2058.89ZM136%200L119%2029.44L85%2029.44L68%200L85%20-29.44L119%20-29.44ZM136%2058.89L119%2088.33L85%2088.33L68%2058.89L85%2029.44L119%2029.44Z'%20fill='none'%20stroke='%23fff'%20stroke-width='1.6'/%3E%3C/svg%3E");
+  background-size: calc(var(--hex-r) * 3) calc(var(--hex-r) * var(--sqrt3));
+}
+/* Columns sit 1.5r apart; each cell is 2r wide and √3r tall, centred on its
+   lattice point, so the clip-path lands exactly inside one lattice cell. */
+.hive-cell {
+  position: absolute;
+  left: calc(var(--col) * 1.5 * var(--hex-r) - var(--hex-r));
+  top: calc(var(--row) * var(--sqrt3) * var(--hex-r) - var(--sqrt3) / 2 * var(--hex-r));
+  width: calc(var(--hex-r) * 2);
+  height: calc(var(--hex-r) * var(--sqrt3));
+  clip-path: polygon(100% 50%, 75% 100%, 25% 100%, 0 50%, 25% 0, 75% 0);
+  background: rgba(255,255,255,.24);
+  opacity: 0;
+  animation: hive-ignite 8s linear infinite;
+  animation-delay: calc(var(--col) * var(--wave-step));
+}
+/* Over navy a warm fill only stays warm if the source is low in blue: a lighter
+   orange keeps too much blue and lands on khaki. The brand orange (blue 32 against
+   the ink's 90) pulls the channel down hard, so it reads as orange while staying
+   clearly darker than the search button. */
+.hive-cell-warm { background: rgba(245,145,32,.72); }
+/* Fast attack, short decay, then dark until the next pass. Holding the lit window
+   near 1.2s keeps the front about five columns wide, so it reads as cells igniting
+   in sequence rather than a patch drifting past. */
+@keyframes hive-ignite {
+  0%, 100% { opacity: 0; }
+  4% { opacity: 1; }
+  15% { opacity: 0; }
 }
 .hero-inner { position: relative; z-index: 1; padding: 34px 0 30px; }
 .hero-copy h1 {
@@ -648,6 +683,9 @@ button, summary, select { cursor: pointer; }
   .saved-navigation { gap: 4px; }
   .saved-navigation b { font-size: 10px; }
   .hero-inner { padding: 28px 0 24px; }
+  /* Smaller cells for a short hero, and a slower step so the wave still takes a
+     few seconds to cross the far narrower visible area. */
+  .hive { --hex-r: 25px; --wave-step: .42s; }
   .hero-search { height: 60px; padding-left: 16px; }
   .hero-search input { padding: 0 10px; font-size: 16px; }
   .hero-search button { height: 46px; padding: 0 15px; font-size: 13px; }
@@ -756,4 +794,9 @@ button, summary, select { cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* The blanket reset leaves iteration-count alone, so looping animations would
+     still churn at .01ms. Stop the wave outright and hold the warm cells lit —
+     that leaves a static honeycomb composed like the logo. */
+  .hive-cell { animation: none !important; opacity: 0; }
+  .hive-cell-warm { opacity: 1; }
 }

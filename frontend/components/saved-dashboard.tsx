@@ -6,9 +6,10 @@ import QRCode from "qrcode";
 import { ChangeEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { notifyLocalDataChanged } from "@/components/bookmark-button";
-import { Check, Copy, Download, FileDown, FileUp, History, QrCode, Share2, Smartphone, Trash2, X } from "@/components/icons";
+import { Check, ClipboardPaste, Copy, Download, FileDown, FileUp, History, QrCode, Share2, Smartphone, Trash2, X } from "@/components/icons";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { showToast } from "@/components/toast";
+import { TransferLinkForm } from "@/components/transfer-link-form";
 import { loadOpportunities } from "@/lib/browser-api";
 import {
   BOOKMARKS_KEY,
@@ -146,6 +147,25 @@ function QrDialog({ url, onClose, onManualCopy }: { url: string; onClose: () => 
   );
 }
 
+function PasteLinkDialog({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+  }, []);
+  return (
+    <dialog ref={dialogRef} className="qr-dialog" aria-labelledby="paste-link-title" onClose={onClose} onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="qr-panel paste-link-panel">
+        <button type="button" className="panel-close" onClick={onClose} aria-label="閉じる"><X size={18} /></button>
+        <p className="eyebrow">保存データの引き継ぎ</p>
+        <h2 id="paste-link-title">受け取ったリンクを貼り付ける</h2>
+        <p>別の端末でコピーした引き継ぎリンクを貼り付けてください。</p>
+        <TransferLinkForm onSubmit={(href) => window.location.assign(href)} />
+      </div>
+    </dialog>
+  );
+}
+
 export function SavedDashboard() {
   const rawBookmarks = useSyncExternalStore(subscribe, bookmarksSnapshot, () => "[]");
   const rawRecents = useSyncExternalStore(subscribe, recentsSnapshot, () => "[]");
@@ -159,6 +179,7 @@ export function SavedDashboard() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [showQr, setShowQr] = useState(false);
+  const [showPasteLink, setShowPasteLink] = useState(false);
   const [manualCopyUrl, setManualCopyUrl] = useState("");
 
   const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
@@ -248,6 +269,7 @@ export function SavedDashboard() {
               <button type="button" disabled={!ids.length || !qrAvailable} onClick={() => setShowQr(true)}><QrCode size={18} /> QRコードで読み取る</button>
               <button type="button" disabled={!ids.length || !transferLinkAvailable} onClick={() => handleShare(importUrl, "reluaの保存データ")}><Copy size={18} /> 引き継ぎリンクを共有</button>
             </div>
+            <div className="local-tool-receive"><span>リンクを受け取った場合</span><button type="button" onClick={() => setShowPasteLink(true)}><ClipboardPaste size={18} /> 引き継ぎリンクを貼り付ける</button></div>
             {!!ids.length && !transferLinkAvailable && <p className="tool-limit-note">保存件数が多いため、リンクとQRコードは利用できません。下の「バックアップと復元」からJSONファイルで引き継いでください。</p>}
             {!!ids.length && transferLinkAvailable && !qrAvailable && <p className="tool-limit-note">QRコードには収まらないため、引き継ぎリンクをご利用ください。</p>}
           </article>
@@ -301,6 +323,7 @@ export function SavedDashboard() {
         </section>
       </div>
       {showQr && <QrDialog url={importUrl} onClose={() => setShowQr(false)} onManualCopy={() => setManualCopyUrl(importUrl)} />}
+      {showPasteLink && <PasteLinkDialog onClose={() => setShowPasteLink(false)} />}
       {manualCopyUrl && <LinkDialog url={manualCopyUrl} onClose={() => setManualCopyUrl("")} />}
     </main>
   );

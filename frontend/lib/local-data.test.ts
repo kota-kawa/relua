@@ -15,6 +15,7 @@ import {
   removeBookmarks,
   toggleBookmark,
   urlFitsTransferLimit,
+  validateTransferLink,
 } from "./local-data";
 import type { Opportunity } from "./types";
 
@@ -63,6 +64,15 @@ describe("local bookmark data", () => {
     expect(urlFitsTransferLimit("あ", 1)).toBe(false);
     const uuidIds = Array.from({ length: 55 }, (_, index) => `${String(index).padStart(8, "0")}-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`);
     expect(urlFitsTransferLimit(buildFragmentUrl("https://example.com", "/import", "b", uuidIds))).toBe(false);
+  });
+
+  it("accepts only same-origin import links with bookmark data", () => {
+    const valid = validateTransferLink(" https://example.com/import#b=1,2,2 ", "https://example.com");
+    expect(valid).toEqual({ ok: true, href: "/import#b=1,2", ids: ["1", "2"] });
+    expect(validateTransferLink("https://evil.example/import#b=1", "https://example.com")).toEqual({ ok: false, error: "wrong-origin" });
+    expect(validateTransferLink("https://example.com/list#b=1", "https://example.com")).toEqual({ ok: false, error: "wrong-path" });
+    expect(validateTransferLink("https://example.com/import", "https://example.com")).toEqual({ ok: false, error: "no-data" });
+    expect(validateTransferLink("not a URL", "https://example.com")).toEqual({ ok: false, error: "invalid" });
   });
 
   it("exports and validates JSON and CSV backups", () => {

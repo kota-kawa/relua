@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { notifyLocalDataChanged } from "@/components/bookmark-button";
 import { Check, Smartphone } from "@/components/icons";
+import { TransferLinkForm } from "@/components/transfer-link-form";
 import { loadOpportunities } from "@/lib/browser-api";
 import { mergeBookmarks, newBookmarkIds, parseFragmentIds, readBookmarks } from "@/lib/local-data";
 import type { Opportunity } from "@/lib/types";
@@ -77,7 +78,12 @@ export function ImportBookmarks() {
         ) : status === "storage-error" ? (
           <><h1>この端末に保存できませんでした</h1><p>ブラウザのサイトデータ保存が無効になっていないか、空き容量があるかを確認してください。</p><div className="confirm-actions"><button type="button" onClick={() => setStatus("ready")}>もう一度試す</button><Link href="/saved">戻る</Link></div></>
         ) : !requested.length ? (
-          <><h1>保存データが見つかりません</h1><p>リンクが途中で切れていないか確認してください。</p><Link className="primary-link" href="/saved">保存した募集へ戻る</Link></>
+          <>
+            <h1>引き継ぎリンクを貼り付ける</h1>
+            <p>別の端末でコピーしたリンクを貼り付けると、追加内容を確認できます。</p>
+            <TransferLinkForm onSubmit={(href) => window.location.assign(href)} />
+            <Link className="import-back-link" href="/saved">保存した募集へ戻る</Link>
+          </>
         ) : !items.length && failed > 0 ? (
           <><h1>保存データを確認できませんでした</h1><p>通信状態を確認して、もう一度お試しください。</p><div className="confirm-actions">{retryButton}<Link href="/saved">キャンセル</Link></div></>
         ) : (

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -99,8 +99,6 @@ def search_opportunities(
         )
     mappings = [
         (status, Opportunity.status_id, RecruitmentStatus),
-        (industry, Opportunity.industry_id, Industry),
-        (sector, Opportunity.sector_id, Sector),
         (event_type, Opportunity.event_type_id, EventType),
         (event_format, Opportunity.event_format_id, EventFormat),
     ]
@@ -108,6 +106,31 @@ def search_opportunities(
         if values:
             ids = select(model.id).where(or_(model.slug.in_(values), model.name.in_(values)))
             filters.append(column.in_(ids))
+    if industry and sector:
+        industry_ids = select(Industry.id).where(or_(Industry.slug.in_(industry), Industry.name.in_(industry)))
+        chosen_sectors = select(Sector.id).where(
+            or_(Sector.slug.in_(sector), Sector.name.in_(sector)),
+            Sector.industry_id.in_(industry_ids),
+        )
+        refined_industries = select(Sector.industry_id).where(
+            or_(Sector.slug.in_(sector), Sector.name.in_(sector)),
+            Sector.industry_id.in_(industry_ids),
+        )
+        filters.append(
+            or_(
+                Opportunity.sector_id.in_(chosen_sectors),
+                and_(
+                    Opportunity.industry_id.in_(industry_ids),
+                    Opportunity.industry_id.not_in(refined_industries),
+                ),
+            )
+        )
+    elif industry:
+        industry_ids = select(Industry.id).where(or_(Industry.slug.in_(industry), Industry.name.in_(industry)))
+        filters.append(Opportunity.industry_id.in_(industry_ids))
+    elif sector:
+        sector_ids = select(Sector.id).where(or_(Sector.slug.in_(sector), Sector.name.in_(sector)))
+        filters.append(Opportunity.sector_id.in_(sector_ids))
     if job_category:
         filters.append(Opportunity.job_categories.any(or_(JobCategory.slug.in_(job_category), JobCategory.name.in_(job_category))))
     if graduation_year:

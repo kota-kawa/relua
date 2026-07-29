@@ -61,6 +61,64 @@ function CheckboxGroup({
   );
 }
 
+function IndustryGroup({ masters, current }: { masters: Masters; current: SearchParams }) {
+  const selectedIndustries = new Set(valuesOf(current, "industry"));
+  const selectedSectors = new Set(valuesOf(current, "sector"));
+  const selectedIndustryIds = new Set(
+    masters.industries.filter((item) => selectedIndustries.has(item.slug)).map((item) => item.id),
+  );
+  const chosen = selectedIndustries.size + selectedSectors.size;
+
+  return (
+    <details className="filter-group filter-group-collapsible" open>
+      <summary>
+        業界
+        {chosen > 0 ? <b>{chosen}</b> : <small>{masters.industries.length}</small>}
+      </summary>
+      <div className="filter-options industry-tree">
+        {masters.industries.map((industry) => {
+          const selected = selectedIndustries.has(industry.slug);
+          const sectors = actionableFilterItems(
+            masters.sectors.filter((sector) => sector.industry_id === industry.id),
+            valuesOf(current, "sector"),
+          );
+          return (
+            <div className="industry-branch" key={industry.id}>
+              <label className="check-row industry-parent">
+                <input type="checkbox" name="industry" value={industry.slug} defaultChecked={selected} />
+                <span className="custom-check" aria-hidden="true" />
+                <span>{industry.name}</span>
+              </label>
+              {selected && sectors.length > 0 && (
+                <div className="industry-children" role="group" aria-label={`${industry.name}の詳細`}>
+                  <small>さらに絞り込む</small>
+                  {sectors.map((sector) => (
+                    <label className="check-row" key={sector.id}>
+                      <input
+                        type="checkbox"
+                        name="sector"
+                        value={sector.slug}
+                        defaultChecked={selectedSectors.has(sector.slug)}
+                      />
+                      <span className="custom-check" aria-hidden="true" />
+                      <span>{sector.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {/* Shared URLs may contain a sector without its parent industry. Preserve
+          those legacy values until the user removes their applied-filter chip. */}
+      {masters.sectors
+        .filter((sector) => selectedSectors.has(sector.slug) && !selectedIndustryIds.has(sector.industry_id))
+        .map((sector) => <input key={sector.slug} type="hidden" name="sector" value={sector.slug} />)}
+    </details>
+  );
+}
+
 function Fields({ masters, params }: { masters: Masters; params: SearchParams }) {
   return (
     <>
@@ -71,7 +129,7 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
       {/* Keep advanced URL filters intact when a visible filter is changed. They
           remain removable from the applied-filter chips, but do not crowd the
           primary discovery controls. */}
-      {(["status", "sector", "job_category", "degree", "event_format"] as const).flatMap((name) => (
+      {(["status", "job_category", "degree", "event_format"] as const).flatMap((name) => (
         valuesOf(params, name).map((value) => <input key={`${name}-${value}`} type="hidden" name={name} value={value} />)
       ))}
       <CheckboxGroup
@@ -86,7 +144,7 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
         items={actionableFilterItems(masters.event_types, valuesOf(params, "event_type"))}
         current={params}
       />
-      <CheckboxGroup title="業界" name="industry" items={masters.industries} current={params} collapsed />
+      <IndustryGroup masters={masters} current={params} />
     </>
   );
 }
@@ -106,10 +164,17 @@ export function FilterPanel({ masters, params, total }: { masters: Masters; para
     else if (!sheetOpen && sheet.open) sheet.close();
   }, [sheetOpen]);
 
-  function applyFilters(form: HTMLFormElement) {
+  function applyFilters(form: HTMLFormElement, changedInput?: HTMLInputElement) {
     let entries = Array.from(new FormData(form).entries()).flatMap(([key, value]) => (
       typeof value === "string" ? [[key, value] as [string, string]] : []
     ));
+    if (changedInput?.name === "industry" && !changedInput.checked) {
+      const industry = masters.industries.find((item) => item.slug === changedInput.value);
+      const childSlugs = new Set(
+        masters.sectors.filter((sector) => sector.industry_id === industry?.id).map((sector) => sector.slug),
+      );
+      entries = entries.filter(([key, value]) => key !== "sector" || !childSlugs.has(value));
+    }
     const hasStatus = entries.some(([key]) => key === "status");
     entries = entries.filter(([key]) => key !== "status_scope");
     if (!hasStatus) entries.push(["status_scope", ALL_STATUS_SCOPE]);
@@ -118,7 +183,7 @@ export function FilterPanel({ masters, params, total }: { masters: Masters; para
 
   function handleChange(event: FormEvent<HTMLFormElement>) {
     const target = event.target;
-    if (target instanceof HTMLInputElement && target.type === "checkbox") applyFilters(event.currentTarget);
+    if (target instanceof HTMLInputElement && target.type === "checkbox") applyFilters(event.currentTarget, target);
   }
 
   /* Checkboxes are uncontrolled; remounting the form when the URL's filters

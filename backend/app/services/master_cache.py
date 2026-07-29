@@ -8,7 +8,7 @@ from app.services.masters import get_masters
 from app.services.rate_limit import redis_client
 from app.services.serialization import master_dict
 
-MASTER_CACHE_KEY = "masters:public:v1"
+MASTER_CACHE_KEY = "masters:public:v2"
 
 
 def master_payload(db: Session) -> dict[str, list[dict[str, Any]]]:

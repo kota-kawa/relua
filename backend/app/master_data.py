@@ -3,7 +3,7 @@ from sqlalchemy import Connection, insert
 from app.models import Degree, EventFormat, EventType, GraduationYear, Industry, JobCategory, RecruitmentStatus, Sector
 
 INDUSTRY_SECTORS = {
-    "IT・通信": ["ソフトウェア", "Webサービス", "SIer・ITコンサル", "通信キャリア", "ハードウェア"],
+    "IT・通信": ["ソフトウェア", "Webサービス", "SIer・ITコンサル", "通信キャリア", "ハードウェア", "AI"],
     "メーカー": ["電機・精密", "自動車・輸送機器", "機械", "化学", "素材", "食品", "日用品"],
     "商社": ["総合商社", "専門商社"],
     "金融": ["銀行", "証券", "保険", "資産運用", "クレジット・決済"],
@@ -41,17 +41,23 @@ def seed_masters(bind: Connection) -> None:
     sector_id = 1
     for industry_id, values in enumerate(INDUSTRY_SECTORS.values(), 1):
         for value in [*values, "その他"]:
+            # AI was added after the initial release. Keep every existing ID
+            # and slug stable so fresh databases match upgraded databases.
+            is_ai = industry_id == 1 and value == "AI"
+            stable_id = 71 if is_ai else sector_id
+            sort_order = 6 if is_ai else 7 if industry_id == 1 and value == "その他" else stable_id
             sectors.append(
                 {
-                    "id": sector_id,
-                    "slug": slug(f"sector-{industry_id}", sector_id),
+                    "id": stable_id,
+                    "slug": slug(f"sector-{industry_id}", stable_id),
                     "name": value,
-                    "sort_order": sector_id,
+                    "sort_order": sort_order,
                     "is_active": True,
                     "industry_id": industry_id,
                 }
             )
-            sector_id += 1
+            if not is_ai:
+                sector_id += 1
     bind.execute(insert(Sector), sectors)
 
     groups = [

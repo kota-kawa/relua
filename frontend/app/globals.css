@@ -253,8 +253,21 @@ button, summary, select { cursor: pointer; }
 }
 .results-toolbar h2 span { color: var(--muted); font-family: inherit; font-size: 13px; font-weight: 400; }
 .results-toolbar h2 strong { color: var(--ink); font-family: Georgia, serif; font-size: 17px; }
-.sort-form { display: flex; flex: none; align-items: center; height: 40px; padding-left: 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--white); color: var(--muted); }
-.sort-form select { height: 100%; padding: 0 10px 0 7px; border: 0; outline: 0; color: #424a56; background: transparent; font-size: 13px; }
+.sort-form {
+  display: flex; flex: none; align-items: center; min-height: 42px; padding: 3px 5px 3px 10px;
+  border: 1px solid #d8d7cf; border-radius: 8px; color: var(--muted); background: linear-gradient(135deg, #fffefb, #f5f2ea);
+  box-shadow: 0 2px 0 rgba(25,38,56,.025); transition: border-color .2s, box-shadow .2s, background .2s;
+}
+.sort-form:focus-within { border-color: #d58b2e; background: var(--white); box-shadow: 0 0 0 3px rgba(239,153,49,.16); }
+.sort-form-icon { display: inline-flex; flex: none; margin-right: 7px; color: var(--orange); }
+.sort-form-label { flex: none; padding-right: 9px; border-right: 1px solid #dfddd5; color: #747b83; font-size: 11px; font-weight: 800; letter-spacing: .05em; }
+.sort-select-wrap { position: relative; display: flex; align-items: center; }
+.sort-form select {
+  appearance: none; min-width: 126px; height: 34px; padding: 0 29px 0 10px; border: 0; outline: 0;
+  color: #263747; background: transparent; font-size: 12px; font-weight: 800; letter-spacing: .01em;
+}
+.sort-select-chevron { position: absolute; right: 9px; color: #a76d27; pointer-events: none; transition: transform .2s; }
+.sort-form:focus-within .sort-select-chevron { transform: translateY(1px); color: var(--orange); }
 .sort-form button { height: 100%; padding: 0 10px; border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 12px; font-weight: 700; }
 
 /* Compact table */
@@ -734,8 +747,9 @@ button, summary, select { cursor: pointer; }
   .results-toolbar { flex-wrap: wrap; align-items: center; gap: 10px 12px; }
   .results-toolbar h2 { flex: 1 1 auto; min-width: 0; font-size: 17px; gap: 9px; }
   .results-toolbar h2 span { display: none; }
-  .sort-form { flex: none; }
-  .sort-form svg { display: none; }
+  .sort-form { flex: none; min-height: 40px; padding-left: 7px; }
+  .sort-form-icon, .sort-form-label { display: none; }
+  .sort-form select { min-width: 118px; height: 32px; padding-left: 7px; font-size: 11px; }
   .card-grid { grid-template-columns: 1fr; }
   /* The badges and the deadline wrap onto separate rows rather than being
      squeezed into one line that breaks each label mid-word. */

@@ -252,6 +252,11 @@ export function SavedDashboard() {
     if (result === "failed") setManualCopyUrl(url);
   }
 
+  async function handleCopyTransferLink() {
+    if (await copyText(importUrl)) showToast("引き継ぎリンクをコピーしました");
+    else setManualCopyUrl(importUrl);
+  }
+
   return (
     <main className="local-page">
       <div className="shell">
@@ -267,7 +272,8 @@ export function SavedDashboard() {
             <div className="local-tool-card-heading"><Smartphone size={21} /><div><h2>保存データを引き継ぐ</h2><p>別の端末のブックマークへ、現在の保存内容を追加します。</p></div></div>
             <div className="local-tool-actions">
               <button type="button" disabled={!ids.length || !qrAvailable} onClick={() => setShowQr(true)}><QrCode size={18} /> QRコードで読み取る</button>
-              <button type="button" disabled={!ids.length || !transferLinkAvailable} onClick={() => handleShare(importUrl, "reluaの保存データ")}><Copy size={18} /> 引き継ぎリンクを共有</button>
+              <button type="button" disabled={!ids.length || !transferLinkAvailable} onClick={() => handleShare(importUrl, "reluaの保存データ")}><Share2 size={18} /> 引き継ぎリンクを共有</button>
+              <button type="button" disabled={!ids.length || !transferLinkAvailable} onClick={handleCopyTransferLink}><Copy size={18} /> 引き継ぎリンクをコピー</button>
             </div>
             <div className="local-tool-receive"><span>リンクを受け取った場合</span><button type="button" onClick={() => setShowPasteLink(true)}><ClipboardPaste size={18} /> 引き継ぎリンクを貼り付ける</button></div>
             {!!ids.length && !transferLinkAvailable && <p className="tool-limit-note">保存件数が多いため、リンクとQRコードは利用できません。下の「バックアップと復元」からJSONファイルで引き継いでください。</p>}

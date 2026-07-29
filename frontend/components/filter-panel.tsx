@@ -12,9 +12,6 @@ import {
   ALL_STATUS_SCOPE,
   currentGraduationYears,
   filterHref,
-  labelledSectors,
-  OPEN_STATUS_SLUG,
-  searchableStatuses,
   valuesOf,
   withoutAllFilters,
 } from "@/lib/format";
@@ -64,59 +61,19 @@ function CheckboxGroup({
   );
 }
 
-function StatusGroup({ items, current }: { items: MasterItem[]; current: SearchParams }) {
-  const selectedValues = new Set(valuesOf(current, "status"));
-  const showsAllStatuses = valuesOf(current, "status_scope").includes(ALL_STATUS_SCOPE);
-  const open = items.find((item) => item.slug === OPEN_STATUS_SLUG);
-  const secondary = items.filter((item) => item.slug !== OPEN_STATUS_SLUG);
-  const selectedSecondary = secondary.some((item) => selectedValues.has(item.slug));
-
-  return (
-    <fieldset className="filter-group">
-      <legend>募集状況</legend>
-      {open && (
-        <label className="check-row">
-          <input type="checkbox" name="status" value={open.slug} defaultChecked={selectedValues.has(open.slug)} />
-          <span className="custom-check" aria-hidden="true" />
-          <span>{open.name}</span>
-        </label>
-      )}
-      <p className="filter-hint">
-        {showsAllStatuses
-          ? "すべての募集状況を表示しています。"
-          : "募集中のみを初期表示しています。外すと、すべての募集状況を表示します。"}
-      </p>
-      {secondary.length > 0 && (
-        <details className="filter-more" open={selectedSecondary}>
-          <summary>その他の募集状況</summary>
-          <div className="filter-options">
-            {secondary.map((item) => (
-              <label key={item.id} className="check-row">
-                <input type="checkbox" name="status" value={item.slug} defaultChecked={selectedValues.has(item.slug)} />
-                <span className="custom-check" aria-hidden="true" />
-                <span>{item.name}</span>
-              </label>
-            ))}
-          </div>
-        </details>
-      )}
-    </fieldset>
-  );
-}
-
 function Fields({ masters, params }: { masters: Masters; params: SearchParams }) {
-  const selectedSectors = valuesOf(params, "sector");
-  const sectors = actionableFilterItems(labelledSectors(masters), selectedSectors);
   return (
     <>
       {valuesOf(params, "q").map((value) => <input key={`q-${value}`} type="hidden" name="q" value={value} />)}
       {valuesOf(params, "view").map((value) => <input key={`view-${value}`} type="hidden" name="view" value={value} />)}
       {valuesOf(params, "sort").map((value) => <input key={`sort-${value}`} type="hidden" name="sort" value={value} />)}
       {valuesOf(params, "status_scope").map((value) => <input key={`status-scope-${value}`} type="hidden" name="status_scope" value={value} />)}
-      <StatusGroup
-        items={searchableStatuses(masters.recruitment_statuses, valuesOf(params, "status"))}
-        current={params}
-      />
+      {/* Keep advanced URL filters intact when a visible filter is changed. They
+          remain removable from the applied-filter chips, but do not crowd the
+          primary discovery controls. */}
+      {(["status", "sector", "job_category", "degree", "event_format"] as const).flatMap((name) => (
+        valuesOf(params, name).map((value) => <input key={`${name}-${value}`} type="hidden" name={name} value={value} />)
+      ))}
       <CheckboxGroup
         title="卒業年度"
         name="graduation_year"
@@ -130,22 +87,6 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
         current={params}
       />
       <CheckboxGroup title="業界" name="industry" items={masters.industries} current={params} collapsed />
-      <CheckboxGroup title="業種" name="sector" items={sectors} current={params} collapsed />
-      <CheckboxGroup
-        title="職種"
-        name="job_category"
-        items={actionableFilterItems(masters.job_categories, valuesOf(params, "job_category"))}
-        current={params}
-        collapsed
-      />
-      <CheckboxGroup title="対象学位" name="degree" items={masters.degrees} current={params} collapsed />
-      <CheckboxGroup
-        title="開催形式"
-        name="event_format"
-        items={actionableFilterItems(masters.event_formats, valuesOf(params, "event_format"))}
-        current={params}
-        collapsed
-      />
     </>
   );
 }

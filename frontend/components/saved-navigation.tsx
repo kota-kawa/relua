@@ -16,7 +16,7 @@ function subscribe(callback: () => void) {
 }
 
 function snapshot() {
-  return window.localStorage.getItem(BOOKMARKS_KEY) ?? "[]";
+  try { return window.localStorage.getItem(BOOKMARKS_KEY) ?? "[]"; } catch { return "[]"; }
 }
 
 export function SavedNavigation() {

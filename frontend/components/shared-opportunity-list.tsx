@@ -7,7 +7,7 @@ import { notifyLocalDataChanged } from "@/components/bookmark-button";
 import { Bookmark, Check, Share2 } from "@/components/icons";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { loadOpportunities } from "@/lib/browser-api";
-import { mergeBookmarks, parseFragmentIds } from "@/lib/local-data";
+import { mergeBookmarks, newBookmarkIds, parseFragmentIds, readBookmarks } from "@/lib/local-data";
 import type { Opportunity } from "@/lib/types";
 
 export function SharedOpportunityList() {
@@ -32,7 +32,16 @@ export function SharedOpportunityList() {
         </header>
         {items.length > 0 && (
           <div className="shared-list-action">
-            <button type="button" onClick={() => { mergeBookmarks(window.localStorage, items.map((item) => item.id)); notifyLocalDataChanged(); setNotice(`${items.length}件をブックマークへ追加しました。`); }}><Bookmark size={17} /> すべて保存</button>
+            <button type="button" onClick={() => {
+              try {
+                const newIds = newBookmarkIds(items.map((item) => item.id), readBookmarks(window.localStorage));
+                mergeBookmarks(window.localStorage, newIds);
+                notifyLocalDataChanged();
+                setNotice(newIds.length ? `${newIds.length}件をブックマークへ追加しました。` : "すべて保存済みです。");
+              } catch {
+                setNotice("このブラウザに保存できませんでした。保存設定を確認してください。");
+              }
+            }}><Bookmark size={17} /> すべて保存</button>
           </div>
         )}
         {notice && <p className="local-notice"><Check size={16} /> {notice}</p>}

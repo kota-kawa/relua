@@ -4,6 +4,9 @@ export const BOOKMARKS_KEY = "relua.bookmarks.v1";
 export const RECENTS_KEY = "relua.recents.v1";
 export const LOCAL_DATA_EVENT = "relua:local-data-changed";
 export const MAX_RECENTS = 30;
+/** Keep generated links inside the range reliably handled by share sheets and scanners. */
+export const MAX_TRANSFER_URL_LENGTH = 2_000;
+export const MAX_QR_URL_LENGTH = 1_800;
 
 export type RecentEntry = { id: string; viewedAt: string };
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -29,8 +32,16 @@ function parseJson(value: string | null): unknown {
   }
 }
 
+function getStoredValue(storage: StorageLike, key: string): string | null {
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 export function readBookmarks(storage: StorageLike): string[] {
-  return normalizeIds(parseJson(storage.getItem(BOOKMARKS_KEY)));
+  return normalizeIds(parseJson(getStoredValue(storage, BOOKMARKS_KEY)));
 }
 
 export function writeBookmarks(storage: StorageLike, ids: string[]): string[] {
@@ -41,6 +52,11 @@ export function writeBookmarks(storage: StorageLike, ids: string[]): string[] {
 
 export function mergeBookmarks(storage: StorageLike, ids: string[]): string[] {
   return writeBookmarks(storage, [...readBookmarks(storage), ...ids]);
+}
+
+export function newBookmarkIds(importedIds: string[], existingIds: string[]): string[] {
+  const existing = new Set(normalizeIds(existingIds));
+  return normalizeIds(importedIds).filter((id) => !existing.has(id));
 }
 
 export function toggleBookmark(storage: StorageLike, id: string): { ids: string[]; saved: boolean } {
@@ -56,7 +72,7 @@ export function removeBookmarks(storage: StorageLike, ids: string[]): string[] {
 }
 
 export function readRecents(storage: StorageLike): RecentEntry[] {
-  const value = parseJson(storage.getItem(RECENTS_KEY));
+  const value = parseJson(getStoredValue(storage, RECENTS_KEY));
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.flatMap((entry): RecentEntry[] => {
@@ -93,6 +109,10 @@ export function buildFragmentUrl(origin: string, path: "/import" | "/list", key:
   const value = normalizeIds(ids).map(encodeURIComponent).join(",");
   url.hash = `${key}=${value}`;
   return url.toString();
+}
+
+export function urlFitsTransferLimit(url: string, limit = MAX_TRANSFER_URL_LENGTH): boolean {
+  return new TextEncoder().encode(url).length <= limit;
 }
 
 export function bookmarkJson(ids: string[], exportedAt = new Date().toISOString()): string {

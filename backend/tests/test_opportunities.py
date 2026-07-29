@@ -58,6 +58,46 @@ def test_sector_must_belong_to_industry(db):
         raise AssertionError("DomainValidationError was not raised")
 
 
+def test_ai_sector_can_be_used_under_it_industry(db):
+    payload = valid_payload() | {"sector": "AI", "event_name": "AI開発インターン"}
+    data = OpportunityInput.model_validate(payload)
+    item, replayed = write_opportunity(db, data=data, request_id="ai-sector-0001", client_name="pytest")
+
+    assert replayed is False
+    assert item.industry.name == "IT・通信"
+    assert item.sector.name == "AI"
+    assert item.sector.slug == "sector-1-71"
+
+
+def test_child_sector_refines_only_its_selected_parent(db):
+    ai_payload = valid_payload() | {"sector": "AI", "event_name": "AI開発インターン"}
+    write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(ai_payload),
+        request_id="hierarchy-ai-0001",
+        client_name="pytest",
+    )
+    finance_payload = valid_payload() | {
+        "company_name": "株式会社金融テスト",
+        "industry": "金融",
+        "sector": "銀行",
+        "event_name": "金融インターン",
+    }
+    write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(finance_payload),
+        request_id="hierarchy-finance-0001",
+        client_name="pytest",
+    )
+
+    result = search_opportunities(
+        db,
+        industry=["industry-01", "industry-04"],
+        sector=["sector-1-71"],
+    )
+    assert {item.event_name for item in result.items} == {"AI開発インターン", "金融インターン"}
+
+
 def test_database_rejects_invalid_date_relationship(db):
     company = Company(name="株式会社DB制約テスト", normalized_name="db制約テスト")
     db.add(company)

@@ -67,14 +67,10 @@ function IndustryGroup({ masters, current }: { masters: Masters; current: Search
   const selectedIndustryIds = new Set(
     masters.industries.filter((item) => selectedIndustries.has(item.slug)).map((item) => item.id),
   );
-  const chosen = selectedIndustries.size + selectedSectors.size;
 
   return (
-    <details className="filter-group filter-group-collapsible" open>
-      <summary>
-        業界
-        {chosen > 0 ? <b>{chosen}</b> : <small>{masters.industries.length}</small>}
-      </summary>
+    <fieldset className="filter-group">
+      <legend>業界</legend>
       <div className="filter-options industry-tree">
         {masters.industries.map((industry) => {
           const selected = selectedIndustries.has(industry.slug);
@@ -115,7 +111,7 @@ function IndustryGroup({ masters, current }: { masters: Masters; current: Search
       {masters.sectors
         .filter((sector) => selectedSectors.has(sector.slug) && !selectedIndustryIds.has(sector.industry_id))
         .map((sector) => <input key={sector.slug} type="hidden" name="sector" value={sector.slug} />)}
-    </details>
+    </fieldset>
   );
 }
 

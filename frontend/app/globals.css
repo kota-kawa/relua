@@ -191,6 +191,12 @@ button, summary, select { cursor: pointer; }
 .industry-tree { gap: 11px; }
 .industry-branch { display: grid; gap: 0; }
 .industry-parent { font-weight: 700; }
+.industry-children-collapse {
+  display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows .3s cubic-bezier(.22,1,.36,1), opacity .2s ease;
+}
+.industry-children-collapse.is-open { grid-template-rows: 1fr; opacity: 1; }
+.industry-children-clip { min-height: 0; overflow: hidden; }
 .industry-children {
   display: grid; gap: 8px; margin: 9px 0 3px 8px; padding: 10px 0 10px 17px;
   border-left: 2px solid #e4cda9; background: linear-gradient(90deg, rgba(249,235,213,.45), transparent 75%);

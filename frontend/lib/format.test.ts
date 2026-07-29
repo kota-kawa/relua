@@ -26,6 +26,11 @@ describe("filterHref", () => {
   it("returns the listing anchor when every filter is removed", () => {
     expect(filterHref([["page", "2"]])).toBe("/#listings");
   });
+
+  it("can update an in-page filter without triggering anchor scrolling", () => {
+    expect(filterHref([["industry", "industry-01"]], false)).toBe("/?industry=industry-01");
+    expect(filterHref([], false)).toBe("/");
+  });
 });
 
 describe("deadlineCompactLabel", () => {

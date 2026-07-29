@@ -82,14 +82,15 @@ export function withQuery(
 }
 
 /** Builds a listing URL from the current filter form and always resets pagination. */
-export function filterHref(entries: Iterable<[string, string]>) {
+export function filterHref(entries: Iterable<[string, string]>, includeListingAnchor = true) {
   const next = new URLSearchParams();
   for (const [key, value] of entries) {
     if (key === "page" || !value) continue;
     next.append(key, value);
   }
   const query = next.toString();
-  return query ? `/?${query}#listings` : "/#listings";
+  const anchor = includeListingAnchor ? "#listings" : "";
+  return query ? `/?${query}${anchor}` : `/${anchor}`;
 }
 
 /** Every query key that narrows the result set, in the order chips are shown. */

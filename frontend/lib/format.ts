@@ -121,8 +121,18 @@ export function valuesOf(params: Record<string, string | string[] | undefined>, 
   return Array.isArray(value) ? value : value ? [value] : [];
 }
 
+/** The normal listing baseline is not a user-applied filter, so it should not
+ * add an active-filter chip or badge to the simplified interface. */
+export function hasDefaultOpenStatus(params: Record<string, string | string[] | undefined>) {
+  const statuses = valuesOf(params, "status");
+  return statuses.length === 1
+    && statuses[0] === OPEN_STATUS_SLUG
+    && !valuesOf(params, "status_scope").includes(ALL_STATUS_SCOPE);
+}
+
 export function activeFilterCount(params: Record<string, string | string[] | undefined>) {
-  return FILTER_KEYS.reduce((total, key) => total + valuesOf(params, key).length, 0);
+  const total = FILTER_KEYS.reduce((count, key) => count + valuesOf(params, key).length, 0);
+  return total - (hasDefaultOpenStatus(params) ? 1 : 0);
 }
 
 /** Same params plus one filter value — used by the quick filter chips. */

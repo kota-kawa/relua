@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { X } from "@/components/icons";
-import { FILTER_KEYS, labelledSectors, valuesOf, withoutAllFilters, withoutFilter } from "@/lib/format";
+import { FILTER_KEYS, hasDefaultOpenStatus, labelledSectors, valuesOf, withoutAllFilters, withoutFilter } from "@/lib/format";
 import type { MasterItem, Masters, SearchParams } from "@/lib/types";
 
 const GROUP_LABEL: Record<string, string> = {
@@ -32,7 +32,9 @@ const GROUP_SOURCE: Record<string, keyof Masters> = {
  * collapsed on mobile — so applied filters were effectively invisible there.
  */
 export function ActiveFilters({ masters, params, total }: { masters: Masters; params: SearchParams; total: number }) {
+  const defaultOpenStatus = hasDefaultOpenStatus(params);
   const chips = FILTER_KEYS.flatMap((key) => {
+    if (key === "status" && defaultOpenStatus) return [];
     /* Sectors share the panel's disambiguated labels, so a chip never reads
        just "業種 その他" with no clue which industry's それ it is. */
     const items = key === "sector" ? labelledSectors(masters) : (masters[GROUP_SOURCE[key]] as MasterItem[]);

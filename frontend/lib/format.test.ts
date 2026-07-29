@@ -6,6 +6,8 @@ import {
   filterHref,
   labelledSectors,
   actionableFilterItems,
+  activeFilterCount,
+  hasDefaultOpenStatus,
   searchableStatuses,
   withDefaultOpenStatus,
 } from "./format";
@@ -97,6 +99,19 @@ describe("withDefaultOpenStatus", () => {
     expect(withDefaultOpenStatus({})).toEqual({ status: "status-02" });
     expect(withDefaultOpenStatus({ status_scope: "all" })).toEqual({ status_scope: "all" });
     expect(withDefaultOpenStatus({ status: "status-01" })).toEqual({ status: "status-01" });
+  });
+});
+
+describe("default open status", () => {
+  it("does not count the normal 募集中 baseline as an applied filter", () => {
+    const params = withDefaultOpenStatus({});
+    expect(hasDefaultOpenStatus(params)).toBe(true);
+    expect(activeFilterCount(params)).toBe(0);
+  });
+
+  it("counts a status selected through a shared URL", () => {
+    expect(hasDefaultOpenStatus({ status: "status-01" })).toBe(false);
+    expect(activeFilterCount({ status: "status-01" })).toBe(1);
   });
 });
 

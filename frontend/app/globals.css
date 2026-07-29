@@ -541,6 +541,8 @@ button, summary, select { cursor: pointer; }
 .local-tool-card-heading h2 { margin: 0 0 5px; font-family: Georgia, "Yu Mincho", serif; font-size: 17px; font-weight: 650; }
 .local-tool-card-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .local-tool-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: auto; }
+.local-tool-receive { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.local-tool-receive span { color: var(--muted); font-size: 11px; }
 .local-tools button, .file-import, .shared-list-action button {
   display: inline-flex; align-items: center; gap: 7px; min-height: 42px; padding: 0 13px; border: 1px solid var(--line); border-radius: 5px;
   color: var(--ink); background: transparent; font-size: 12px; font-weight: 800;
@@ -587,9 +589,19 @@ button, summary, select { cursor: pointer; }
 .qr-placeholder { display: grid; place-items: center; width: 300px; max-width: 100%; aspect-ratio: 1; margin: auto; padding: 28px; color: var(--muted); background: white; font-size: 12px; line-height: 1.8; }
 .qr-copy-button, .dialog-copy-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; margin-top: 16px; padding: 0 15px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: var(--white); font-size: 12px; font-weight: 800; }
 .link-panel { text-align: left; }
-.link-panel .eyebrow, .link-panel h2, .link-panel > p { text-align: center; }
+.link-panel .eyebrow, .link-panel h2, .link-panel > p, .paste-link-panel .eyebrow, .paste-link-panel h2, .paste-link-panel > p { text-align: center; }
 .transfer-url-field { width: 100%; padding: 12px 13px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: white; font-size: 12px; line-height: 1.5; }
 .dialog-copy-button { display: flex; margin-inline: auto; }
+.transfer-paste-form { display: grid; gap: 10px; margin-top: 22px; text-align: left; }
+.transfer-paste-form label { color: var(--ink); font-size: 12px; font-weight: 800; }
+.transfer-paste-form textarea { width: 100%; min-height: 76px; resize: vertical; padding: 11px 12px; border: 1px solid var(--line); border-radius: 5px; outline: none; color: var(--ink); background: white; font: inherit; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.transfer-paste-form textarea:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(245,145,32,.13); }
+.transfer-paste-error { margin: 0 !important; color: #a0442d !important; font-size: 11px !important; line-height: 1.6 !important; }
+.transfer-paste-actions { display: flex; justify-content: flex-end; gap: 9px; }
+.transfer-paste-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; padding: 0 14px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: white; font-size: 12px; font-weight: 800; }
+.transfer-paste-actions .confirm-transfer-link { color: white; border-color: var(--ink); background: var(--ink); }
+.transfer-paste-actions button:disabled { cursor: not-allowed; opacity: .4; }
+.transfer-paste-form small { color: var(--muted); font-size: 10px; line-height: 1.6; text-align: right; }
 .shared-page .card-grid { max-width: 940px; }
 .shared-list-action { margin-bottom: 16px; }
 .shared-list-action button { color: white; border-color: var(--ink); background: var(--ink); }
@@ -621,6 +633,8 @@ button, summary, select { cursor: pointer; }
 .confirm-actions button, .confirm-actions .confirm-primary-link, .primary-link { color: white; background: var(--ink); }
 .confirm-actions button:disabled { cursor: not-allowed; opacity: .45; }
 .primary-link { margin-top: 25px; }
+.confirm-card > .transfer-paste-form { margin-top: 24px; }
+.import-back-link { display: inline-block; margin-top: 22px; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
 
 /* Footer & loading */
 .site-footer { padding: 48px 0; color: #b7bdc6; background: var(--ink-deep); }
@@ -842,6 +856,8 @@ button, summary, select { cursor: pointer; }
   .local-tools { grid-template-columns: 1fr; }
   .local-tool-card { padding: 17px; }
   .local-tool-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); }
+  .local-tool-receive { display: grid; }
+  .local-tool-receive button { width: 100%; }
   .local-tools button, .file-import { justify-content: center; min-height: 48px; text-align: center; }
   .local-tools-more { grid-column: auto; }
   .local-tools-more > summary { justify-content: center; min-height: 48px; }
@@ -852,6 +868,7 @@ button, summary, select { cursor: pointer; }
   .qr-panel { padding: 30px 20px 22px; }
   .confirm-card { padding: 36px 22px; }
   .confirm-actions { display: grid; }
+  .transfer-paste-actions { display: grid; }
   .import-summary { grid-template-columns: 1fr; }
   .loading-layout { display: block; }
   .loading-filter { display: none; }

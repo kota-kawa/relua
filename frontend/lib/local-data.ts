@@ -10,6 +10,10 @@ export const MAX_QR_URL_LENGTH = 1_800;
 
 export type RecentEntry = { id: string; viewedAt: string };
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+export type TransferLinkError = "empty" | "invalid" | "wrong-origin" | "wrong-path" | "too-long" | "no-data";
+export type TransferLinkValidation =
+  | { ok: true; href: string; ids: string[] }
+  | { ok: false; error: TransferLinkError };
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;
 
@@ -113,6 +117,30 @@ export function buildFragmentUrl(origin: string, path: "/import" | "/list", key:
 
 export function urlFitsTransferLimit(url: string, limit = MAX_TRANSFER_URL_LENGTH): boolean {
   return new TextEncoder().encode(url).length <= limit;
+}
+
+export function validateTransferLink(value: string, expectedOrigin: string): TransferLinkValidation {
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: false, error: "empty" };
+  if (!urlFitsTransferLimit(trimmed)) return { ok: false, error: "too-long" };
+
+  let expected: URL;
+  let candidate: URL;
+  try {
+    expected = new URL(expectedOrigin);
+    candidate = new URL(trimmed);
+  } catch {
+    return { ok: false, error: "invalid" };
+  }
+
+  if (candidate.origin !== expected.origin) return { ok: false, error: "wrong-origin" };
+  if (candidate.pathname.replace(/\/+$/, "") !== "/import") return { ok: false, error: "wrong-path" };
+
+  const ids = parseFragmentIds(candidate.hash, "b");
+  if (!ids.length) return { ok: false, error: "no-data" };
+
+  const canonical = new URL(buildFragmentUrl(expected.origin, "/import", "b", ids));
+  return { ok: true, href: `${canonical.pathname}${canonical.hash}`, ids };
 }
 
 export function bookmarkJson(ids: string[], exportedAt = new Date().toISOString()): string {

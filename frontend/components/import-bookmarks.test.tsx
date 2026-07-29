@@ -61,6 +61,16 @@ describe("ImportBookmarks", () => {
     expect(await screen.findByRole("heading", { name: "1件を追加できます" })).toBeTruthy();
   });
 
+  it("offers link paste when the import page is opened without data", async () => {
+    window.history.replaceState({}, "", "/import");
+    loadOpportunities.mockResolvedValue({ items: [], missingIds: [], failedIds: [] });
+    render(<ImportBookmarks />);
+
+    expect(await screen.findByRole("heading", { name: "引き継ぎリンクを貼り付ける" })).toBeTruthy();
+    expect(screen.getByLabelText("引き継ぎリンク")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "クリップボードから貼り付け" })).toBeTruthy();
+  });
+
   it("explains when browser storage rejects the import", async () => {
     window.history.replaceState({}, "", "/import#b=new");
     loadOpportunities.mockResolvedValue({ items: [opportunity("new", "保存不可社", "保存する募集")], missingIds: [], failedIds: [] });

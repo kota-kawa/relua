@@ -256,9 +256,6 @@ export function FilterPanel({ masters, params, total }: { masters: Masters; para
         <div className="filter-title">
           <span><Filter size={17} /> 絞り込み</span>
           {isPending && <small className="filter-updating" role="status">更新中…</small>}
-          {activeCount > 0 && (
-            <Link href={withoutAllFilters(params)}><X size={14} /> 解除</Link>
-          )}
         </div>
         <form data-filter-surface="desktop" action="/" method="get" onChange={handleChange} onSubmit={(event) => { event.preventDefault(); applyFilters(event.currentTarget); }}>
           <Fields masters={masters} params={params} />

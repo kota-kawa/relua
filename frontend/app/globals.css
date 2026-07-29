@@ -168,7 +168,6 @@ button, summary, select { cursor: pointer; }
 .filter-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-bottom: 17px; border-bottom: 2px solid var(--ink); }
 .filter-title > span { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800; }
 .filter-updating { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 700; }
-.filter-title a { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 13px; }
 .filter-group { margin: 0; padding: 17px 0; border: 0; border-bottom: 1px solid var(--line); }
 .filter-group legend { margin-bottom: 14px; font-size: 13px; font-weight: 800; letter-spacing: .04em; }
 .filter-group-collapsible > summary {

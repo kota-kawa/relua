@@ -16,7 +16,7 @@ function subscribe(callback: () => void) {
 }
 
 function snapshot() {
-  return window.localStorage.getItem(BOOKMARKS_KEY) ?? "[]";
+  try { return window.localStorage.getItem(BOOKMARKS_KEY) ?? "[]"; } catch { return "[]"; }
 }
 
 function idsFromSnapshot(value: string) {
@@ -45,12 +45,16 @@ export function BookmarkButton({ id, compact = false }: { id: string; compact?: 
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        toggleBookmark(window.localStorage, id);
-        notifyLocalDataChanged();
-        if (saved) showToast("保存を解除しました");
-        /* Linking back to /saved from /saved would be noise. */
-        else if (window.location.pathname.startsWith("/saved")) showToast("保存しました");
-        else showToast("保存しました", { label: "保存一覧を見る", href: "/saved" });
+        try {
+          toggleBookmark(window.localStorage, id);
+          notifyLocalDataChanged();
+          if (saved) showToast("保存を解除しました");
+          /* Linking back to /saved from /saved would be noise. */
+          else if (window.location.pathname.startsWith("/saved")) showToast("保存しました");
+          else showToast("保存しました", { label: "保存一覧を見る", href: "/saved" });
+        } catch {
+          showToast("このブラウザに保存できませんでした");
+        }
       }}
     >
       <Bookmark size={compact ? 17 : 18} fill={saved ? "currentColor" : "none"} />

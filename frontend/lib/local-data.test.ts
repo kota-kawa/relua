@@ -6,6 +6,7 @@ import {
   buildFragmentUrl,
   calendarDetails,
   mergeBookmarks,
+  newBookmarkIds,
   normalizeIds,
   parseBookmarkFile,
   parseFragmentIds,
@@ -13,6 +14,7 @@ import {
   recordRecent,
   removeBookmarks,
   toggleBookmark,
+  urlFitsTransferLimit,
 } from "./local-data";
 import type { Opportunity } from "./types";
 
@@ -39,6 +41,10 @@ describe("local bookmark data", () => {
     expect(readBookmarks(storage)).toEqual(["1"]);
   });
 
+  it("calculates only bookmarks that will actually be added", () => {
+    expect(newBookmarkIds(["1", "2", "2", "3"], ["1", "4"])).toEqual(["2", "3"]);
+  });
+
   it("keeps recent items unique and newest first", () => {
     const storage = memoryStorage();
     recordRecent(storage, "one", "2026-07-26T00:00:00Z");
@@ -50,6 +56,13 @@ describe("local bookmark data", () => {
     const url = buildFragmentUrl("https://example.com/current", "/import", "b", ["125", "391"]);
     expect(url).toBe("https://example.com/import#b=125,391");
     expect(parseFragmentIds(new URL(url).hash, "b")).toEqual(["125", "391"]);
+  });
+
+  it("measures transfer limits in encoded bytes", () => {
+    expect(urlFitsTransferLimit("a", 1)).toBe(true);
+    expect(urlFitsTransferLimit("あ", 1)).toBe(false);
+    const uuidIds = Array.from({ length: 55 }, (_, index) => `${String(index).padStart(8, "0")}-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`);
+    expect(urlFitsTransferLimit(buildFragmentUrl("https://example.com", "/import", "b", uuidIds))).toBe(false);
   });
 
   it("exports and validates JSON and CSV backups", () => {

@@ -1,49 +1,113 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { notifyLocalDataChanged } from "@/components/bookmark-button";
 import { Check, Smartphone } from "@/components/icons";
 import { loadOpportunities } from "@/lib/browser-api";
-import { mergeBookmarks, parseFragmentIds } from "@/lib/local-data";
+import { mergeBookmarks, newBookmarkIds, parseFragmentIds, readBookmarks } from "@/lib/local-data";
 import type { Opportunity } from "@/lib/types";
+
+type ImportStatus = "loading" | "ready" | "imported" | "storage-error";
 
 export function ImportBookmarks() {
   const [requested, setRequested] = useState<string[]>([]);
   const [items, setItems] = useState<Opportunity[]>([]);
+  const [existingIds, setExistingIds] = useState<string[]>([]);
   const [missing, setMissing] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [imported, setImported] = useState(false);
+  const [failed, setFailed] = useState(0);
+  const [status, setStatus] = useState<ImportStatus>("loading");
+  const [attempt, setAttempt] = useState(0);
+  const [importedCount, setImportedCount] = useState(0);
 
   useEffect(() => {
+    let active = true;
     const ids = parseFragmentIds(window.location.hash, "b");
     loadOpportunities(ids).then((result) => {
+      if (!active) return;
       setRequested(ids);
+      setExistingIds(readBookmarks(window.localStorage));
       setItems(result.items);
       setMissing(result.missingIds.length);
-      setLoading(false);
+      setFailed(result.failedIds.length);
+      setStatus("ready");
     });
-  }, []);
+    return () => { active = false; };
+  }, [attempt]);
+
+  const newIds = useMemo(
+    () => newBookmarkIds(items.map((item) => item.id), existingIds),
+    [items, existingIds],
+  );
+  const newIdSet = useMemo(() => new Set(newIds), [newIds]);
+  const newItems = useMemo(() => items.filter((item) => newIdSet.has(item.id)), [items, newIdSet]);
+  const duplicateCount = items.length - newItems.length;
+
+  function importBookmarks() {
+    try {
+      mergeBookmarks(window.localStorage, newIds);
+      notifyLocalDataChanged();
+      setImportedCount(newIds.length);
+      setStatus("imported");
+    } catch {
+      setStatus("storage-error");
+    }
+  }
+
+  function retryImport() {
+    setStatus("loading");
+    setAttempt((value) => value + 1);
+  }
+
+  const retryButton = failed > 0 && (
+    <button type="button" className="text-button" onClick={retryImport}>再読み込み</button>
+  );
 
   return (
     <main className="confirm-page">
-      <section className="confirm-card">
+      <section className="confirm-card" aria-live="polite">
         <div className="confirm-icon"><Smartphone size={28} /></div>
-        <p className="eyebrow">DEVICE TRANSFER</p>
-        {loading ? <><h1>保存データを確認しています</h1><p>有効な募集情報だけを取り込み対象にします。</p></> : imported ? (
-          <><h1>{items.length}件を追加しました</h1><p>この端末の既存ブックマークと統合しました。</p><Link className="primary-link" href="/saved"><Check size={17} /> 保存した募集を見る</Link></>
-        ) : requested.length ? (
+        <p className="eyebrow">保存データの引き継ぎ</p>
+
+        {status === "loading" ? (
+          <><h1>保存データを確認しています</h1><p>有効な募集情報と、この端末の保存状況を確認します。</p></>
+        ) : status === "imported" ? (
+          <><h1>{importedCount}件を追加しました</h1><p>この端末の既存ブックマークはそのまま残っています。</p><Link className="primary-link" href="/saved"><Check size={17} /> 保存した募集を見る</Link></>
+        ) : status === "storage-error" ? (
+          <><h1>この端末に保存できませんでした</h1><p>ブラウザのサイトデータ保存が無効になっていないか、空き容量があるかを確認してください。</p><div className="confirm-actions"><button type="button" onClick={() => setStatus("ready")}>もう一度試す</button><Link href="/saved">戻る</Link></div></>
+        ) : !requested.length ? (
+          <><h1>保存データが見つかりません</h1><p>リンクが途中で切れていないか確認してください。</p><Link className="primary-link" href="/saved">保存した募集へ戻る</Link></>
+        ) : !items.length && failed > 0 ? (
+          <><h1>保存データを確認できませんでした</h1><p>通信状態を確認して、もう一度お試しください。</p><div className="confirm-actions">{retryButton}<Link href="/saved">キャンセル</Link></div></>
+        ) : (
           <>
-            <h1>{items.length}件の保存データがあります。</h1>
-            <p>この端末のブックマークへ追加しますか？既存の保存内容は削除されません。</p>
-            {missing > 0 && <small>存在しない{missing}件は除外されます。</small>}
+            <h1>{newItems.length ? `${newItems.length}件を追加できます` : "新しく追加する募集はありません"}</h1>
+            <p>{newItems.length ? "内容を確認して、この端末のブックマークへ追加してください。" : "共有された募集は、すでに保存済みか公開が終了しています。"}</p>
+
+            <dl className="import-summary">
+              <div><dt>新しく追加</dt><dd>{newItems.length}件</dd></div>
+              <div><dt>保存済み</dt><dd>{duplicateCount}件</dd></div>
+              <div><dt>終了・削除済み</dt><dd>{missing}件</dd></div>
+            </dl>
+
+            {newItems.length > 0 && (
+              <div className="import-preview">
+                <h2>追加する募集</h2>
+                <ul>
+                  {newItems.slice(0, 5).map((item) => <li key={item.id}><span>{item.company.name}</span><strong>{item.event_name}</strong></li>)}
+                </ul>
+                {newItems.length > 5 && <small>ほか{newItems.length - 5}件</small>}
+              </div>
+            )}
+
+            {failed > 0 && <p className="import-warning">{failed}件を確認できませんでした。{retryButton}</p>}
             <div className="confirm-actions">
-              <button type="button" disabled={!items.length} onClick={() => { mergeBookmarks(window.localStorage, items.map((item) => item.id)); notifyLocalDataChanged(); setImported(true); }}>追加する</button>
-              <Link href="/">キャンセル</Link>
+              {newItems.length > 0 ? <button type="button" onClick={importBookmarks}>{newItems.length}件を追加</button> : <Link className="confirm-primary-link" href="/saved">保存した募集を見る</Link>}
+              <Link href="/saved">キャンセル</Link>
             </div>
           </>
-        ) : <><h1>保存データが見つかりません</h1><p>URLが途中で切れていないか確認してください。</p><Link className="primary-link" href="/">募集一覧へ戻る</Link></>}
+        )}
       </section>
     </main>
   );

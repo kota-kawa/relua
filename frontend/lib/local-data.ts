@@ -20,6 +20,8 @@ export const SHARE_CODE_KEY = "l";
 export const SHARE_LEGACY_KEY = "jobs";
 
 export type RecentEntry = { id: string; viewedAt: string };
+/** Display-only details captured with a bookmark backup. IDs remain authoritative on restore. */
+export type BookmarkBackupSnapshot = { id: string; company: { name: string }; event_name: string };
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export type TransferLinkError = "empty" | "invalid" | "wrong-origin" | "wrong-path" | "too-long" | "no-data";
 export type TransferLinkValidation =
@@ -187,8 +189,14 @@ export function validateTransferLink(value: string, expectedOrigin: string): Tra
   return { ok: true, href: `${canonical.pathname}${canonical.hash}`, refs: ids };
 }
 
-export function bookmarkJson(ids: string[], exportedAt = new Date().toISOString()): string {
-  return JSON.stringify({ version: 1, bookmarks: normalizeIds(ids), exported_at: exportedAt }, null, 2);
+export function bookmarkJson(ids: string[], snapshots: readonly BookmarkBackupSnapshot[] = [], exportedAt = new Date().toISOString()): string {
+  const snapshotsById = new Map(snapshots.map((item) => [item.id, item]));
+  const bookmarks = normalizeIds(ids).map((id) => {
+    const snapshot = snapshotsById.get(id);
+    if (!snapshot || !snapshot.company?.name || !snapshot.event_name) return { id };
+    return { id, company_name: snapshot.company.name, title: snapshot.event_name };
+  });
+  return JSON.stringify({ version: 2, bookmarks, exported_at: exportedAt }, null, 2);
 }
 
 export function bookmarkCsv(ids: string[]): string {
@@ -198,8 +206,13 @@ export function bookmarkCsv(ids: string[]): string {
 export function parseBookmarkFile(content: string, fileName: string): string[] {
   if (fileName.toLowerCase().endsWith(".json")) {
     const parsed = parseJson(content);
-    if (!parsed || typeof parsed !== "object" || (parsed as { version?: unknown }).version !== 1) return [];
-    return normalizeIds((parsed as { bookmarks?: unknown }).bookmarks);
+    if (!parsed || typeof parsed !== "object") return [];
+    const backup = parsed as { version?: unknown; bookmarks?: unknown };
+    if (backup.version === 1) return normalizeIds(backup.bookmarks);
+    if (backup.version !== 2 || !Array.isArray(backup.bookmarks)) return [];
+    return normalizeIds(backup.bookmarks.map((entry) => (
+      entry && typeof entry === "object" ? (entry as { id?: unknown }).id : undefined
+    )));
   }
   if (fileName.toLowerCase().endsWith(".csv")) {
     const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);

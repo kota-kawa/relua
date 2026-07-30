@@ -57,7 +57,7 @@ export function TransferLinkForm({ onSubmit }: { onSubmit: (href: string) => voi
         id="transfer-link-input"
         value={value}
         rows={3}
-        placeholder="https://…/import#b=…"
+        placeholder="https://…/import#c=…"
         autoComplete="off"
         spellCheck={false}
         onChange={(event) => { setValue(event.target.value); setError(""); }}

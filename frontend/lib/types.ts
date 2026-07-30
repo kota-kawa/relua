@@ -19,6 +19,8 @@ export type Masters = {
 
 export type Opportunity = {
   id: string;
+  /** Short identifier used in transfer and share links. */
+  public_code: string;
   recruitment_status: MasterItem;
   company: { id: number; name: string };
   industry: MasterItem;

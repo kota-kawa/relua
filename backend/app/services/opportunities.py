@@ -9,6 +9,7 @@ from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    PUBLIC_CODE_LENGTH,
     AuditLog,
     Company,
     Degree,
@@ -22,6 +23,7 @@ from app.models import (
     RecruitmentStatus,
     Sector,
     Tag,
+    public_code_string,
 )
 from app.schemas import OpportunityInput
 from app.services.errors import master_error
@@ -65,6 +67,25 @@ def opportunity_query() -> Select[tuple[Opportunity]]:
 
 def get_opportunity(db: Session, opportunity_id: str) -> Opportunity | None:
     return db.scalar(opportunity_query().where(Opportunity.id == opportunity_id))
+
+
+def get_opportunity_by_public_ref(db: Session, reference: str) -> Opportunity | None:
+    """Resolve either the UUID or the short public code.
+
+    Read paths accept both so that links minted before public codes existed keep working.
+    Write paths stay UUID-only via get_opportunity, keeping the idempotency target unambiguous.
+    """
+    if len(reference) == PUBLIC_CODE_LENGTH:
+        return db.scalar(opportunity_query().where(Opportunity.public_code == reference.upper()))
+    return get_opportunity(db, reference)
+
+
+def _unique_public_code(db: Session) -> str:
+    for _ in range(10):
+        code = public_code_string()
+        if db.scalar(select(Opportunity.id).where(Opportunity.public_code == code)) is None:
+            return code
+    raise RuntimeError("公開コードを生成できませんでした")
 
 
 def search_opportunities(
@@ -268,7 +289,7 @@ def write_opportunity(
         before = opportunity_dict(item)
         is_new = False
     else:
-        item = Opportunity()
+        item = Opportunity(public_code=_unique_public_code(db))
         before = None
         is_new = True
 

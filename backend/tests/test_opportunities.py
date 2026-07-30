@@ -4,9 +4,14 @@ import pytest
 from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Company, Opportunity
+from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, Opportunity
 from app.schemas import OpportunityInput
-from app.services.opportunities import DomainValidationError, search_opportunities, write_opportunity
+from app.services.opportunities import (
+    DomainValidationError,
+    get_opportunity_by_public_ref,
+    search_opportunities,
+    write_opportunity,
+)
 from tests.test_validation import valid_payload
 
 
@@ -96,6 +101,40 @@ def test_child_sector_refines_only_its_selected_parent(db):
         sector=["sector-1-71"],
     )
     assert {item.event_name for item in result.items} == {"AI開発インターン", "金融インターン"}
+
+
+def test_new_opportunity_gets_a_distinct_short_public_code(db):
+    first, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="public-code-0001",
+        client_name="pytest",
+    )
+    second_payload = valid_payload() | {"event_name": "二件目の募集"}
+    second, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(second_payload),
+        request_id="public-code-0002",
+        client_name="pytest",
+    )
+
+    assert len(first.public_code) == PUBLIC_CODE_LENGTH
+    assert set(first.public_code) <= set(PUBLIC_CODE_ALPHABET)
+    assert first.public_code != second.public_code
+
+
+def test_read_path_resolves_both_the_public_code_and_the_uuid(db):
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="public-ref-0001",
+        client_name="pytest",
+    )
+
+    assert get_opportunity_by_public_ref(db, item.public_code).id == item.id
+    assert get_opportunity_by_public_ref(db, item.public_code.lower()).id == item.id
+    assert get_opportunity_by_public_ref(db, item.id).id == item.id
+    assert get_opportunity_by_public_ref(db, "ZZZZZZZZ") is None
 
 
 def test_database_rejects_invalid_date_relationship(db):

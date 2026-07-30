@@ -7,7 +7,15 @@ import { notifyLocalDataChanged } from "@/components/bookmark-button";
 import { Check, Smartphone } from "@/components/icons";
 import { TransferLinkForm } from "@/components/transfer-link-form";
 import { loadOpportunities } from "@/lib/browser-api";
-import { mergeBookmarks, newBookmarkIds, parseFragmentIds, readBookmarks } from "@/lib/local-data";
+import {
+  TRANSFER_CODE_KEY,
+  TRANSFER_LEGACY_KEY,
+  mergeBookmarks,
+  newBookmarkIds,
+  parseFragmentCodes,
+  parseFragmentIds,
+  readBookmarks,
+} from "@/lib/local-data";
 import type { Opportunity } from "@/lib/types";
 
 type ImportStatus = "loading" | "ready" | "imported" | "storage-error";
@@ -24,10 +32,11 @@ export function ImportBookmarks() {
 
   useEffect(() => {
     let active = true;
-    const ids = parseFragmentIds(window.location.hash, "b");
-    loadOpportunities(ids).then((result) => {
+    const codes = parseFragmentCodes(window.location.hash, TRANSFER_CODE_KEY);
+    const refs = codes.length ? codes : parseFragmentIds(window.location.hash, TRANSFER_LEGACY_KEY);
+    loadOpportunities(refs).then((result) => {
       if (!active) return;
-      setRequested(ids);
+      setRequested(refs);
       setExistingIds(readBookmarks(window.localStorage));
       setItems(result.items);
       setMissing(result.missingIds.length);

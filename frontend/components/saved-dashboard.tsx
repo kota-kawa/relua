@@ -296,7 +296,7 @@ export function SavedDashboard() {
           <details className="local-tools-more">
             <summary><Download size={18} /> バックアップと復元</summary>
             <div className="local-tools-more-body">
-              <button type="button" disabled={!ids.length} onClick={() => download("relua-bookmarks.json", bookmarkJson(ids), "application/json;charset=utf-8")}><FileDown size={18} /> JSONでバックアップ</button>
+              <button type="button" disabled={!ids.length} onClick={() => download("relua-bookmarks.json", bookmarkJson(ids, items), "application/json;charset=utf-8")}><FileDown size={18} /> JSONでバックアップ</button>
               <button type="button" disabled={!ids.length} onClick={() => download("relua-bookmarks.csv", bookmarkCsv(ids), "text/csv;charset=utf-8")}><FileDown size={18} /> CSVでバックアップ</button>
               <label className="file-import"><FileUp size={18} /> バックアップを読込<input type="file" accept=".json,.csv,application/json,text/csv" onChange={handleImport} /></label>
             </div>

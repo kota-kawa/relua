@@ -102,10 +102,23 @@ describe("local bookmark data", () => {
   });
 
   it("exports and validates JSON and CSV backups", () => {
-    const json = bookmarkJson(["1", "2"], "2026-07-27T10:00:00+09:00");
+    const json = bookmarkJson([
+      "1", "2",
+    ], [
+      { id: "1", company: { name: "株式会社テスト" }, event_name: "夏季インターンシップ" },
+    ], "2026-07-27T10:00:00+09:00");
+    expect(JSON.parse(json)).toEqual({
+      version: 2,
+      bookmarks: [
+        { id: "1", company_name: "株式会社テスト", title: "夏季インターンシップ" },
+        { id: "2" },
+      ],
+      exported_at: "2026-07-27T10:00:00+09:00",
+    });
     expect(parseBookmarkFile(json, "backup.json")).toEqual(["1", "2"]);
+    expect(parseBookmarkFile('{"version":1,"bookmarks":["1","2"]}', "backup.json")).toEqual(["1", "2"]);
     expect(parseBookmarkFile(bookmarkCsv(["1", "2"]), "backup.csv")).toEqual(["1", "2"]);
-    expect(parseBookmarkFile('{"version":2,"bookmarks":[1]}', "backup.json")).toEqual([]);
+    expect(parseBookmarkFile('{"version":3,"bookmarks":["1"]}', "backup.json")).toEqual([]);
   });
 
   it("creates a device-neutral calendar file without a Google-specific URL", () => {

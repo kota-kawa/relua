@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from datetime import date, datetime
 from typing import Any
@@ -24,6 +25,16 @@ from app.db import Base
 
 def uuid_string() -> str:
     return str(uuid.uuid4())
+
+
+#: Crockford base32 without I, L, O and U, so a code stays unambiguous when read aloud or retyped.
+PUBLIC_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+#: 8 characters carry 40 bits. Short enough that a few hundred codes fit in one transfer link.
+PUBLIC_CODE_LENGTH = 8
+
+
+def public_code_string() -> str:
+    return "".join(secrets.choice(PUBLIC_CODE_ALPHABET) for _ in range(PUBLIC_CODE_LENGTH))
 
 
 class NamedMasterMixin:
@@ -115,6 +126,10 @@ class Opportunity(Base):
     __tablename__ = "opportunities"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    #: Short public identifier used in transfer and share links, where the 36-character UUID is too bulky.
+    public_code: Mapped[str] = mapped_column(
+        String(PUBLIC_CODE_LENGTH), unique=True, nullable=False, default=public_code_string
+    )
     status_id: Mapped[int] = mapped_column(ForeignKey("recruitment_statuses.id", ondelete="RESTRICT"), nullable=False)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False)
     industry_id: Mapped[int] = mapped_column(ForeignKey("industries.id", ondelete="RESTRICT"), nullable=False)

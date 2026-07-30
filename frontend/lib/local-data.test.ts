@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   bookmarkCsv,
   bookmarkJson,
+  buildCodeFragmentUrl,
   buildFragmentUrl,
   calendarDetails,
   mergeBookmarks,
   newBookmarkIds,
   normalizeIds,
   parseBookmarkFile,
+  parseFragmentCodes,
   parseFragmentIds,
   readBookmarks,
   recordRecent,
@@ -59,6 +61,17 @@ describe("local bookmark data", () => {
     expect(parseFragmentIds(new URL(url).hash, "b")).toEqual(["125", "391"]);
   });
 
+  it("round-trips fixed-width public codes without separators", () => {
+    const url = buildCodeFragmentUrl("https://example.com/current", "/import", "c", ["A1B2C3D4", "e5f6g7h8"]);
+    expect(url).toBe("https://example.com/import#c=A1B2C3D4E5F6G7H8");
+    expect(parseFragmentCodes(new URL(url).hash, "c")).toEqual(["A1B2C3D4", "E5F6G7H8"]);
+  });
+
+  it("drops codes that are truncated or use excluded letters", () => {
+    expect(parseFragmentCodes("#c=A1B2C3D4XYZ", "c")).toEqual(["A1B2C3D4"]);
+    expect(parseFragmentCodes("#c=IIIIIIII", "c")).toEqual([]);
+  });
+
   it("measures transfer limits in encoded bytes", () => {
     expect(urlFitsTransferLimit("a", 1)).toBe(true);
     expect(urlFitsTransferLimit("あ", 1)).toBe(false);
@@ -66,13 +79,26 @@ describe("local bookmark data", () => {
     expect(urlFitsTransferLimit(buildFragmentUrl("https://example.com", "/import", "b", uuidIds))).toBe(false);
   });
 
+  it("fits several hundred public codes in one transfer link", () => {
+    const codes = Array.from({ length: 240 }, (_, index) => `A${String(index).padStart(7, "0")}`);
+    expect(urlFitsTransferLimit(buildCodeFragmentUrl("https://example.com", "/import", "c", codes))).toBe(true);
+  });
+
   it("accepts only same-origin import links with bookmark data", () => {
-    const valid = validateTransferLink(" https://example.com/import#b=1,2,2 ", "https://example.com");
-    expect(valid).toEqual({ ok: true, href: "/import#b=1,2", ids: ["1", "2"] });
-    expect(validateTransferLink("https://evil.example/import#b=1", "https://example.com")).toEqual({ ok: false, error: "wrong-origin" });
-    expect(validateTransferLink("https://example.com/list#b=1", "https://example.com")).toEqual({ ok: false, error: "wrong-path" });
+    const valid = validateTransferLink(" https://example.com/import#c=A1B2C3D4A1B2C3D4 ", "https://example.com");
+    expect(valid).toEqual({ ok: true, href: "/import#c=A1B2C3D4", refs: ["A1B2C3D4"] });
+    expect(validateTransferLink("https://evil.example/import#c=A1B2C3D4", "https://example.com")).toEqual({ ok: false, error: "wrong-origin" });
+    expect(validateTransferLink("https://example.com/list#c=A1B2C3D4", "https://example.com")).toEqual({ ok: false, error: "wrong-path" });
     expect(validateTransferLink("https://example.com/import", "https://example.com")).toEqual({ ok: false, error: "no-data" });
     expect(validateTransferLink("not a URL", "https://example.com")).toEqual({ ok: false, error: "invalid" });
+  });
+
+  it("still accepts UUID links minted before public codes existed", () => {
+    expect(validateTransferLink("https://example.com/import#b=1,2,2", "https://example.com")).toEqual({
+      ok: true,
+      href: "/import#b=1,2",
+      refs: ["1", "2"],
+    });
   });
 
   it("exports and validates JSON and CSV backups", () => {

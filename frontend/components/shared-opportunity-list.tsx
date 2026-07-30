@@ -7,7 +7,15 @@ import { notifyLocalDataChanged } from "@/components/bookmark-button";
 import { Bookmark, Check, Share2 } from "@/components/icons";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { loadOpportunities } from "@/lib/browser-api";
-import { mergeBookmarks, newBookmarkIds, parseFragmentIds, readBookmarks } from "@/lib/local-data";
+import {
+  SHARE_CODE_KEY,
+  SHARE_LEGACY_KEY,
+  mergeBookmarks,
+  newBookmarkIds,
+  parseFragmentCodes,
+  parseFragmentIds,
+  readBookmarks,
+} from "@/lib/local-data";
 import type { Opportunity } from "@/lib/types";
 
 export function SharedOpportunityList() {
@@ -15,8 +23,9 @@ export function SharedOpportunityList() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   useEffect(() => {
-    const ids = parseFragmentIds(window.location.hash, "jobs");
-    loadOpportunities(ids).then((result) => {
+    const codes = parseFragmentCodes(window.location.hash, SHARE_CODE_KEY);
+    const refs = codes.length ? codes : parseFragmentIds(window.location.hash, SHARE_LEGACY_KEY);
+    loadOpportunities(refs).then((result) => {
       setItems(result.items);
       setLoading(false);
       if (result.missingIds.length) setNotice(`公開が終了した${result.missingIds.length}件は除外しました。`);

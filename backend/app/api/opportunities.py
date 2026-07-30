@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas import OpportunityListResponse, OpportunityResponse
-from app.services.opportunities import get_opportunity, search_opportunities
+from app.services.opportunities import get_opportunity_by_public_ref, search_opportunities
 from app.services.serialization import opportunity_dict
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
@@ -53,7 +53,7 @@ def list_opportunities(
 
 @router.get("/{opportunity_id}", response_model=OpportunityResponse)
 def opportunity_detail(opportunity_id: str, db: Annotated[Session, Depends(get_db)]) -> dict[str, object]:
-    item = get_opportunity(db, opportunity_id)
+    item = get_opportunity_by_public_ref(db, opportunity_id)
     if item is None:
         raise HTTPException(status_code=404, detail="募集情報が見つかりません")
     return opportunity_dict(item)

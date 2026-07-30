@@ -155,6 +155,7 @@ class MastersResponse(BaseModel):
 
 class OpportunityResponse(BaseModel):
     id: str
+    public_code: str
     recruitment_status: MasterItem
     company: dict[str, Any]
     industry: MasterItem

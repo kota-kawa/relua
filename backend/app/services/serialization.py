@@ -8,6 +8,7 @@ def master_dict(item: object) -> dict[str, object]:
 def opportunity_dict(item: Opportunity) -> dict[str, object]:
     return {
         "id": item.id,
+        "public_code": item.public_code,
         "recruitment_status": master_dict(item.status),
         "company": {"id": item.company.id, "name": item.company.name},
         "industry": master_dict(item.industry),

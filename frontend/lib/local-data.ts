@@ -8,14 +8,27 @@ export const MAX_RECENTS = 30;
 export const MAX_TRANSFER_URL_LENGTH = 2_000;
 export const MAX_QR_URL_LENGTH = 1_800;
 
+/**
+ * Links carry the server's short public code rather than the 36-character UUID.
+ * At 8 fixed-width characters with no separator, a 2,000 byte link holds a few hundred
+ * bookmarks instead of roughly fifty.
+ */
+export const PUBLIC_CODE_LENGTH = 8;
+export const TRANSFER_CODE_KEY = "c";
+export const TRANSFER_LEGACY_KEY = "b";
+export const SHARE_CODE_KEY = "l";
+export const SHARE_LEGACY_KEY = "jobs";
+
 export type RecentEntry = { id: string; viewedAt: string };
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export type TransferLinkError = "empty" | "invalid" | "wrong-origin" | "wrong-path" | "too-long" | "no-data";
 export type TransferLinkValidation =
-  | { ok: true; href: string; ids: string[] }
+  | { ok: true; href: string; refs: string[] }
   | { ok: false; error: TransferLinkError };
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;
+/** Crockford base32, matching PUBLIC_CODE_ALPHABET on the server. */
+const CODE_PATTERN = /^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{8}$/;
 
 export function normalizeIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -23,6 +36,16 @@ export function normalizeIds(value: unknown): string[] {
   value.forEach((entry) => {
     const id = typeof entry === "number" && Number.isSafeInteger(entry) ? String(entry) : typeof entry === "string" ? entry.trim() : "";
     if (ID_PATTERN.test(id)) unique.add(id);
+  });
+  return [...unique];
+}
+
+export function normalizeCodes(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<string>();
+  value.forEach((entry) => {
+    const code = typeof entry === "string" ? entry.trim().toUpperCase() : "";
+    if (CODE_PATTERN.test(code)) unique.add(code);
   });
   return [...unique];
 }
@@ -115,6 +138,20 @@ export function buildFragmentUrl(origin: string, path: "/import" | "/list", key:
   return url.toString();
 }
 
+/** Codes are fixed width, so they need no separator between entries. */
+export function parseFragmentCodes(hash: string, key: "c" | "l"): string[] {
+  const params = new URLSearchParams(hash.replace(/^#/, ""));
+  const raw = params.get(key);
+  if (!raw) return [];
+  return normalizeCodes(raw.toUpperCase().match(new RegExp(`.{1,${PUBLIC_CODE_LENGTH}}`, "g")) ?? []);
+}
+
+export function buildCodeFragmentUrl(origin: string, path: "/import" | "/list", key: "c" | "l", codes: string[]): string {
+  const url = new URL(path, origin);
+  url.hash = `${key}=${normalizeCodes(codes).join("")}`;
+  return url.toString();
+}
+
 export function urlFitsTransferLimit(url: string, limit = MAX_TRANSFER_URL_LENGTH): boolean {
   return new TextEncoder().encode(url).length <= limit;
 }
@@ -136,11 +173,18 @@ export function validateTransferLink(value: string, expectedOrigin: string): Tra
   if (candidate.origin !== expected.origin) return { ok: false, error: "wrong-origin" };
   if (candidate.pathname.replace(/\/+$/, "") !== "/import") return { ok: false, error: "wrong-path" };
 
-  const ids = parseFragmentIds(candidate.hash, "b");
+  const codes = parseFragmentCodes(candidate.hash, TRANSFER_CODE_KEY);
+  if (codes.length) {
+    const canonical = new URL(buildCodeFragmentUrl(expected.origin, "/import", TRANSFER_CODE_KEY, codes));
+    return { ok: true, href: `${canonical.pathname}${canonical.hash}`, refs: codes };
+  }
+
+  /* Links minted before public codes existed still carry UUIDs. */
+  const ids = parseFragmentIds(candidate.hash, TRANSFER_LEGACY_KEY);
   if (!ids.length) return { ok: false, error: "no-data" };
 
-  const canonical = new URL(buildFragmentUrl(expected.origin, "/import", "b", ids));
-  return { ok: true, href: `${canonical.pathname}${canonical.hash}`, ids };
+  const canonical = new URL(buildFragmentUrl(expected.origin, "/import", TRANSFER_LEGACY_KEY, ids));
+  return { ok: true, href: `${canonical.pathname}${canonical.hash}`, refs: ids };
 }
 
 export function bookmarkJson(ids: string[], exportedAt = new Date().toISOString()): string {

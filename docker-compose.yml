@@ -48,13 +48,14 @@ services:
       context: ./frontend
       args:
         API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3100}
     environment:
       API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
       API_INTERNAL_TOKEN: ${API_INTERNAL_TOKEN:-local-development-internal-token}
     depends_on:
       - api
     ports:
-      - "${FRONTEND_PORT:-3100}:3000"
+      - "127.0.0.1:${FRONTEND_PORT:-3100}:3000"
 
 volumes:
   postgres_data:

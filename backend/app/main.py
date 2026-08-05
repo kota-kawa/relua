@@ -90,7 +90,12 @@ app.include_router(masters_router, prefix="/api/v1")
 app.include_router(opportunities_router, prefix="/api/v1")
 if settings.mcp_oauth_enabled:
     app.include_router(oauth_router)
-app.mount("/mcp", mcp_http_app())
+
+# Register the Streamable HTTP route directly. Mounting the MCP app at
+# ``/mcp`` makes Starlette redirect the exact endpoint to ``/mcp/``. Some
+# remote MCP clients do not replay authenticated POST requests across that
+# redirect, so the stable public endpoint must handle ``POST /mcp`` itself.
+app.router.routes.extend(mcp_http_app().routes)
 
 
 @app.get("/")

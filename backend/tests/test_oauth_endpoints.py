@@ -90,8 +90,9 @@ def test_discovery_documents_point_at_the_public_url(client):
 def test_unauthenticated_mcp_request_advertises_the_metadata_url(client):
     response = client.post("/mcp", json={}, follow_redirects=False)
     assert response.status_code == 401
-    assert "resource_metadata=" in response.headers["www-authenticate"]
-    assert "/.well-known/oauth-protected-resource/mcp" in response.headers["www-authenticate"]
+    assert response.headers["www-authenticate"] == (
+        'Bearer resource_metadata="https://relua.test/.well-known/oauth-protected-resource/mcp", scope="mcp"'
+    )
 
 
 def test_registration_refuses_a_non_https_callback(client):

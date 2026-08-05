@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.mcp_server import mcp, mcp_http_app
 from app.security import bearer_token, valid_internal_token, valid_mcp_authorization
-from app.services.oauth import authenticate_access_token
+from app.services.oauth import DEFAULT_SCOPE, authenticate_access_token
 
 #: Discovery documents and the login flow itself must answer before any credential exists.
 PUBLIC_PATH_PREFIXES = ("/.well-known/", "/oauth/")
@@ -59,7 +59,13 @@ def _mcp_unauthorized() -> JSONResponse:
     challenge = "Bearer"
     if settings.mcp_oauth_enabled:
         # RFC 9728: this header is how a client learns where to register and log in.
-        challenge += f', resource_metadata="{settings.issuer}/.well-known/oauth-protected-resource/mcp"'
+        # An auth scheme and its first auth-param are separated by a space, not a
+        # comma. Strict clients (including ChatGPT's connector setup) reject
+        # ``Bearer, resource_metadata=...`` before OAuth discovery can start.
+        challenge += (
+            f' resource_metadata="{settings.issuer}/.well-known/oauth-protected-resource/mcp",'
+            f' scope="{DEFAULT_SCOPE}"'
+        )
     return JSONResponse(
         status_code=401,
         content={"detail": "認証が必要です"},

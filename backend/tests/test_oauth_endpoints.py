@@ -95,6 +95,67 @@ def test_unauthenticated_mcp_request_advertises_the_metadata_url(client):
     )
 
 
+def test_oauth_clients_can_discover_tools_before_login(client):
+    initialized = client.post(
+        "/mcp",
+        json=INITIALIZE_REQUEST,
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert initialized.status_code == 200, initialized.text
+
+    listed = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert listed.status_code == 200, listed.text
+    tools = {tool["name"]: tool for tool in listed.json()["result"]["tools"]}
+    assert tools["search_opportunity"]["securitySchemes"] == [{"type": "noauth"}]
+    assert tools["get_master_values"]["securitySchemes"] == [{"type": "noauth"}]
+    assert tools["add_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["update_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+
+
+def test_oauth_clients_can_send_chatgpt_origin(client):
+    response = client.post(
+        "/mcp",
+        json=INITIALIZE_REQUEST,
+        headers={
+            "Authorization": "Bearer local-development-mcp-token",
+            "Host": "relua.test",
+            "Origin": "https://chatgpt.com",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_public_read_tool_and_protected_write_tool_have_different_access(client):
+    read_call = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "search_opportunity", "arguments": {"query": ""}},
+        },
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert read_call.status_code == 200, read_call.text
+
+    write_call = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "add_opportunity", "arguments": {}},
+        },
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert write_call.status_code == 401
+
+
 def test_registration_refuses_a_non_https_callback(client):
     response = client.post("/oauth/register", json={"redirect_uris": ["http://example.com/cb"]})
     assert response.status_code == 400

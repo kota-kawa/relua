@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -73,6 +74,41 @@ def _mcp_unauthorized() -> JSONResponse:
     )
 
 
+async def _anonymous_mcp_request(request: Request) -> bool:
+    """Return whether an unauthenticated MCP request is safe to expose.
+
+    ChatGPT must be able to initialize a connection and inspect tool metadata
+    before it can decide which tool needs OAuth.  Read-only tools are public in
+    relua; write tools remain protected and receive the OAuth challenge below.
+    """
+    if request.method == "GET":
+        return True
+    if request.method != "POST":
+        return False
+    try:
+        payload = json.loads((await request.body()).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    method = payload.get("method") if isinstance(payload, dict) else None
+    if method in {
+        "initialize",
+        "notifications/initialized",
+        "notifications/cancelled",
+        "ping",
+        "tools/list",
+        "resources/list",
+        "resources/templates/list",
+        "prompts/list",
+        "completion/complete",
+        "logging/setLevel",
+    }:
+        return True
+    if method != "tools/call":
+        return False
+    params = payload.get("params")
+    return isinstance(params, dict) and params.get("name") in {"search_opportunity", "get_master_values"}
+
+
 @app.middleware("http")
 async def authenticate_private_service(request: Request, call_next):
     path = request.url.path
@@ -80,7 +116,8 @@ async def authenticate_private_service(request: Request, call_next):
         return await call_next(request)
     if _is_mcp_path(path):
         if not _mcp_authorized(request.headers.get("authorization")):
-            return _mcp_unauthorized()
+            if not settings.mcp_oauth_enabled or not await _anonymous_mcp_request(request):
+                return _mcp_unauthorized()
     elif not valid_internal_token(request.headers.get("x-internal-api-token"), settings.api_internal_token):
         return JSONResponse(status_code=401, content={"detail": "認証が必要です"})
     return await call_next(request)

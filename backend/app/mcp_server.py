@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import Tool as MCPTool
 from pydantic import ValidationError
 
 from app.config import get_settings
@@ -52,6 +53,8 @@ mcp = FastMCP(
             "http://localhost:*",
             "http://[::1]:*",
             settings.issuer,
+            "https://chatgpt.com",
+            "https://chat.openai.com",
         ],
     ),
 )
@@ -214,6 +217,35 @@ def add_opportunity(payload: MCPWriteRequest) -> dict[str, Any]:
 )
 def update_opportunity(opportunity_id: str, payload: MCPUpdateRequest) -> dict[str, Any]:
     return _perform_write(payload.model_dump(mode="json"), opportunity_id=opportunity_id)
+
+
+async def _list_tools_with_security_schemes() -> list[MCPTool]:
+    """Advertise per-tool auth so ChatGPT can discover tools before OAuth login.
+
+    The Python SDK version used by this service predates the convenience
+    ``securitySchemes`` argument exposed by the TypeScript Apps SDK.  MCP Tool
+    objects allow extension fields, so add the same field to the wire response
+    while retaining FastMCP's generated schemas.
+    """
+    tools = await mcp.list_tools()
+    anonymous_tools = {"search_opportunity", "get_master_values"}
+    return [
+        tool.model_copy(
+            update={
+                "securitySchemes": (
+                    [{"type": "noauth"}]
+                    if tool.name in anonymous_tools
+                    else [{"type": "oauth2", "scopes": ["mcp"]}]
+                )
+            }
+        )
+        for tool in tools
+    ]
+
+
+# FastMCP 1.28 does not expose securitySchemes as a decorator argument. Replace
+# only the low-level list handler so the extension is emitted in tools/list.
+mcp._mcp_server.list_tools()(_list_tools_with_security_schemes)
 
 
 def mcp_http_app():

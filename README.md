@@ -22,6 +22,7 @@
   - `add_opportunity`
   - `update_opportunity`
   - Bearerトークン認証、Redisレート制限、request IDによる冪等化、成功・失敗監査ログ
+  - ChatGPT・Claudeから接続するためのOAuth 2.1認可サーバー（動的クライアント登録、PKCE、リフレッシュトークン）
 - Alembic初期マイグレーション、固定値マスタ投入
 - 締め切り超過を「締切」に更新する運用ジョブ
 - Docker Compose、GitHub Actions、バックエンド自動テスト
@@ -54,7 +55,11 @@ docker compose exec api python -m app.scripts.seed_demo
 
 ## MCPクライアント設定
 
-ローカルで接続する場合、MCPクライアントに次のURLとヘッダーをStreamable HTTPサーバーとして登録します。
+接続方法は2通りあります。手元の端末から使うだけなら固定トークン、ChatGPTやClaudeのWeb版から使うならOAuthです。
+
+### 固定トークン接続（既定）
+
+MCPクライアントに次のURLとヘッダーをStreamable HTTPサーバーとして登録します。
 
 ```text
 http://localhost:8000/mcp/
@@ -64,7 +69,39 @@ http://localhost:8000/mcp/
 Authorization: Bearer <MCP_API_TOKENの値>
 ```
 
-APIポートはループバック限定のため、別端末やインターネットからは直接接続できません。リモートサーバー上で運用する場合は、SSHポートフォワードまたは運営者専用VPNを通して接続してください。MCPを一般公開するリバースプロキシ設定は行わないでください。
+既定ではAPIポートがループバック限定のため、別端末やインターネットからは直接接続できません。リモートサーバー上で運用する場合は、SSHポートフォワードまたは運営者専用VPNを通して接続してください。
+
+### OAuth接続（ChatGPT・Claude）
+
+ChatGPTやClaudeのWeb版は任意のヘッダーを設定できないため、固定トークンでは接続できません。代わりに、MCPのURLだけを登録し、ブラウザでreluaのログイン画面に遷移してパスワードを入力する方式を用意しています。
+
+有効化するには `.env` に次を設定します。
+
+```bash
+MCP_OAUTH_ENABLED=true
+MCP_PUBLIC_URL=https://<公開ホスト名>
+MCP_OPERATOR_PASSWORD=<12文字以上の固有パスワード>
+```
+
+クライアントには次のURLだけを登録します。認証情報の入力欄は空のままにしてください。
+
+```text
+https://<公開ホスト名>/mcp/
+```
+
+接続時の流れは次のとおりです。
+
+1. クライアントが認証なしでアクセスし、401と `WWW-Authenticate` ヘッダーを受け取る
+2. `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、`/oauth/register` に自分自身を登録する
+3. ブラウザが `/oauth/authorize` へ遷移し、reluaの接続許可画面が開く
+4. `MCP_OPERATOR_PASSWORD` を入力すると、クライアントへ認可コードが戻る
+5. クライアントが `/oauth/token` でアクセストークンとリフレッシュトークンを受け取る
+
+リフレッシュトークンは既定で無期限（`MCP_REFRESH_TOKEN_TTL_DAYS=0`）です。アクセストークンは1時間で切れますが、クライアントがリフレッシュトークンで自動更新するため、**一度接続すれば再ログインは不要**です。使うたびにトークンは入れ替わり、古いトークンが再利用された場合はその接続全体を失効させます。
+
+この方式ではMCPエンドポイントをインターネットへ公開します。公開する場合は、前段にTLS終端のリバースプロキシを置き、`FORWARDED_ALLOW_IPS` にそのプロキシのIPを設定してください。ログイン試行回数の集計に接続元IPを使うため、この設定がないと回数制限が全体で1つになります。
+
+登録自体は誰でも行えますが、登録しただけでは何も取得できません。トークンを発行できるのは運営者パスワードを入力したときだけです。
 
 推奨操作順は次のとおりです。
 
@@ -111,6 +148,16 @@ QRコードはブラウザ内で生成します。URLフラグメントはサー
 docker compose exec api python -m app.scripts.close_expired
 ```
 
+OAuthで接続中のクライアントを確認し、不要になった接続を切ります。
+
+```bash
+docker compose exec api python -m app.scripts.mcp_connections list
+docker compose exec api python -m app.scripts.mcp_connections revoke <grant_id>
+docker compose exec api python -m app.scripts.mcp_connections purge
+```
+
+`revoke` は1回のログインで発行されたトークンをまとめて失効させ、そのクライアントを切断します。パスワードが漏れた疑いがあるときは、`MCP_OPERATOR_PASSWORD` の変更に加えて既存の接続も失効させてください。
+
 監査記録は `audit_logs`、冪等性レコードは `idempotency_records` に保存されます。MVPでは監査ログ閲覧画面と自動ロールバックを実装していません。
 
 ## 開発時の検証
@@ -134,7 +181,9 @@ Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止�
 - `.env` のDBパスワードを本番固有値へ変更する
 - `API_INTERNAL_TOKEN`と`MCP_API_TOKEN`に、それぞれ異なる十分に長いランダム値を設定する
 - `ENVIRONMENT=production`を設定する（開発用トークンのままではAPIが起動しない）
-- PostgreSQL、Redis、FastAPIの公開ポートを追加しない
+- PostgreSQLとRedisの公開ポートを追加しない
 - FastAPIとNext.jsの前段でTLS、CDN、リクエストサイズ制限を設定する
-- MCP接続にはSSHポートフォワードまたは運営者専用VPNを使用する
+- OAuthを使わない場合は、MCP接続にSSHポートフォワードまたは運営者専用VPNを使用する
+- OAuthを使う場合は、`MCP_PUBLIC_URL`をhttpsの実ホスト名にし、`MCP_OPERATOR_PASSWORD`を推測できない値にする（開発用の値のままではAPIが起動しない）
+- OAuthを使う場合は、リバースプロキシで `/mcp`、`/oauth`、`/.well-known` だけを公開し、`/api/v1` は公開しない
 - 実在企業10社分をChatGPT・Claudeの両方から登録し、要件定義書17.4の受入試験を行う

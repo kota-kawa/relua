@@ -1,10 +1,13 @@
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
 
+from app.config import get_settings
 from app.db import SessionLocal
 from app.schemas import MCPUpdateRequest, MCPWriteRequest
 from app.services.errors import pydantic_errors
@@ -23,6 +26,14 @@ from app.services.rate_limit import (
 )
 from app.services.serialization import opportunity_dict
 
+settings = get_settings()
+public_url = urlsplit(settings.mcp_public_url)
+public_host = public_url.hostname
+
+allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+if public_host:
+    allowed_hosts.extend([public_host, f"{public_host}:*"])
+
 mcp = FastMCP(
     "All Job",
     instructions=(
@@ -33,6 +44,16 @@ mcp = FastMCP(
     streamable_http_path="/mcp",
     stateless_http=True,
     json_response=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=[
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "http://[::1]:*",
+            settings.issuer,
+        ],
+    ),
 )
 
 

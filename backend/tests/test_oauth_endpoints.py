@@ -11,6 +11,16 @@ from tests.test_oauth import CHALLENGE, VERIFIER
 
 PASSWORD = "test-operator-password-0001"
 REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback"
+INITIALIZE_REQUEST = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "endpoint-test", "version": "1.0"},
+    },
+}
 
 
 @pytest.fixture(scope="module")
@@ -129,10 +139,17 @@ def test_browser_login_yields_a_token_that_opens_the_mcp_endpoint(client):
     access_token = tokens.json()["access_token"]
 
     accepted = client.post(
-        "/mcp", json={}, headers={"Authorization": f"Bearer {access_token}"}, follow_redirects=False
+        "/mcp",
+        json=INITIALIZE_REQUEST,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Host": "relua.test",
+            "Accept": "application/json, text/event-stream",
+        },
+        follow_redirects=False,
     )
-    assert accepted.status_code != 307
-    assert accepted.status_code != 401
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["result"]["serverInfo"]["name"] == "All Job"
 
 
 def test_a_revoked_token_stops_opening_the_mcp_endpoint(client):
@@ -212,9 +229,21 @@ def test_an_unknown_client_never_reaches_the_password_form(client):
 def test_static_operator_token_still_works(client):
     response = client.post(
         "/mcp",
-        json={},
-        headers={"Authorization": "Bearer local-development-mcp-token"},
+        json=INITIALIZE_REQUEST,
+        headers={
+            "Authorization": "Bearer local-development-mcp-token",
+            "Host": "relua.test",
+            "Accept": "application/json, text/event-stream",
+        },
         follow_redirects=False,
     )
-    assert response.status_code != 307
-    assert response.status_code != 401
+    assert response.status_code == 200, response.text
+
+
+def test_mcp_rejects_an_unconfigured_host(client):
+    response = client.post(
+        "/mcp",
+        json=INITIALIZE_REQUEST,
+        headers={"Authorization": "Bearer local-development-mcp-token", "Host": "attacker.example"},
+    )
+    assert response.status_code == 421

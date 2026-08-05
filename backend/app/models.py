@@ -204,3 +204,59 @@ class IdempotencyRecord(Base):
     opportunity_id: Mapped[str] = mapped_column(ForeignKey("opportunities.id", ondelete="CASCADE"), nullable=False)
     response_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OAuthClient(Base):
+    """A client registered through RFC 7591 dynamic registration.
+
+    ChatGPT and Claude mint their own client_id on first connect, so registration cannot be done by hand.
+    Registration alone grants nothing: every token still comes from an operator password login.
+    """
+
+    __tablename__ = "oauth_clients"
+    client_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: NULL for public clients, which authenticate with PKCE alone (token_endpoint_auth_method "none").
+    client_secret_hash: Mapped[str | None] = mapped_column(String(64))
+    client_name: Mapped[str] = mapped_column(String(200), default="unknown", nullable=False)
+    redirect_uris: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    grant_types: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    token_endpoint_auth_method: Mapped[str] = mapped_column(String(32), default="none", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OAuthAuthorizationCode(Base):
+    __tablename__ = "oauth_authorization_codes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    client_id: Mapped[str] = mapped_column(ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(String(2048), nullable=False)
+    code_challenge: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope: Mapped[str | None] = mapped_column(String(200))
+    resource: Mapped[str | None] = mapped_column(String(2048))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Set on first exchange. A second exchange of the same code revokes the whole grant, per OAuth 2.1.
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    grant_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OAuthToken(Base):
+    """An issued access or refresh token, stored only as a SHA-256 hash.
+
+    Tokens sharing a grant_id came from one authorization, so revoking the grant disconnects the client once.
+    """
+
+    __tablename__ = "oauth_tokens"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    grant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    client_id: Mapped[str] = mapped_column(ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False)
+    scope: Mapped[str | None] = mapped_column(String(200))
+    resource: Mapped[str | None] = mapped_column(String(2048))
+    #: NULL means the token never expires, which is how a refresh token keeps a client connected indefinitely.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (Index("ix_oauth_tokens_grant", "grant_id", "kind"),)

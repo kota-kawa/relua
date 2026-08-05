@@ -2,6 +2,9 @@ import os
 
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["REDIS_URL"] = "redis://localhost:6379/15"
+os.environ["MCP_OAUTH_ENABLED"] = "true"
+os.environ["MCP_PUBLIC_URL"] = "https://relua.test"
+os.environ["MCP_OPERATOR_PASSWORD"] = "test-operator-password-0001"
 
 import pytest
 from sqlalchemy import create_engine, event

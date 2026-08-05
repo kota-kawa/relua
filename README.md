@@ -91,11 +91,12 @@ https://<公開ホスト名>/mcp
 
 接続時の流れは次のとおりです。
 
-1. クライアントが認証なしでアクセスし、401と `WWW-Authenticate` ヘッダーを受け取る
-2. `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、`/oauth/register` に自分自身を登録する
-3. ブラウザが `/oauth/authorize` へ遷移し、reluaの接続許可画面が開く
-4. `MCP_OPERATOR_PASSWORD` を入力すると、クライアントへ認可コードが戻る
-5. クライアントが `/oauth/token` でアクセストークンとリフレッシュトークンを受け取る
+1. クライアントが認証なしでMCPを初期化し、ツール一覧と各ツールの認証要否を取得する
+2. `search_opportunity` と `get_master_values` はそのまま利用できる
+3. `add_opportunity` または `update_opportunity` を呼ぶと、401の `WWW-Authenticate` を受けてOAuthフローを開始する
+4. `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、`/oauth/register` に自分自身を登録する
+5. ブラウザが `/oauth/authorize` へ遷移し、reluaの接続許可画面が開く
+6. `MCP_OPERATOR_PASSWORD` を入力すると、クライアントが `/oauth/token` でアクセストークンとリフレッシュトークンを受け取る
 
 リフレッシュトークンは既定で無期限（`MCP_REFRESH_TOKEN_TTL_DAYS=0`）です。アクセストークンは1時間で切れますが、クライアントがリフレッシュトークンで自動更新するため、**一度接続すれば再ログインは不要**です。使うたびにトークンは入れ替わり、古いトークンが再利用された場合はその接続全体を失効させます。
 

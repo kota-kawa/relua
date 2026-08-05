@@ -78,7 +78,7 @@ def test_discovery_documents_point_at_the_public_url(client):
 
 
 def test_unauthenticated_mcp_request_advertises_the_metadata_url(client):
-    response = client.post("/mcp/", json={})
+    response = client.post("/mcp", json={}, follow_redirects=False)
     assert response.status_code == 401
     assert "resource_metadata=" in response.headers["www-authenticate"]
     assert "/.well-known/oauth-protected-resource/mcp" in response.headers["www-authenticate"]
@@ -128,7 +128,10 @@ def test_browser_login_yields_a_token_that_opens_the_mcp_endpoint(client):
     assert tokens.status_code == 200, tokens.text
     access_token = tokens.json()["access_token"]
 
-    accepted = client.post("/mcp/", json={}, headers={"Authorization": f"Bearer {access_token}"})
+    accepted = client.post(
+        "/mcp", json={}, headers={"Authorization": f"Bearer {access_token}"}, follow_redirects=False
+    )
+    assert accepted.status_code != 307
     assert accepted.status_code != 401
 
 
@@ -152,7 +155,7 @@ def test_a_revoked_token_stops_opening_the_mcp_endpoint(client):
     )
     assert revoked.status_code == 200
 
-    response = client.post("/mcp/", json={}, headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    response = client.post("/mcp", json={}, headers={"Authorization": f"Bearer {tokens['access_token']}"})
     assert response.status_code == 401
 
 
@@ -207,5 +210,11 @@ def test_an_unknown_client_never_reaches_the_password_form(client):
 
 
 def test_static_operator_token_still_works(client):
-    response = client.post("/mcp/", json={}, headers={"Authorization": "Bearer local-development-mcp-token"})
+    response = client.post(
+        "/mcp",
+        json={},
+        headers={"Authorization": "Bearer local-development-mcp-token"},
+        follow_redirects=False,
+    )
+    assert response.status_code != 307
     assert response.status_code != 401

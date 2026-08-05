@@ -39,7 +39,7 @@ docker compose up --build
 ```
 
 - Web: <http://localhost:3100>
-- 運営者用MCP（ローカルホスト限定）: `http://localhost:8000/mcp/`
+- 運営者用MCP（ローカルホスト限定）: `http://localhost:8000/mcp`
 
 PostgreSQLとRedisはホストへポートを公開しません。FastAPIも`127.0.0.1`だけにバインドされ、REST APIは内部トークン、MCPは運営者用Bearerトークンがなければ利用できません。
 
@@ -62,7 +62,7 @@ docker compose exec api python -m app.scripts.seed_demo
 MCPクライアントに次のURLとヘッダーをStreamable HTTPサーバーとして登録します。
 
 ```text
-http://localhost:8000/mcp/
+http://localhost:8000/mcp
 ```
 
 ```text
@@ -86,7 +86,7 @@ MCP_OPERATOR_PASSWORD=<12文字以上の固有パスワード>
 クライアントには次のURLだけを登録します。認証情報の入力欄は空のままにしてください。
 
 ```text
-https://<公開ホスト名>/mcp/
+https://<公開ホスト名>/mcp
 ```
 
 接続時の流れは次のとおりです。

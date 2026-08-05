@@ -30,7 +30,7 @@ mcp = FastMCP(
         "追加・更新の前にget_master_valuesで固定値を確認してください。"
         "日付はYYYY-MM-DD、URLはhttpsを使用し、推測できない任意項目はnullにしてください。"
     ),
-    streamable_http_path="/",
+    streamable_http_path="/mcp",
     stateless_http=True,
     json_response=True,
 )

@@ -465,6 +465,7 @@ button, summary, select { cursor: pointer; }
 .source-links { display: grid; gap: 8px; margin-top: 20px; }
 .source-links a { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; font-weight: 750; }
 .updated-note { margin: 18px 0 0; color: #929b97; font-size: 12px; text-align: center; }
+.correction-link { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 8px 0 0; color: #929b97; font-size: 11px; }
 
 /* About — Why Relua? */
 .hex-field {
@@ -537,6 +538,39 @@ button, summary, select { cursor: pointer; }
   border-radius: 6px; color: white; background: var(--orange); font-size: 14px; font-weight: 800;
   transition: transform .2s, background .2s;
 }
+
+/* Terms and publication policy */
+.legal-page { padding-bottom: 96px; }
+.legal-hero { position: relative; overflow: hidden; color: var(--paper); background: var(--ink); }
+.legal-hero-inner { position: relative; z-index: 1; padding: 58px 0 54px; }
+.legal-hero h1 {
+  max-width: 760px; margin: 12px 0 0; font-family: Georgia, "Yu Mincho", serif;
+  font-size: clamp(28px, 4.4vw, 44px); font-weight: 500; line-height: 1.28; letter-spacing: -.02em;
+}
+.legal-hero-lead { max-width: 620px; margin: 22px 0 0; color: #d2d7dd; font-size: 14px; line-height: 2; }
+.legal-body { max-width: 740px; margin-top: 52px; }
+.legal-lead { padding-bottom: 34px; border-bottom: 1px solid var(--line); }
+.legal-lead p { margin: 0 0 16px; color: #3f4753; font-size: 15px; line-height: 2.05; }
+.legal-lead p:last-child { margin-bottom: 0; }
+.legal-section { margin-top: 46px; }
+.legal-section h2 { margin: 0 0 20px; font-family: Georgia, "Yu Mincho", serif; font-size: 21px; font-weight: 650; }
+.legal-section p { margin: 0 0 15px; color: #454c56; font-size: 14px; line-height: 2.05; }
+.legal-section p:last-child { margin-bottom: 0; }
+.legal-section strong { color: var(--ink); font-weight: 750; }
+.legal-list { margin: 0 0 15px; padding: 0 0 0 21px; }
+.legal-list li { margin-bottom: 11px; color: #454c56; font-size: 14px; line-height: 1.95; }
+.legal-list li:last-child { margin-bottom: 0; }
+.legal-callout { margin: 20px 0; padding: 20px 22px; border-left: 3px solid var(--orange); background: var(--orange-soft); }
+.legal-callout p { margin: 0 0 11px; color: #6b5638; font-size: 14px; line-height: 1.95; }
+.legal-callout p:last-child { margin-bottom: 0; }
+.legal-callout strong { color: #4a3a1f; }
+.legal-cta {
+  display: inline-flex; align-items: center; gap: 9px; margin-top: 8px; padding: 13px 24px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--white);
+  font-size: 13px; font-weight: 800; transition: border-color .2s, color .2s;
+}
+.legal-section a:not(.legal-cta) { border-bottom: 1px solid var(--line); color: var(--ink); font-weight: 750; }
+.legal-meta { margin: 54px 0 0; padding-top: 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 
 /* Local bookmarks, transfer and shared lists */
 .local-page { min-height: 65vh; padding: 62px 0 100px; }
@@ -653,7 +687,9 @@ button, summary, select { cursor: pointer; }
 .footer-brand { margin: 0 0 8px; color: white; font-family: Georgia, serif; font-size: 21px; font-style: italic; letter-spacing: .02em; }
 .footer-tagline { margin: 0 0 9px; color: var(--orange); font-family: Georgia, serif; font-size: 13px; letter-spacing: .04em; }
 .footer-inner > div > p:last-child { margin: 0; font-size: 13px; }
-.footer-links { display: flex; align-items: center; gap: 22px; font-size: 13px; }
+/* Wraps by default: the link row outgrew a single line once the legal pages were added. */
+.footer-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px 22px; max-width: 460px; font-size: 13px; }
+.footer-caution { flex-basis: 100%; text-align: right; }
 
 /* Toast — transient confirmations that stay visible wherever the page is scrolled */
 .toast-region { position: fixed; z-index: 70; inset: auto 16px calc(20px + env(safe-area-inset-bottom)); display: grid; justify-items: center; pointer-events: none; }
@@ -691,6 +727,9 @@ button, summary, select { cursor: pointer; }
   .bookmark-button:hover, .secondary-action:hover { color: var(--orange); border-color: var(--orange); }
   .entry-button-secondary:hover { color: white; background: var(--ink); }
   .source-links a:hover { border-color: var(--orange); color: var(--orange); }
+  .correction-link:hover { color: var(--orange); }
+  .legal-cta:hover { border-color: var(--orange); color: var(--orange); }
+  .legal-section a:not(.legal-cta):hover { border-color: var(--orange); color: var(--orange); }
   .local-tools button:hover, .file-import:hover, .shared-list-action button:hover { color: var(--orange); border-color: var(--orange); }
   .section-heading button:hover { color: #a34b3c; }
   .footer-links a:hover { color: var(--orange); }
@@ -859,7 +898,8 @@ button, summary, select { cursor: pointer; }
   .process-flow { display: grid; }
   .process-flow span:not(:last-child)::after { content: "↓"; position: absolute; right: auto; margin-top: 38px; margin-left: 3px; }
   .footer-inner { display: grid; gap: 28px; }
-  .footer-links { flex-wrap: wrap; gap: 12px 18px; }
+  .footer-links { justify-content: flex-start; max-width: none; gap: 12px 18px; }
+  .footer-caution { text-align: left; }
   .about-hero-inner { padding: 48px 0 44px; }
   .about-hero-lead { font-size: 14px; }
   .about-intro { margin-top: 44px; }

@@ -48,6 +48,9 @@ def pydantic_errors(exc: ValidationError, raw: dict[str, Any]) -> list[dict[str,
         elif key in URL_FIELDS:
             expected = "https形式（ホスト名必須、短縮URL・IP直指定不可）"
             example = "https://example.com/recruit"
+            if key == "source_url":
+                expected = "https形式の一次情報URL（求人サイト・短縮URL・IP直指定不可）"
+                alternative = "企業自身の採用ページが見つからない場合は登録を見送ってください"
         formatted.append(
             {
                 "field": FIELD_LABELS.get(key, key),

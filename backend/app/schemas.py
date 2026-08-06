@@ -15,6 +15,39 @@ SHORTENER_HOSTS = {
     "ow.ly",
     "buff.ly",
 }
+#: Job boards, aggregators and review sites. A listing there is part of a database someone else
+#: built and whose terms forbid automated reuse, so restating it here trades our own compilation
+#: for theirs. Only source_url is checked: citing one of these means the record came from the
+#: aggregator, while entry_url may legitimately point at a platform the employer chose to use.
+#: Extend as new services appear -- a missing host is a gap, never a false rejection.
+AGGREGATOR_HOSTS = {
+    "asagaku.com",
+    "br-campus.jp",
+    "career-tasu.jp",
+    "careerpark.jp",
+    "doda.jp",
+    "en-japan.com",
+    "gaishishukatsu.com",
+    "goodfind.jp",
+    "green-japan.com",
+    "indeed.com",
+    "internshipguide.jp",
+    "jobtalk.jp",
+    "kyujinbox.com",
+    "labbase.jp",
+    "levtech.jp",
+    "mynavi.jp",
+    "offerbox.jp",
+    "onecareer.jp",
+    "openwork.jp",
+    "paiza.jp",
+    "rikunabi.com",
+    "supporterz.jp",
+    "syukatsu-kaigi.jp",
+    "type.jp",
+    "unistyleinc.com",
+    "wantedly.com",
+}
 FORBIDDEN_TEXT = re.compile(r"<[^>]+>|!\[[^]]*]\([^)]*\)|\[[^]]+]\(https?://[^)]+\)", re.IGNORECASE)
 
 
@@ -29,6 +62,17 @@ def validate_https_url(value: str | None) -> str | None:
         raise ValueError("localhostまたはIPアドレスを直接指定するURLは使用できません")
     if host in SHORTENER_HOSTS:
         raise ValueError("短縮URLは使用できません。元のURLを指定してください")
+    return value
+
+
+def validate_source_host(value: str) -> str:
+    host = (urlparse(value).hostname or "").lower()
+    # Subdomain match, so job.mynavi.jp is caught by the registrable domain alone.
+    if any(host == domain or host.endswith(f".{domain}") for domain in AGGREGATOR_HOSTS):
+        raise ValueError(
+            "求人サイト・口コミサイトのURLは情報源に指定できません。"
+            "企業自身の採用ページなど、一次情報のURLを指定してください"
+        )
     return value
 
 
@@ -58,6 +102,16 @@ SortValue = Literal["deadline", "updated", "created"]
 
 #: Reused by every optional free-text field so the JSON Schema states the "do not guess" rule once.
 UNKNOWN_IS_NULL = "推測できない場合はnullにしてください。"
+#: The facts in a posting (dates, pay, who may apply) are free to restate, but the wording carrying
+#: them belongs to whoever wrote the source page. Stated per field rather than only in the server
+#: instructions, because a client that skips the instructions still reads the payload schema.
+NO_VERBATIM = (
+    "出典の文章をそのまま転記せず、事実だけを自分の言葉で書いてください。"
+    "キャッチコピーや宣伝文など、出典独自の表現は使用しません。"
+)
+#: Postings often name a recruiter or give a direct contact. Neither is needed to describe an
+#: opportunity, and no other field in this service identifies an individual.
+NO_PERSONAL_DATA = "担当者名などの個人名と、個人宛のメールアドレス・電話番号は含めません。"
 
 
 class OpportunityInput(BaseModel):
@@ -101,7 +155,10 @@ class OpportunityInput(BaseModel):
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
         Field(
-            description="募集内容の説明。HTMLタグ、Markdown画像、Markdownリンクは使用できません。",
+            description=(
+                f"募集内容の説明。{NO_VERBATIM}{NO_PERSONAL_DATA}"
+                "HTMLタグ、Markdown画像、Markdownリンクは使用できません。"
+            ),
             examples=["プロダクト開発を2週間体験する実務型インターンです。"],
         ),
     ]
@@ -115,7 +172,10 @@ class OpportunityInput(BaseModel):
     ] = None
     selection_process: Annotated[
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None,
-        Field(description=f"選考フロー。{UNKNOWN_IS_NULL}", examples=["書類選考→面接1回"]),
+        Field(
+            description=f"選考フロー。{NO_VERBATIM}{NO_PERSONAL_DATA}{UNKNOWN_IS_NULL}",
+            examples=["書類選考→面接1回"],
+        ),
     ] = None
     homepage_url: Annotated[
         str | None,
@@ -139,15 +199,21 @@ class OpportunityInput(BaseModel):
     ] = None
     period_note: Annotated[
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None,
-        Field(description=f"実施期間の補足。{UNKNOWN_IS_NULL}", examples=["全5日間、平日のみ"]),
+        Field(description=f"実施期間の補足。{NO_VERBATIM}{UNKNOWN_IS_NULL}", examples=["全5日間、平日のみ"]),
     ] = None
     requirements: Annotated[
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None,
-        Field(description=f"応募要件。{UNKNOWN_IS_NULL}", examples=["Python実務経験があると望ましい"]),
+        Field(
+            description=f"応募要件。{NO_VERBATIM}{NO_PERSONAL_DATA}{UNKNOWN_IS_NULL}",
+            examples=["Python実務経験があると望ましい"],
+        ),
     ] = None
     compensation: Annotated[
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None,
-        Field(description=f"報酬・待遇。{UNKNOWN_IS_NULL}", examples=["日給10,000円、交通費支給"]),
+        Field(
+            description=f"報酬・待遇。{NO_VERBATIM}{NO_PERSONAL_DATA}{UNKNOWN_IS_NULL}",
+            examples=["日給10,000円、交通費支給"],
+        ),
     ] = None
     graduation_years: Annotated[
         list[GraduationYearValue],
@@ -159,7 +225,10 @@ class OpportunityInput(BaseModel):
     ]
     audience_note: Annotated[
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None,
-        Field(description=f"対象者の補足。{UNKNOWN_IS_NULL}", examples=["情報系学部生歓迎"]),
+        Field(
+            description=f"対象者の補足。{NO_VERBATIM}{NO_PERSONAL_DATA}{UNKNOWN_IS_NULL}",
+            examples=["情報系学部生歓迎"],
+        ),
     ] = None
     recruitment_start_date: Annotated[
         date | None,
@@ -172,7 +241,10 @@ class OpportunityInput(BaseModel):
     source_url: Annotated[
         str,
         Field(
-            description="情報の出典URL（https必須）。短縮URLとIP直指定は使用できません。",
+            description=(
+                "情報の出典URL（https必須）。企業自身の採用ページなど、一次情報のURLを指定してください。"
+                "求人サイト・就活情報サイト・口コミサイト、短縮URL、IP直指定は使用できません。"
+            ),
             examples=["https://example.com/recruit/intern"],
         ),
     ]
@@ -181,6 +253,11 @@ class OpportunityInput(BaseModel):
     @classmethod
     def https_urls(cls, value: str | None) -> str | None:
         return validate_https_url(value)
+
+    @field_validator("source_url")
+    @classmethod
+    def citable_source(cls, value: str) -> str:
+        return validate_source_host(value)
 
     @field_validator(
         "event_name",

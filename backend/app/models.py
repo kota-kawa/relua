@@ -152,10 +152,13 @@ class Opportunity(Base):
     recruitment_start_date: Mapped[date | None] = mapped_column(Date)
     entry_url: Mapped[str | None] = mapped_column(String(2048))
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
-    company_rating: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    #: Shown to users as 最終更新 beside the source link, so it must mean "when the source was last
+    #: read into this record". Deliberately no onupdate: a maintenance write such as the deadline
+    #: sweep would silently make an unverified record look freshly checked. Only the MCP write paths
+    #: in services.opportunities set this, which fails safe -- a missed bump reads as older, not newer.
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     status: Mapped[RecruitmentStatus] = relationship()
@@ -174,7 +177,6 @@ class Opportunity(Base):
     __table_args__ = (
         CheckConstraint("event_end_date IS NULL OR event_start_date IS NULL OR event_end_date >= event_start_date", name="ck_event_dates"),
         CheckConstraint("deadline IS NULL OR recruitment_start_date IS NULL OR deadline >= recruitment_start_date", name="ck_recruitment_dates"),
-        CheckConstraint("company_rating IS NULL OR company_rating BETWEEN 1 AND 5", name="ck_company_rating"),
         Index("ix_opportunities_deadline", "deadline"),
         Index("ix_opportunities_filter", "status_id", "industry_id", "event_type_id"),
     )

@@ -401,6 +401,9 @@ def write_opportunity(
     item.graduation_years = resolved["graduation_years"]
     item.degrees = resolved["degrees"]
     item.tags = _tags(db, data.tags)
+    # The model has no onupdate, so every write that re-read the source states the timestamp itself.
+    # func.now() keeps this on the database clock, the same one created_at's server_default uses.
+    item.updated_at = func.now()
     if is_new:
         db.add(item)
     db.flush()
@@ -512,6 +515,8 @@ def update_recruitment_status(
     before = opportunity_dict(item)
     item.status = status
     item.deadline = new_deadline
+    #: A status edit is still an agent reporting what the source says now, so it refreshes the stamp.
+    item.updated_at = func.now()
     db.flush()
     json_response = jsonable_encoder(opportunity_dict(item))
 

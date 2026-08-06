@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     api_internal_token: str = Field(default="local-development-internal-token", min_length=16)
     mcp_api_token: str = Field(default="local-development-mcp-token", min_length=16)
     mcp_rate_limit_per_minute: int = Field(default=30, ge=1, le=300)
+    #: Public origin of the Next.js site. Every record MCP returns carries its detail page URL,
+    #: so a remote client can cite the entry instead of only naming it.
+    site_url: str = "http://localhost:3100"
 
     #: OAuth lets remote clients (ChatGPT, Claude) connect by sending the operator to a relua login page.
     #: Off by default so an existing loopback-only deployment keeps its single static-token setup.
@@ -35,6 +38,10 @@ class Settings(BaseSettings):
     @property
     def resource_identifier(self) -> str:
         return f"{self.issuer}/mcp"
+
+    @property
+    def site_origin(self) -> str:
+        return self.site_url.rstrip("/")
 
     @model_validator(mode="after")
     def reject_development_secrets_in_production(self) -> "Settings":

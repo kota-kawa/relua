@@ -10,7 +10,7 @@ from app.api.oauth import router as oauth_router
 from app.api.opportunities import router as opportunities_router
 from app.config import get_settings
 from app.db import SessionLocal
-from app.mcp_server import mcp, mcp_http_app
+from app.mcp_server import ANONYMOUS_TOOLS, mcp, mcp_http_app
 from app.security import bearer_token, valid_internal_token, valid_mcp_authorization
 from app.services.oauth import DEFAULT_SCOPE, authenticate_access_token
 
@@ -106,7 +106,7 @@ async def _anonymous_mcp_request(request: Request) -> bool:
     if method != "tools/call":
         return False
     params = payload.get("params")
-    return isinstance(params, dict) and params.get("name") in {"search_opportunity", "get_master_values"}
+    return isinstance(params, dict) and params.get("name") in ANONYMOUS_TOOLS
 
 
 @app.middleware("http")

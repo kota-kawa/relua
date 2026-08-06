@@ -88,6 +88,9 @@ mcp = FastMCP(
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "日付はYYYY-MM-DD、URLはhttpsを使用し、推測できない任意項目はnullにしてください。"
+        "自由記述には出典の文章を転記せず、日程・対象・報酬などの事実だけを自分の言葉で書いてください。"
+        "出典独自の言い回しやキャッチコピー、担当者名などの個人名、個人宛の連絡先は登録しないでください。"
+        "情報源には企業自身の採用ページなど一次情報を指定し、求人サイトや口コミサイトの掲載ページは使用しないでください。"
     ),
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -387,6 +390,7 @@ def validate_opportunity(
         "募集情報を1件追加します。request_idはクライアント側で一意にし、再試行時は同じ値を使用してください。"
         "payload内の固定値はget_master_values／get_sectorsのnameを指定します。"
         "同じ企業の同名イベントが既にある場合は登録を拒否し、既存の登録を返します。"
+        "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
     ),
     annotations=APPEND_ONLY,
 )
@@ -427,6 +431,7 @@ def add_opportunity(
         "既存の募集情報を全項目置換で更新します。部分更新は行わないため、"
         "get_opportunityで現在値を取得し、変更しない項目もそのまま含めた完全なpayloadを送ってください。"
         "状況や締切だけを直す場合はupdate_recruitment_statusを使ってください。"
+        "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
     ),
     annotations=REPLACING,
 )

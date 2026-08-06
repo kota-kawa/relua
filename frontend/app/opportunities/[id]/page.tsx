@@ -3,10 +3,11 @@ import { notFound } from "next/navigation";
 
 import { BackLink } from "@/components/back-link";
 import { BookmarkButton } from "@/components/bookmark-button";
-import { CalendarDays, ExternalLink, MapPin } from "@/components/icons";
+import { CalendarDays, ExternalLink, Flag, MapPin } from "@/components/icons";
 import { OpportunityActions } from "@/components/opportunity-actions";
 import { RecentTracker } from "@/components/recent-tracker";
 import { ApiError, getOpportunity } from "@/lib/api";
+import { CONTACT_FORM_URL } from "@/lib/constants";
 import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 
 type Props = { params: Promise<{ id: string }> };
@@ -127,6 +128,9 @@ export default async function OpportunityDetail({ params }: Props) {
                 <a href={item.source_url} target="_blank" rel="noopener noreferrer">情報源を確認 <ExternalLink size={15} /></a>
               </div>
               <p className="updated-note">最終更新：{formatDate(item.updated_at.slice(0, 10))}</p>
+              <a className="correction-link" href={CONTACT_FORM_URL} target="_blank" rel="noopener noreferrer">
+                <Flag size={13} /> 掲載内容の訂正・削除を依頼する
+              </a>
             </aside>
           </div>
         </article>

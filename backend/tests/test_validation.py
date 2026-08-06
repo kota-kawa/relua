@@ -42,6 +42,38 @@ def test_invalid_input_is_rejected(field: str, value: str):
         OpportunityInput.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mynavi.jp/intern/123",
+        "https://job.mynavi.jp/27/pc/search/corp123/outline.html",  # subdomain
+        "https://job.rikunabi.com/2028/company/r123456/",
+        "https://www.wantedly.com/projects/123456",
+        "https://en-japan.com/desc_123/",
+        "https://openwork.jp/company_answer.php?m_id=a1",  # review site, not a posting at all
+    ],
+)
+def test_aggregator_is_rejected_as_source(url: str):
+    payload = valid_payload()
+    payload["source_url"] = url
+    with pytest.raises(ValidationError, match="一次情報"):
+        OpportunityInput.model_validate(payload)
+
+
+def test_aggregator_is_still_allowed_as_entry_url():
+    """The employer may run applications through a platform; only the citation must be first-party."""
+    payload = valid_payload()
+    payload["entry_url"] = "https://www.wantedly.com/projects/123456"
+    assert OpportunityInput.model_validate(payload).entry_url.startswith("https://www.wantedly.com/")
+
+
+def test_company_domain_resembling_an_aggregator_is_accepted():
+    """endswith matching must respect the dot, so mynavi.jp does not swallow notmynavi.jp."""
+    payload = valid_payload()
+    payload["source_url"] = "https://notmynavi.jp/recruit"
+    assert OpportunityInput.model_validate(payload).source_url == "https://notmynavi.jp/recruit"
+
+
 def test_online_event_rejects_location():
     payload = valid_payload()
     payload["location"] = "東京都"

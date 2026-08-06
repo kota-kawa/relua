@@ -39,6 +39,19 @@ export async function getOpportunities(params: SearchParams): Promise<Opportunit
   return apiFetch<OpportunityList>(`/opportunities?${query.toString()}`);
 }
 
+/** Fetch every opportunity for routes that need a complete site-wide listing. */
+export async function getAllOpportunities(): Promise<Opportunity[]> {
+  const perPage = 100;
+  const firstPage = await apiFetch<OpportunityList>(`/opportunities?per_page=${perPage}&sort=updated`);
+  const remainingPages = await Promise.all(
+    Array.from({ length: firstPage.total_pages - 1 }, (_, index) =>
+      apiFetch<OpportunityList>(`/opportunities?per_page=${perPage}&sort=updated&page=${index + 2}`),
+    ),
+  );
+
+  return [firstPage, ...remainingPages].flatMap((page) => page.items);
+}
+
 export async function getOpportunity(id: string): Promise<Opportunity> {
   return apiFetch<Opportunity>(`/opportunities/${encodeURIComponent(id)}`);
 }

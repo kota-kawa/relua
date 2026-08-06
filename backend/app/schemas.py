@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic.json_schema import WithJsonSchema
 
 SHORTENER_HOSTS = {
     "bit.ly",
@@ -37,7 +38,6 @@ def validate_plain_text(value: str | None) -> str | None:
     return value
 
 
-RequiredText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 RecruitmentStatusValue = Literal["募集予定", "募集中", "締切", "通年募集", "不明"]
 IndustryValue = Literal[
     "IT・通信", "メーカー", "商社", "金融", "コンサル・シンクタンク", "広告・メディア",
@@ -53,36 +53,129 @@ JobCategoryValue = Literal[
 ]
 GraduationYearValue = Literal["26卒", "27卒", "28卒", "29卒", "30卒", "学年不問"]
 DegreeValue = Literal["学部", "修士", "博士", "高専", "専門", "不問"]
+SortValue = Literal["deadline", "updated", "created"]
+
+
+#: Reused by every optional free-text field so the JSON Schema states the "do not guess" rule once.
+UNKNOWN_IS_NULL = "推測できない場合はnullにしてください。"
 
 
 class OpportunityInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    recruitment_status: RecruitmentStatusValue
-    company_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
-    industry: IndustryValue
-    sector: RequiredText
-    event_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
-    deadline: date | None = None
-    event_type: EventTypeValue
-    description: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
-    event_format: EventFormatValue
-    location: Annotated[str, StringConstraints(strip_whitespace=True, max_length=300)] | None = None
-    selection_process: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None = None
-    homepage_url: str | None = None
-    job_categories: Annotated[list[JobCategoryValue], Field(min_length=1)]
-    tags: Annotated[list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20)]], Field(max_length=10)] = []
-    event_start_date: date | None = None
-    event_end_date: date | None = None
-    period_note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None
-    requirements: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None = None
-    compensation: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None = None
-    graduation_years: Annotated[list[GraduationYearValue], Field(min_length=1)]
-    degrees: Annotated[list[DegreeValue], Field(min_length=1)]
-    audience_note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None
-    recruitment_start_date: date | None = None
-    entry_url: str | None = None
-    source_url: str
+    recruitment_status: Annotated[
+        RecruitmentStatusValue,
+        Field(description="募集の現在状況。判断できない場合は「不明」。", examples=["募集中"]),
+    ]
+    company_name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+        Field(
+            description="企業の正式名称。「(株)」などの略記は正規化され、既存企業と自動的に同一視されます。",
+            examples=["株式会社リルア"],
+        ),
+    ]
+    industry: Annotated[IndustryValue, Field(description="業界の固定値。", examples=["IT・通信"])]
+    sector: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1),
+        Field(
+            description=(
+                "業種の固定値。指定した業界に属する値だけが有効です。"
+                "get_sectorsで業界配下の候補を取得してから指定してください。"
+            ),
+            examples=["Webサービス"],
+        ),
+    ]
+    event_name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+        Field(description="募集・イベントの名称。企業名は含めません。", examples=["サマーインターン2027"]),
+    ]
+    deadline: Annotated[
+        date | None,
+        Field(description=f"応募締め切り日（YYYY-MM-DD）。{UNKNOWN_IS_NULL}", examples=["2026-08-31"]),
+    ] = None
+    event_type: Annotated[EventTypeValue, Field(description="募集の種別。", examples=["インターン"])]
+    description: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
+        Field(
+            description="募集内容の説明。HTMLタグ、Markdown画像、Markdownリンクは使用できません。",
+            examples=["プロダクト開発を2週間体験する実務型インターンです。"],
+        ),
+    ]
+    event_format: Annotated[EventFormatValue, Field(description="開催形式。", examples=["オンライン"])]
+    location: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=300)] | None,
+        Field(
+            description=f"開催地。開催形式がオンラインの場合は必ずnullにしてください。{UNKNOWN_IS_NULL}",
+            examples=["東京都渋谷区"],
+        ),
+    ] = None
+    selection_process: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None,
+        Field(description=f"選考フロー。{UNKNOWN_IS_NULL}", examples=["書類選考→面接1回"]),
+    ] = None
+    homepage_url: Annotated[
+        str | None,
+        Field(description=f"企業または募集のHP（https必須）。{UNKNOWN_IS_NULL}", examples=["https://example.com/"]),
+    ] = None
+    job_categories: Annotated[
+        list[JobCategoryValue],
+        Field(min_length=1, description="対象職種の固定値。1件以上、重複不可。", examples=[["ソフトウェアエンジニア"]]),
+    ]
+    tags: Annotated[
+        list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20)]],
+        Field(max_length=10, description="自由記述のキーワード。最大10件、1件20文字以内。", examples=[["長期", "有給"]]),
+    ] = []
+    event_start_date: Annotated[
+        date | None,
+        Field(description=f"実施開始日（YYYY-MM-DD）。{UNKNOWN_IS_NULL}", examples=["2026-09-01"]),
+    ] = None
+    event_end_date: Annotated[
+        date | None,
+        Field(description=f"実施終了日（YYYY-MM-DD）。実施開始日以降。{UNKNOWN_IS_NULL}", examples=["2026-09-14"]),
+    ] = None
+    period_note: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None,
+        Field(description=f"実施期間の補足。{UNKNOWN_IS_NULL}", examples=["全5日間、平日のみ"]),
+    ] = None
+    requirements: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None,
+        Field(description=f"応募要件。{UNKNOWN_IS_NULL}", examples=["Python実務経験があると望ましい"]),
+    ] = None
+    compensation: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None,
+        Field(description=f"報酬・待遇。{UNKNOWN_IS_NULL}", examples=["日給10,000円、交通費支給"]),
+    ] = None
+    graduation_years: Annotated[
+        list[GraduationYearValue],
+        Field(min_length=1, description="対象卒業年の固定値。1件以上、重複不可。", examples=[["28卒"]]),
+    ]
+    degrees: Annotated[
+        list[DegreeValue],
+        Field(min_length=1, description="対象学位の固定値。1件以上、重複不可。", examples=[["学部", "修士"]]),
+    ]
+    audience_note: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None,
+        Field(description=f"対象者の補足。{UNKNOWN_IS_NULL}", examples=["情報系学部生歓迎"]),
+    ] = None
+    recruitment_start_date: Annotated[
+        date | None,
+        Field(description=f"募集開始日（YYYY-MM-DD）。締め切り以前。{UNKNOWN_IS_NULL}", examples=["2026-06-01"]),
+    ] = None
+    entry_url: Annotated[
+        str | None,
+        Field(description=f"応募ページのURL（https必須）。{UNKNOWN_IS_NULL}", examples=["https://example.com/entry"]),
+    ] = None
+    source_url: Annotated[
+        str,
+        Field(
+            description="情報の出典URL（https必須）。短縮URLとIP直指定は使用できません。",
+            examples=["https://example.com/recruit/intern"],
+        ),
+    ]
 
     @field_validator("homepage_url", "entry_url", "source_url")
     @classmethod
@@ -142,6 +235,11 @@ class SectorItem(MasterItem):
     industry_id: int
 
 
+class CompanyItem(BaseModel):
+    id: int
+    name: str
+
+
 class MastersResponse(BaseModel):
     recruitment_statuses: list[MasterItem]
     industries: list[MasterItem]
@@ -156,8 +254,9 @@ class MastersResponse(BaseModel):
 class OpportunityResponse(BaseModel):
     id: str
     public_code: str
+    url: str
     recruitment_status: MasterItem
-    company: dict[str, Any]
+    company: CompanyItem
     industry: MasterItem
     sector: MasterItem
     event_name: str
@@ -193,14 +292,48 @@ class OpportunityListResponse(BaseModel):
     total_pages: int
 
 
+RequestId = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=8, max_length=100),
+    Field(
+        description=(
+            "操作ごとにクライアントが発行する一意なID（8〜100文字）。"
+            "同じ操作を再試行するときだけ同じ値を使うと、二重登録されずに前回の結果が返ります。"
+        ),
+        examples=["chatgpt-20260806-0001"],
+    ),
+]
+ClientName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+    Field(description="監査ログとレート制限に記録される呼び出し元の名前。", examples=["chatgpt"]),
+]
+
+
 class MCPWriteRequest(OpportunityInput):
-    request_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=8, max_length=100)]
-    client_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] = "mcp-client"
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
 
 
 class MCPUpdateRequest(OpportunityUpdate):
-    request_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=8, max_length=100)]
-    client_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] = "mcp-client"
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+
+#: MCP tools take the write payload as a plain dict carrying the model's own JSON Schema.
+#: A typed parameter would make FastMCP validate the arguments itself and answer with a raw pydantic
+#: message, bypassing the structured field/expected/example errors an agent can act on. Publishing the
+#: schema separately keeps the enums and descriptions visible while validation stays in our hands.
+WritePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(MCPWriteRequest.model_json_schema()),
+    Field(description="登録する募集情報の全項目。固定値はget_master_values／get_sectorsのnameを指定します。"),
+]
+UpdatePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(MCPUpdateRequest.model_json_schema()),
+    Field(description="更新後の全項目。部分更新ではないため、変更しない項目も現在値を必ず含めてください。"),
+]
 
 
 class ErrorItem(BaseModel):
@@ -210,9 +343,83 @@ class ErrorItem(BaseModel):
     expected: str | list[str] | None = None
     example: Any = None
     alternative: str | None = None
+    #: Set when the failure points at a record that already exists, so the client can update it instead.
+    existing: list[dict[str, Any]] | None = None
 
 
 class ValidationErrorResponse(BaseModel):
     error: str = "validation_failed"
     message: str = "入力内容を修正して再試行してください"
     errors: list[ErrorItem]
+
+
+class OpportunitySummary(BaseModel):
+    """Search-result shape. Free-text fields are trimmed; get_opportunityが全文を返します。"""
+
+    id: str
+    public_code: str
+    url: str
+    company_name: str
+    event_name: str
+    recruitment_status: str
+    event_type: str
+    event_format: str
+    industry: str
+    sector: str
+    deadline: date | None
+    location: str | None
+    description_excerpt: str
+    job_categories: list[str]
+    graduation_years: list[str]
+    degrees: list[str]
+    tags: list[str]
+    entry_url: str | None
+    source_url: str
+    updated_at: datetime
+
+
+class MCPSearchResponse(BaseModel):
+    items: list[OpportunitySummary]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class MCPWriteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    opportunity: OpportunityResponse
+
+
+class MCPDuplicateResponse(BaseModel):
+    message: str
+    matches: list[OpportunitySummary]
+
+
+class MCPValidationResponse(BaseModel):
+    valid: bool
+    message: str
+    duplicates: list[OpportunitySummary]
+
+
+class MCPSectorsResponse(BaseModel):
+    industry: MasterItem
+    sectors: list[MasterItem]
+
+
+class MCPWriteHistoryItem(BaseModel):
+    action: str
+    request_id: str | None
+    client_name: str
+    success: bool
+    opportunity_id: str | None
+    url: str | None
+    source_url: str | None
+    errors: list[dict[str, Any]] | None
+    created_at: datetime
+
+
+class MCPWriteHistoryResponse(BaseModel):
+    items: list[MCPWriteHistoryItem]

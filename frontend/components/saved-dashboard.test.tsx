@@ -23,6 +23,7 @@ const master = { id: 1, slug: "value-01", name: "値" };
 const savedItem = {
   id: "job-1",
   public_code: "A1B2C3D4",
+  url: "http://localhost:3100/opportunities/A1B2C3D4",
   recruitment_status: master,
   company: { id: 1, name: "株式会社テスト" },
   industry: master,

@@ -21,6 +21,8 @@ export type Opportunity = {
   id: string;
   /** Short identifier used in transfer and share links. */
   public_code: string;
+  /** Absolute link to the public detail page, so API consumers can cite an entry. */
+  url: string;
   recruitment_status: MasterItem;
   company: { id: number; name: string };
   industry: MasterItem;

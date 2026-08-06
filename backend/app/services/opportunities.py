@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -26,10 +27,10 @@ from app.models import (
     public_code_string,
 )
 from app.schemas import OpportunityInput
-from app.services.errors import master_error
+from app.services.errors import FIELD_LABELS, master_error
 from app.services.masters import choices, resolve_many, resolve_one
-from app.services.normalization import normalize_company_name, normalize_tag
-from app.services.serialization import opportunity_dict
+from app.services.normalization import normalize_common, normalize_company_name, normalize_tag
+from app.services.serialization import detail_url, opportunity_dict, public_detail_url
 
 
 class DomainValidationError(Exception):
@@ -178,6 +179,78 @@ def search_opportunities(
     return SearchResult(items=list(db.scalars(stmt).unique()), total=total, page=page, per_page=per_page)
 
 
+def _company_opportunities(db: Session, company_name: str, exclude_id: str | None = None) -> list[Opportunity]:
+    normalized = normalize_company_name(company_name)
+    stmt = opportunity_query().join(Opportunity.company).where(Company.normalized_name == normalized)
+    if exclude_id:
+        stmt = stmt.where(Opportunity.id != exclude_id)
+    return list(db.scalars(stmt.order_by(Opportunity.updated_at.desc())).unique())
+
+
+def find_similar_opportunities(
+    db: Session,
+    *,
+    company_name: str,
+    event_name: str | None = None,
+    exclude_id: str | None = None,
+    limit: int = 20,
+) -> list[Opportunity]:
+    """Entries of the same company, narrowed by a loose event-name match.
+
+    Company names are compared after normalization, so "(株)X" and "株式会社X" collapse to one company.
+    Event names match on containment in either direction, which catches "サマーインターン" against
+    "サマーインターン2027" — near-misses a caller should look at before adding a second record.
+    """
+    items = _company_opportunities(db, company_name, exclude_id)
+    if event_name:
+        target = normalize_common(event_name)
+        items = [
+            item
+            for item in items
+            if target in normalize_common(item.event_name) or normalize_common(item.event_name) in target
+        ]
+    return items[:limit]
+
+
+def find_exact_duplicates(
+    db: Session, *, company_name: str, event_name: str, exclude_id: str | None = None
+) -> list[Opportunity]:
+    """Same company and the same event name after normalization: a re-registration, not a new entry."""
+    target = normalize_common(event_name)
+    return [
+        item for item in _company_opportunities(db, company_name, exclude_id) if normalize_common(item.event_name) == target
+    ]
+
+
+def _reused_request_id_error(request_id: str) -> dict[str, Any]:
+    return {
+        "field": "request_id",
+        "received": request_id,
+        "reason": "同じrequest_idが異なる内容の操作です",
+        "expected": "操作ごとに一意なrequest_id",
+        "example": "client-20260726-0001",
+        "alternative": "新しいrequest_idを発行してください",
+    }
+
+
+def _duplicate_error(matches: list[Opportunity]) -> dict[str, Any]:
+    return {
+        "field": "イベント名",
+        "received": matches[0].event_name,
+        "reason": "同じ企業の同名イベントが既に登録されています",
+        "expected": "未登録のイベント名",
+        "example": None,
+        "alternative": (
+            "既存の登録を直す場合はupdate_opportunityを使い、"
+            "別日程・別コースで意図的に分けて登録する場合はallow_duplicateをtrueにしてください"
+        ),
+        "existing": [
+            {"id": item.id, "public_code": item.public_code, "url": detail_url(item), "event_name": item.event_name}
+            for item in matches
+        ],
+    }
+
+
 def _resolve_relations(db: Session, data: OpportunityInput) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
     resolved: dict[str, Any] = {}
@@ -219,6 +292,12 @@ def _resolve_relations(db: Session, data: OpportunityInput) -> tuple[dict[str, A
     return resolved, errors
 
 
+def validate_write(db: Session, *, data: OpportunityInput) -> list[dict[str, Any]]:
+    """Master-value checks with nothing written, backing the dry-run tool."""
+    _, errors = _resolve_relations(db, data)
+    return errors
+
+
 def _company(db: Session, name: str) -> Company:
     normalized = normalize_company_name(name)
     company = db.scalar(select(Company).where(Company.normalized_name == normalized))
@@ -242,9 +321,12 @@ def _tags(db: Session, names: list[str]) -> list[Tag]:
     return result
 
 
+def _hash_payload(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def _request_hash(data: OpportunityInput) -> str:
-    payload = data.model_dump(mode="json")
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return _hash_payload(data.model_dump(mode="json"))
 
 
 def write_opportunity(
@@ -254,6 +336,7 @@ def write_opportunity(
     request_id: str,
     client_name: str,
     opportunity_id: str | None = None,
+    allow_duplicate: bool = False,
 ) -> tuple[Opportunity, bool]:
     operation = "update" if opportunity_id else "create"
     request_hash = _request_hash(data)
@@ -261,22 +344,18 @@ def write_opportunity(
     if previous:
         target_mismatch = opportunity_id is not None and previous.opportunity_id != opportunity_id
         if previous.operation != operation or previous.request_hash != request_hash or target_mismatch:
-            raise DomainValidationError(
-                [
-                    {
-                        "field": "request_id",
-                        "received": request_id,
-                        "reason": "同じrequest_idが異なる内容の操作です",
-                        "expected": "操作ごとに一意なrequest_id",
-                        "example": "client-20260726-0001",
-                        "alternative": "新しいrequest_idを発行してください",
-                    }
-                ]
-            )
+            raise DomainValidationError([_reused_request_id_error(request_id)])
         item = get_opportunity(db, previous.opportunity_id)
         if item is None:
             raise RuntimeError("idempotency target not found")
         return item, True
+
+    if opportunity_id is None and not allow_duplicate:
+        # Idempotency only catches a replay of the same request_id. A client that re-reads the same
+        # source page next week sends a new request_id, so the same posting would land twice.
+        duplicates = find_exact_duplicates(db, company_name=data.company_name, event_name=data.event_name)
+        if duplicates:
+            raise DomainValidationError([_duplicate_error(duplicates)])
 
     resolved, errors = _resolve_relations(db, data)
     if errors:
@@ -351,6 +430,140 @@ def write_opportunity(
     )
     db.commit()
     return item, False
+
+
+def update_recruitment_status(
+    db: Session,
+    *,
+    opportunity_id: str,
+    recruitment_status: str,
+    request_id: str,
+    client_name: str,
+    deadline: date | None = None,
+    clear_deadline: bool = False,
+) -> tuple[Opportunity, bool]:
+    """Change only the status, and optionally the deadline.
+
+    Marking a posting 締切 is the most common maintenance edit. Requiring the full replacement payload
+    for it makes an agent re-send 25 fields it did not verify, which is how stale values creep in.
+    """
+    payload = {
+        "opportunity_id": opportunity_id,
+        "recruitment_status": recruitment_status,
+        "deadline": deadline,
+        "clear_deadline": clear_deadline,
+    }
+    request_hash = _hash_payload(payload)
+    previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
+    if previous:
+        if (
+            previous.operation != "status_update"
+            or previous.request_hash != request_hash
+            or previous.opportunity_id != opportunity_id
+        ):
+            raise DomainValidationError([_reused_request_id_error(request_id)])
+        item = get_opportunity(db, previous.opportunity_id)
+        if item is None:
+            raise RuntimeError("idempotency target not found")
+        return item, True
+
+    item = get_opportunity(db, opportunity_id)
+    if item is None:
+        raise LookupError("opportunity_not_found")
+
+    status = resolve_one(db, RecruitmentStatus, recruitment_status)
+    if status is None:
+        raise DomainValidationError([master_error("recruitment_status", recruitment_status, choices(db, RecruitmentStatus))])
+
+    new_deadline = item.deadline
+    if deadline is not None:
+        new_deadline = deadline
+    elif clear_deadline:
+        new_deadline = None
+    if new_deadline is not None:
+        limit = date.today().replace(year=date.today().year + 5)
+        if not date(2000, 1, 1) <= new_deadline <= limit:
+            raise DomainValidationError(
+                [
+                    {
+                        "field": FIELD_LABELS["deadline"],
+                        "received": new_deadline,
+                        "reason": "許容範囲外の日付です",
+                        "expected": "YYYY-MM-DD形式（2000-01-01から実行日の5年後まで）",
+                        "example": "2026-08-31",
+                        "alternative": "不明な場合はclear_deadlineをtrueにしてください",
+                    }
+                ]
+            )
+        if item.recruitment_start_date and new_deadline < item.recruitment_start_date:
+            raise DomainValidationError(
+                [
+                    {
+                        "field": FIELD_LABELS["deadline"],
+                        "received": new_deadline,
+                        "reason": "締め切りは募集開始日以降にしてください",
+                        "expected": f"{item.recruitment_start_date.isoformat()}以降の日付",
+                        "example": item.recruitment_start_date.isoformat(),
+                        "alternative": "募集開始日も直す場合はupdate_opportunityを使ってください",
+                    }
+                ]
+            )
+
+    before = opportunity_dict(item)
+    item.status = status
+    item.deadline = new_deadline
+    db.flush()
+    json_response = jsonable_encoder(opportunity_dict(item))
+
+    db.add(
+        AuditLog(
+            action="status_update",
+            entity_type="opportunity",
+            entity_id=item.id,
+            request_id=request_id,
+            client_name=client_name,
+            source_url=item.source_url,
+            success=True,
+            changes={"before": jsonable_encoder(before), "after": json_response},
+        )
+    )
+    db.add(
+        IdempotencyRecord(
+            request_id=request_id,
+            operation="status_update",
+            request_hash=request_hash,
+            opportunity_id=item.id,
+            response_data=json_response,
+        )
+    )
+    db.commit()
+    return item, False
+
+
+def recent_write_logs(db: Session, *, client_name: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    """What this connection already wrote, so an agent can see its own history instead of re-registering."""
+    stmt = select(AuditLog).where(AuditLog.entity_type == "opportunity")
+    if client_name:
+        stmt = stmt.where(AuditLog.client_name == client_name)
+    logs = db.scalars(stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit))
+    items = []
+    for log in logs:
+        after = (log.changes or {}).get("after") or {}
+        public_code = after.get("public_code")
+        items.append(
+            {
+                "action": log.action,
+                "request_id": log.request_id,
+                "client_name": log.client_name,
+                "success": log.success,
+                "opportunity_id": log.entity_id,
+                "url": public_detail_url(public_code) if public_code else None,
+                "source_url": log.source_url,
+                "errors": log.errors,
+                "created_at": log.created_at,
+            }
+        )
+    return items
 
 
 def record_failed_attempt(

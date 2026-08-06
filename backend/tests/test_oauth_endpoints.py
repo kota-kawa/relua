@@ -112,8 +112,10 @@ def test_oauth_clients_can_discover_tools_before_login(client):
     tools = {tool["name"]: tool for tool in listed.json()["result"]["tools"]}
     assert tools["search_opportunity"]["securitySchemes"] == [{"type": "noauth"}]
     assert tools["get_master_values"]["securitySchemes"] == [{"type": "noauth"}]
+    assert tools["get_opportunity"]["securitySchemes"] == [{"type": "noauth"}]
     assert tools["add_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["update_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["validate_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
 
 
 def test_oauth_clients_can_send_chatgpt_origin(client):
@@ -143,17 +145,42 @@ def test_public_read_tool_and_protected_write_tool_have_different_access(client)
     )
     assert read_call.status_code == 200, read_call.text
 
-    write_call = client.post(
+    fetch_call = client.post(
         "/mcp",
         json={
             "jsonrpc": "2.0",
             "id": 4,
+            "method": "tools/call",
+            "params": {"name": "get_opportunity", "arguments": {"reference": "ZZZZZZZZ"}},
+        },
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert fetch_call.status_code == 200, fetch_call.text
+
+    write_call = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 5,
             "method": "tools/call",
             "params": {"name": "add_opportunity", "arguments": {}},
         },
         headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
     )
     assert write_call.status_code == 401
+
+    # A dry run reads nothing back, but it walks the write path, so it stays behind the login.
+    dry_run_call = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {"name": "validate_opportunity", "arguments": {}},
+        },
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert dry_run_call.status_code == 401
 
 
 def test_registration_refuses_a_non_https_callback(client):

@@ -45,6 +45,25 @@ def get_masters(db: Session) -> dict[str, list[object]]:
     }
 
 
+def sectors_for_industry(db: Session, industry: str) -> tuple[Industry | None, list[Sector]]:
+    """The sector choices that are actually valid for one industry.
+
+    get_masters returns every sector across every industry, and only the ones under the chosen
+    industry pass validation, so callers preparing a write need this narrower list.
+    """
+    item = resolve_one(db, Industry, industry)
+    if item is None:
+        return None, []
+    sectors = list(
+        db.scalars(
+            select(Sector)
+            .where(Sector.industry_id == item.id, Sector.is_active.is_(True))
+            .order_by(Sector.sort_order, Sector.id)
+        )
+    )
+    return item, sectors
+
+
 def resolve_one(db: Session, model: type[MasterT], value: str) -> MasterT | None:
     return db.scalar(select(model).where(model.is_active.is_(True), (model.name == value) | (model.slug == value)))
 

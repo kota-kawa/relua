@@ -17,11 +17,10 @@
   - マスタ参照、日付・URL・自由記述の検証、DB制約
   - 企業名・タグの正規化と再利用
 - 公式MCP Python SDK（Streamable HTTP）
-  - `search_opportunity`
-  - `get_master_values`
-  - `add_opportunity`
-  - `update_opportunity`
-  - Bearerトークン認証、Redisレート制限、request IDによる冪等化、成功・失敗監査ログ
+  - 検索・取得・固定値参照・重複確認の読み取りツール（認証不要）
+  - 追加・全項目更新・状況更新・事前検証・書き込み履歴のツール（認証必要）
+  - ツールごとの `title` / `annotations` / `outputSchema` と、各募集の詳細ページURL
+  - Bearerトークン認証、Redisレート制限、request IDによる冪等化、同名イベントの重複検出、成功・失敗監査ログ
   - ChatGPT・Claudeから接続するためのOAuth 2.1認可サーバー（動的クライアント登録、PKCE、リフレッシュトークン）
 - Alembic初期マイグレーション、固定値マスタ投入
 - 締め切り超過を「締切」に更新する運用ジョブ
@@ -92,8 +91,8 @@ https://<公開ホスト名>/mcp
 接続時の流れは次のとおりです。
 
 1. クライアントが認証なしでMCPを初期化し、ツール一覧と各ツールの認証要否を取得する
-2. `search_opportunity` と `get_master_values` はそのまま利用できる
-3. `add_opportunity` または `update_opportunity` を呼ぶと、401の `WWW-Authenticate` を受けてOAuthフローを開始する
+2. 読み取り系ツール（`search_opportunity`、`get_opportunity`、`get_master_values`、`get_sectors`、`find_similar_opportunities`）はそのまま利用できる
+3. 書き込み系ツールを呼ぶと、401の `WWW-Authenticate` を受けてOAuthフローを開始する
 4. `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、`/oauth/register` に自分自身を登録する
 5. ブラウザが `/oauth/authorize` へ遷移し、reluaの接続許可画面が開く
 6. `MCP_OPERATOR_PASSWORD` を入力すると、クライアントが `/oauth/token` でアクセストークンとリフレッシュトークンを受け取る
@@ -104,14 +103,36 @@ https://<公開ホスト名>/mcp
 
 登録自体は誰でも行えますが、登録しただけでは何も取得できません。トークンを発行できるのは運営者パスワードを入力したときだけです。
 
+## MCPツール
+
+| ツール | 認証 | 用途 |
+| --- | --- | --- |
+| `search_opportunity` | 不要 | キーワードと固定値で検索し、概要の一覧を返す |
+| `get_opportunity` | 不要 | IDまたは公開コードで1件を全項目取得する |
+| `get_master_values` | 不要 | 選択可能な固定値マスタを全件返す |
+| `get_sectors` | 不要 | 指定した業界に属する業種だけを返す |
+| `find_similar_opportunities` | 不要 | 同じ企業の登録済み募集を探し、二重登録を防ぐ |
+| `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
+| `add_opportunity` | 必要 | 募集情報を1件追加する |
+| `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
+| `update_recruitment_status` | 必要 | 募集状況と締め切りだけを更新する |
+| `list_recent_writes` | 必要 | 直近の登録・更新の記録を返す |
+
+各ツールは `title`、`annotations`（`readOnlyHint` など）、`outputSchema` を公開します。読み取り専用かどうかがクライアント側で判別できるため、ChatGPTやClaudeは読み取りツールの自動承認を判断できます。
+
+すべての募集情報には詳細ページのURL（`url`）が含まれます。組み立てには `NEXT_PUBLIC_SITE_URL`（APIコンテナには `SITE_URL`）を使うため、公開環境では実際のサイトURLを設定してください。
+
 推奨操作順は次のとおりです。
 
-1. `get_master_values` で選択可能な固定値を取得する
-2. `search_opportunity` で既存企業・募集を確認する
-3. `add_opportunity` または `update_opportunity` を呼ぶ
-4. 検証エラーでは、返された項目をすべて修正し、同じ `request_id` で再試行する
+1. `get_master_values` で選択可能な固定値を取得し、業種は `get_sectors` で業界配下に絞る
+2. `find_similar_opportunities` で同じ募集が登録済みでないか確認する
+3. 内容に自信がない場合は `validate_opportunity` で先に検証する
+4. `add_opportunity` または `update_opportunity` を呼ぶ
+5. 検証エラーでは、返された項目をすべて修正し、同じ `request_id` で再試行する
 
-`add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換です。
+`add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合は `update_recruitment_status` を使います。
+
+同じ企業の同名イベントを新規登録しようとすると、既存の登録を示して拒否します。別日程・別コースとして意図的に分ける場合だけ、`add_opportunity` の `allow_duplicate` を `true` にしてください。
 
 ## 内部REST API
 

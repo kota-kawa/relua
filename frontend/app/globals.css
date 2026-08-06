@@ -375,7 +375,16 @@ button, summary, select { cursor: pointer; }
 .deadline-hot { padding: 5px 8px; border-radius: 3px; color: #bf7213; background: #fdebd6; }
 .deadline-warm { color: #cd7a15; }
 .company-name { margin: 18px 0 7px; color: var(--orange); font-size: 13px; font-weight: 750; letter-spacing: .03em; }
-.opportunity-card h2 { margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: 19px; font-weight: 600; line-height: 1.55; }
+/* On a card the company is what students scan for first, so it takes the first
+   level and the event name reads as the second. The sizes are swapped rather
+   than both grown — two large lines would compete instead of ranking. Two lines
+   at most: long 株式会社… names must not push the rest of the card down. */
+.opportunity-card .company-name {
+  display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  margin: 17px 0 6px; color: var(--ink); font-size: 17px; font-weight: 800; letter-spacing: .01em; line-height: 1.42;
+  transition: color .2s;
+}
+.opportunity-card h2 { margin: 0; color: #4a5261; font-family: Georgia, "Yu Mincho", serif; font-size: 16px; font-weight: 600; line-height: 1.55; }
 .opportunity-card h2 a { background: linear-gradient(var(--orange),var(--orange)) 0 100%/0 1px no-repeat; transition: background-size .25s; }
 /* Stretched link: the whole card is one hit target instead of just the title. */
 .card-link::after { content: ""; position: absolute; inset: 0; border-radius: 9px; }
@@ -672,6 +681,8 @@ button, summary, select { cursor: pointer; }
   .calendar-content h3 a:hover { color: var(--orange); }
   .opportunity-card:hover { transform: translateY(-4px); border-color: #b8bdc4; box-shadow: var(--shadow); }
   .opportunity-card:hover h2 a { background-size: 100% 1px; }
+  /* The headline moved to the company line, so the hover cue follows it. */
+  .opportunity-card:hover .company-name { color: var(--orange); }
   .opportunity-card:hover .card-cta { color: var(--orange); }
   .opportunity-card:hover .card-cta svg { transform: translateX(3px); }
   .bookmark-button:hover, .secondary-action:hover { color: var(--orange); border-color: var(--orange); }

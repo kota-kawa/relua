@@ -77,34 +77,135 @@ def _redirect_with(redirect_uri: str, params: dict[str, str]) -> RedirectRespons
 
 
 def _error_page(message: str, status_code: int = 400) -> HTMLResponse:
-    return HTMLResponse(_page(f"<h1>接続できません</h1><p class=error>{html.escape(message)}</p>"), status_code, NO_STORE)
+    note = "お使いのMCPクライアントに戻り、もう一度接続を実行してください。繰り返し失敗する場合は、クライアント側の登録内容を確認してください。"
+    body = f"""<p class="auth-alert" role="alert">{_ALERT_ICON}<span>{html.escape(message)}</span></p>
+<p class="auth-note">{note}</p>"""
+    return HTMLResponse(
+        _page(eyebrow="CONNECTION FAILED", heading="接続できません", body=body),
+        status_code,
+        NO_STORE,
+    )
 
 
-def _page(body: str) -> str:
+#: The honeycomb from the relua mark, reused from the site's about page so the
+#: login inherits the same navy-and-lattice header the rest of relua uses.
+_HEX_FIELD = (
+    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100'%3E"
+    "%3Cpath d='M28 66 0 50V16L28 0l28 16v34L28 66v34' fill='none' stroke='%23ffffff' stroke-opacity='.13'"
+    " stroke-width='1.4'/%3E%3Cpath d='M28 0v34L0 50v34l28 16 28-16V50L28 34' fill='none' stroke='%23ffffff'"
+    " stroke-opacity='.13' stroke-width='1.4'/%3E%3C/svg%3E\")"
+)
+
+_BRAND_MARK = (
+    '<svg width="26" height="30" viewBox="0 0 26 30" aria-hidden="true">'
+    '<path d="M13 1.2 24 7.6v12.8L13 26.8 2 20.4V7.6z" fill="none" stroke="#f59120" stroke-width="1.9"/>'
+    '<circle cx="13" cy="14" r="3.9" fill="#f59120"/></svg>'
+)
+
+_ALERT_ICON = (
+    '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    ' stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/>'
+    '<path d="M12 7.5v5.5"/><path d="M12 16.4h.01"/></svg>'
+)
+
+_LOCK_ICON = (
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>'
+)
+
+
+def _page(*, eyebrow: str, heading: str, body: str) -> str:
+    """The shared shell. Colours and type follow the site's brand tokens in globals.css."""
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#21385a">
 <title>relua MCP 接続認証</title>
 <style>
-  :root {{ color-scheme: light dark; }}
-  body {{ font-family: system-ui, -apple-system, "Hiragino Sans", sans-serif; margin: 0;
-         display: grid; place-items: center; min-height: 100vh; padding: 1.5rem; }}
-  main {{ width: min(28rem, 100%); }}
-  h1 {{ font-size: 1.25rem; margin: 0 0 1rem; }}
-  dl {{ display: grid; grid-template-columns: auto 1fr; gap: .35rem 1rem; margin: 0 0 1.25rem;
-        padding: .85rem 1rem; border: 1px solid currentColor; border-radius: .5rem; font-size: .875rem; }}
-  dt {{ opacity: .7; }} dd {{ margin: 0; overflow-wrap: anywhere; }}
-  label {{ display: block; font-size: .875rem; margin-bottom: .35rem; }}
-  input[type=password] {{ width: 100%; padding: .6rem; font-size: 1rem; box-sizing: border-box;
-                          border: 1px solid currentColor; border-radius: .375rem; background: transparent;
-                          color: inherit; }}
-  button {{ width: 100%; margin-top: 1rem; padding: .65rem; font-size: 1rem; border: 0; border-radius: .375rem;
-            background: #1f6feb; color: #fff; cursor: pointer; }}
-  .error {{ color: #d1242f; font-size: .875rem; }}
-  .note {{ opacity: .7; font-size: .8125rem; margin-top: 1rem; }}
+  :root {{
+    color-scheme: light;
+    --ink: #21385a; --ink-deep: #16273d; --paper: #f7f5ee; --paper-deep: #efede4;
+    --white: #fffefa; --orange: #f59120; --orange-soft: #fdefda; --line: #ddd9d4; --muted: #6b7686;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; display: grid; place-items: center; min-height: 100vh; padding: 28px 20px;
+    color: var(--ink-deep); background: var(--paper);
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent;
+  }}
+  button, input {{ font: inherit; }}
+  .auth-card {{
+    overflow: hidden; width: min(30rem, 100%); border: 1px solid var(--line); border-radius: 12px;
+    background: var(--white); box-shadow: 0 20px 50px rgba(22,39,61,.09);
+  }}
+  .auth-head {{ position: relative; overflow: hidden; padding: 30px 32px 28px; color: var(--paper); background: var(--ink); }}
+  .auth-head::before {{
+    content: ""; position: absolute; inset: 0; opacity: .5; pointer-events: none;
+    background-image: {_HEX_FIELD};
+    mask-image: radial-gradient(120% 90% at 82% 8%, black, transparent 72%);
+  }}
+  .auth-head > * {{ position: relative; z-index: 1; }}
+  .brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 26px; }}
+  .brand strong {{ color: white; font-family: Georgia, serif; font-size: 21px; font-style: italic; font-weight: 500; letter-spacing: .02em; }}
+  .brand small {{ padding-left: 11px; border-left: 1px solid rgba(255,255,255,.22); color: #aeb5be; font-size: 11px; letter-spacing: .1em; }}
+  .eyebrow {{ display: block; margin: 0 0 12px; color: var(--orange); font-size: 11px; font-weight: 800; letter-spacing: .18em; }}
+  /* auto-phrase keeps the Japanese heading from breaking mid-phrase ("許可します / か？")
+     where it wraps; browsers without it fall back to the usual per-character break. */
+  h1 {{ margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: 23px; font-weight: 600; line-height: 1.5; word-break: auto-phrase; }}
+  .auth-body {{ padding: 26px 32px 30px; }}
+  .auth-facts {{ display: grid; gap: 1px; overflow: hidden; margin: 0 0 24px; border: 1px solid var(--line); border-radius: 8px; background: var(--line); }}
+  .auth-facts > div {{ display: grid; grid-template-columns: 84px minmax(0,1fr); gap: 14px; padding: 12px 15px; background: var(--paper); }}
+  .auth-facts dt {{ color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; }}
+  .auth-facts dd {{ margin: 0; color: #353e4b; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }}
+  label {{ display: flex; align-items: center; gap: 7px; margin-bottom: 9px; font-size: 13px; font-weight: 800; letter-spacing: .02em; }}
+  label svg {{ color: var(--orange); }}
+  input[type=password] {{
+    width: 100%; min-height: 50px; padding: 0 15px; border: 1px solid var(--line); border-radius: 7px;
+    color: var(--ink-deep); background: white; font-size: 15px; letter-spacing: .08em;
+    outline: none; transition: border-color .2s, box-shadow .2s;
+  }}
+  input[type=password]:focus {{ border-color: var(--orange); box-shadow: 0 0 0 3px rgba(245,145,32,.16); }}
+  .auth-alert {{
+    display: flex; align-items: flex-start; gap: 8px; margin: 14px 0 0; padding: 11px 14px;
+    border-left: 3px solid #c0563c; border-radius: 0 5px 5px 0; color: #98402c; background: #fbeae5;
+    font-size: 12px; font-weight: 700; line-height: 1.65;
+  }}
+  .auth-alert svg {{ flex: none; margin-top: 1px; }}
+  button {{
+    display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 52px;
+    margin-top: 22px; border: 0; border-radius: 7px; color: white; background: var(--ink);
+    font-size: 14px; font-weight: 800; cursor: pointer; transition: background .2s, transform .15s;
+  }}
+  button:active {{ transform: scale(.98); transition-duration: .08s; }}
+  .auth-note {{
+    display: flex; align-items: flex-start; gap: 8px; margin: 22px 0 0; padding: 13px 15px;
+    border-left: 3px solid var(--orange); color: #66543e; background: var(--orange-soft);
+    font-size: 12px; line-height: 1.75;
+  }}
+  :focus-visible {{ outline: 3px solid rgba(245,145,32,.45); outline-offset: 2px; }}
+  @media (hover: hover) {{ button:hover {{ background: var(--orange); }} }}
+  @media (max-width: 480px) {{
+    body {{ padding: 0; place-items: stretch; }}
+    .auth-card {{ width: 100%; border: 0; border-radius: 0; box-shadow: none; }}
+    .auth-head {{ padding: 26px 22px 24px; }}
+    .auth-body {{ padding: 24px 22px 34px; }}
+    h1 {{ font-size: 20px; }}
+    .auth-facts > div {{ grid-template-columns: 1fr; gap: 4px; }}
+  }}
 </style></head>
-<body><main>{body}</main></body></html>
+<body>
+<main class="auth-card">
+  <div class="auth-head">
+    <p class="brand">{_BRAND_MARK}<strong>relua</strong><small>Relay, then reveal.</small></p>
+    <span class="eyebrow">{eyebrow}</span>
+    <h1>{heading}</h1>
+  </div>
+  <div class="auth-body">{body}</div>
+</main>
+</body></html>
 """
 
 
@@ -114,23 +215,28 @@ def _login_page(*, client_name: str, redirect_uri: str, fields: dict[str, str], 
         for name, value in fields.items()
         if value
     )
-    warning = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    warning = (
+        f'<p class="auth-alert" role="alert">{_ALERT_ICON}<span>{html.escape(error)}</span></p>' if error else ""
+    )
     host = urlparse(redirect_uri).netloc
-    body = f"""<h1>MCPクライアントの接続を許可しますか？</h1>
-<dl>
-  <dt>クライアント</dt><dd>{html.escape(client_name)}</dd>
-  <dt>戻り先</dt><dd>{html.escape(host)}</dd>
-  <dt>権限</dt><dd>募集情報の検索・登録・更新</dd>
+    body = f"""<dl class="auth-facts">
+  <div><dt>クライアント</dt><dd>{html.escape(client_name)}</dd></div>
+  <div><dt>戻り先</dt><dd>{html.escape(host)}</dd></div>
+  <div><dt>権限</dt><dd>募集情報の検索・登録・更新</dd></div>
 </dl>
 <form method="post" action="/oauth/authorize" autocomplete="off">
   {hidden}
-  <label for="password">運営者パスワード</label>
+  <label for="password">{_LOCK_ICON}運営者パスワード</label>
   <input id="password" name="password" type="password" required autofocus autocomplete="current-password">
   {warning}
   <button type="submit">許可して接続</button>
 </form>
-<p class="note">身に覚えのない接続要求であれば、パスワードを入力せずにこのページを閉じてください。</p>"""
-    return HTMLResponse(_page(body), status_code=401 if error else 200, headers=NO_STORE)
+<p class="auth-note">身に覚えのない接続要求であれば、パスワードを入力せずにこのページを閉じてください。</p>"""
+    return HTMLResponse(
+        _page(eyebrow="MCP CONNECTION", heading="MCPクライアントの接続を許可しますか？", body=body),
+        status_code=401 if error else 200,
+        headers=NO_STORE,
+    )
 
 
 @router.get("/.well-known/oauth-protected-resource")

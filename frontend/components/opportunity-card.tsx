@@ -24,6 +24,8 @@ export function OpportunityCard({ item }: { item: Opportunity }) {
         <span className={`deadline-chip ${urgencyClass(item.deadline)}`}>{deadlineChipLabel(item.deadline)}</span>
       </div>
 
+      {/* Visually the company leads the card — students scan by employer — while
+          the event name stays the heading the page outline and search rely on. */}
       <p className="company-name">{item.company.name}</p>
       {/* The link is stretched over the whole card, so the card itself is the target. */}
       <h2><Link className="card-link" href={`/opportunities/${item.id}`}>{item.event_name}</Link></h2>

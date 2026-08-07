@@ -116,6 +116,10 @@ def test_oauth_clients_can_discover_tools_before_login(client):
     assert tools["add_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["update_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["validate_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["find_opportunities_by_source_url"]["securitySchemes"] == [{"type": "noauth"}]
+    assert tools["preview_opportunity_patch"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["patch_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["get_collection_queue"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
 
 
 def test_oauth_clients_can_send_chatgpt_origin(client):
@@ -181,6 +185,30 @@ def test_public_read_tool_and_protected_write_tool_have_different_access(client)
         headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
     )
     assert dry_run_call.status_code == 401
+
+    collection_queue_call = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {"name": "get_collection_queue", "arguments": {}},
+        },
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert collection_queue_call.status_code == 401
+
+    patch_preview_call = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {"name": "preview_opportunity_patch", "arguments": {}},
+        },
+        headers={"Host": "relua.test", "Accept": "application/json, text/event-stream"},
+    )
+    assert patch_preview_call.status_code == 401
 
 
 def test_registration_refuses_a_non_https_callback(client):

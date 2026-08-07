@@ -28,10 +28,22 @@ FIELD_LABELS = {
     "recruitment_start_date": "募集開始日",
     "entry_url": "エントリーはこちら",
     "source_url": "情報源",
+    "expected_updated_at": "更新前の最終確認日時",
+    "collection_target_id": "情報収集対象ID",
+    "priority_tier": "収集優先度",
+    "check_interval_days": "確認間隔",
+    "selection_reason": "選定理由",
+    "sources": "公式情報源",
+    "source_type": "情報源の種類",
+    "url": "公式情報源URL",
+    "result": "確認結果",
+    "opportunity_id": "募集情報ID",
+    "note": "確認メモ",
+    "is_active": "有効状態",
 }
 
 DATE_FIELDS = {"deadline", "event_start_date", "event_end_date", "recruitment_start_date"}
-URL_FIELDS = {"homepage_url", "entry_url", "source_url"}
+URL_FIELDS = {"homepage_url", "entry_url", "source_url", "url"}
 
 
 def pydantic_errors(exc: ValidationError, raw: dict[str, Any]) -> list[dict[str, Any]]:

@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
@@ -13,6 +13,17 @@ from pydantic import Field, ValidationError
 from app.config import get_settings
 from app.db import SessionLocal
 from app.schemas import (
+    CollectionCheckPayload,
+    CollectionCheckRequest,
+    CollectionSourceCreatePayload,
+    CollectionSourceCreateRequest,
+    CollectionSourceUpdatePayload,
+    CollectionSourceUpdateRequest,
+    CollectionTargetCreatePayload,
+    CollectionTargetCreateRequest,
+    CollectionTargetResponse,
+    CollectionTargetUpdatePayload,
+    CollectionTargetUpdateRequest,
     DegreeValue,
     EventFormatValue,
     EventTypeValue,
@@ -20,7 +31,14 @@ from app.schemas import (
     IndustryValue,
     JobCategoryValue,
     MastersResponse,
+    MCPCollectionCheckListResponse,
+    MCPCollectionCheckWriteResponse,
+    MCPCollectionQueueResponse,
+    MCPCollectionSourceWriteResponse,
+    MCPCollectionTargetListResponse,
+    MCPCollectionWriteResponse,
     MCPDuplicateResponse,
+    MCPOpportunityPreviewResponse,
     MCPSearchResponse,
     MCPSectorsResponse,
     MCPUpdateRequest,
@@ -29,26 +47,54 @@ from app.schemas import (
     MCPWriteRequest,
     MCPWriteResponse,
     OpportunityInput,
+    OpportunityPatchPayload,
     OpportunityResponse,
     RecruitmentStatusValue,
     SortValue,
     UpdatePayload,
     WritePayload,
+    validate_https_url,
+    validate_source_host,
+)
+from app.services.collection_targets import (
+    collection_check_dict,
+    collection_queue,
+    collection_source_dict,
+    collection_target_dict,
+    create_collection_source,
+    create_collection_target,
+    list_collection_checks,
+    list_collection_targets,
+    record_collection_check,
+    update_collection_source,
+    update_collection_target,
+)
+from app.services.collection_targets import (
+    get_collection_target as get_collection_target_record,
 )
 from app.services.errors import pydantic_errors
 from app.services.master_cache import master_payload
 from app.services.masters import sectors_for_industry
 from app.services.opportunities import (
     DomainValidationError,
+    ensure_expected_updated_at,
     find_exact_duplicates,
     find_similar_opportunities,
+    find_source_url_duplicates,
     get_opportunity_by_public_ref,
+    is_patch_replay,
+    opportunity_input_dict,
+    opportunity_patch_changes,
     recent_write_logs,
     record_failed_attempt,
     search_opportunities,
+    source_duplicate_warning,
     update_recruitment_status,
     validate_write,
     write_opportunity,
+)
+from app.services.opportunities import (
+    get_opportunity as get_opportunity_record,
 )
 from app.services.rate_limit import (
     RateLimitExceeded,
@@ -75,6 +121,7 @@ ANONYMOUS_TOOLS = frozenset(
         "get_master_values",
         "get_sectors",
         "find_similar_opportunities",
+        "find_opportunities_by_source_url",
     }
 )
 
@@ -85,12 +132,16 @@ mcp = FastMCP(
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
         "追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
         "同じ募集が登録済みでないかfind_similar_opportunitiesで確かめてください。"
+        "情報源URLが既存募集と重ならないかfind_opportunities_by_source_urlでも確認してください。"
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
+        "その他の一部項目だけを直す場合はpreview_opportunity_patchで差分を確認してからpatch_opportunityを使ってください。"
         "日付はYYYY-MM-DD、URLはhttpsを使用し、推測できない任意項目はnullにしてください。"
         "自由記述には出典の文章を転記せず、日程・対象・報酬などの事実だけを自分の言葉で書いてください。"
         "出典独自の言い回しやキャッチコピー、担当者名などの個人名、個人宛の連絡先は登録しないでください。"
         "情報源には企業自身の採用ページなど一次情報を指定し、求人サイトや口コミサイトの掲載ページは使用しないでください。"
+        "情報収集を進める場合はget_collection_queueで次の企業を取得し、確認後は募集の有無にかかわらず"
+        "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
     ),
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -114,6 +165,7 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 APPEND_ONLY = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 #: A full replacement drops any field the caller omits, which is destructive in the MCP sense.
 REPLACING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+PATCHING = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
 def _json_error(payload: dict[str, Any]) -> ToolError:
@@ -194,8 +246,93 @@ def _domain_error(request: Any, action: str, exc: DomainValidationError) -> Tool
     return _validation_error(request.client_name, request.request_id, exc.errors)
 
 
+def _collection_source_url(request: Any) -> str | None:
+    source_url = getattr(request, "source_url", None) or getattr(request, "url", None)
+    if source_url:
+        return source_url
+    sources = getattr(request, "sources", None) or []
+    return sources[0].url if sources else None
+
+
+def _parse_collection_payload(raw: dict[str, Any], model: type[Any], action: str) -> Any:
+    request_id = raw.get("request_id") if isinstance(raw, dict) else None
+    client_name = (raw.get("client_name") if isinstance(raw, dict) else None) or "mcp-client"
+    try:
+        return model.model_validate(raw)
+    except ValidationError as exc:
+        errors = pydantic_errors(exc, raw)
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action=action,
+                request_id=request_id,
+                client_name=client_name,
+                source_url=None,
+                errors=errors,
+                entity_type="collection_target",
+            )
+        raise _validation_error(client_name, request_id, errors) from exc
+
+
+def _collection_domain_error(request: Any, action: str, exc: DomainValidationError) -> ToolError:
+    with SessionLocal() as db:
+        record_failed_attempt(
+            db,
+            action=action,
+            request_id=request.request_id,
+            client_name=request.client_name,
+            source_url=_collection_source_url(request),
+            errors=exc.errors,
+            entity_type="collection_target",
+        )
+    return _validation_error(request.client_name, request.request_id, exc.errors)
+
+
 def _write_input(request: MCPWriteRequest | MCPUpdateRequest) -> OpportunityInput:
     return OpportunityInput.model_validate(request.model_dump(exclude={"request_id", "client_name"}))
+
+
+def _prepare_opportunity_patch(
+    db: Any,
+    *,
+    opportunity_id: str,
+    changes: dict[str, Any],
+    expected_updated_at: datetime,
+    request_id: str,
+    client_name: str,
+    allow_idempotent_replay: bool = False,
+) -> tuple[Any, OpportunityInput]:
+    item = get_opportunity_record(db, opportunity_id)
+    if item is None:
+        raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"})
+    if not changes:
+        errors = [{"field": "変更内容", "received": {}, "reason": "変更する項目を1件以上指定してください"}]
+        raise _validation_error(client_name, request_id, errors)
+    try:
+        if not allow_idempotent_replay:
+            ensure_expected_updated_at(item, expected_updated_at)
+        data = OpportunityInput.model_validate(opportunity_input_dict(item) | changes)
+    except DomainValidationError as exc:
+        raise _validation_error(client_name, request_id, exc.errors) from exc
+    except ValidationError as exc:
+        merged = opportunity_input_dict(item) | changes
+        errors = pydantic_errors(exc, merged)
+        record_failed_attempt(
+            db,
+            action="patch",
+            request_id=request_id,
+            client_name=client_name,
+            source_url=merged.get("source_url"),
+            errors=errors,
+        )
+        raise _validation_error(client_name, request_id, errors) from exc
+    errors = validate_write(db, data=data)
+    if errors:
+        raise _validation_error(client_name, request_id, errors)
+    if not allow_idempotent_replay and not opportunity_patch_changes(item, data):
+        errors = [{"field": "変更内容", "received": changes, "reason": "現在値から変わる項目がありません"}]
+        raise _validation_error(client_name, request_id, errors)
+    return item, data
 
 
 @mcp.tool(
@@ -344,6 +481,42 @@ def find_similar_opportunities_tool(
 
 
 @mcp.tool(
+    name="find_opportunities_by_source_url",
+    title="同じ一次情報URLの募集を探す",
+    description=(
+        "計測パラメータ、フラグメント、末尾スラッシュなどを正規化し、同じ企業公式ページを使う募集を返します。"
+        "同じページに複数募集がある場合もあるため、一致は警告であり一律の登録禁止ではありません。"
+    ),
+    annotations=READ_ONLY,
+)
+def find_opportunities_by_source_url_tool(
+    source_url: Annotated[str, Field(description="確認する企業公式の一次情報URL（https必須）。")],
+) -> MCPDuplicateResponse:
+    try:
+        validated = validate_source_host(validate_https_url(source_url) or source_url)
+    except ValueError as exc:
+        raise _json_error(
+            {
+                "error": "validation_failed",
+                "message": "企業公式のhttps URLを指定してください",
+                "errors": [{"field": "情報源", "received": source_url, "reason": str(exc)}],
+            }
+        ) from exc
+    with SessionLocal() as db:
+        matches = find_source_url_duplicates(db, source_url=validated)
+        return MCPDuplicateResponse.model_validate(
+            {
+                "message": (
+                    "同じ一次情報URLの募集は見つかりませんでした。"
+                    if not matches
+                    else "同じ一次情報URLの募集があります。別の募集であることを確認してください。"
+                ),
+                "matches": [opportunity_summary(item) for item in matches],
+            }
+        )
+
+
+@mcp.tool(
     title="登録内容を検証（書き込みなし）",
     description=(
         "payloadを保存せずに検証し、固定値の誤りと重複の疑いを返します。"
@@ -371,13 +544,16 @@ def validate_opportunity(
             event_name=data.event_name,
             exclude_id=opportunity_id,
         )
+        source_matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
+        seen = {item.id for item in duplicates}
+        duplicates.extend(item for item in source_matches if item.id not in seen)
         return MCPValidationResponse.model_validate(
             {
                 "valid": True,
                 "message": (
                     "この内容で登録できます。"
                     if not duplicates
-                    else "内容は妥当ですが、同じ企業の同名イベントが既に登録されています。"
+                    else "内容は妥当ですが、イベント名または一次情報URLが重なる募集があります。"
                 ),
                 "duplicates": [opportunity_summary(item) for item in duplicates],
             }
@@ -400,6 +576,13 @@ def add_opportunity(
         bool,
         Field(description="同名イベントが既にある場合でも別の登録として追加します。別日程・別コースを分けて登録するときだけtrueにしてください。"),
     ] = False,
+    collection_target_id: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="get_collection_queueで取得した収集対象ID。指定すると募集登録と確認履歴を同時に記録します。",
+        ),
+    ] = None,
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPWriteRequest)
     _rate_limit(request.client_name, "create")
@@ -412,6 +595,7 @@ def add_opportunity(
                 request_id=request.request_id,
                 client_name=request.client_name,
                 allow_duplicate=allow_duplicate,
+                collection_target_id=collection_target_id,
             )
             return MCPWriteResponse.model_validate(
                 {
@@ -438,6 +622,13 @@ def add_opportunity(
 def update_opportunity(
     opportunity_id: Annotated[str, Field(description="更新対象のid（UUID）。get_opportunityのidをそのまま渡します。")],
     payload: UpdatePayload,
+    collection_target_id: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="確認中の収集対象ID。指定すると募集更新と確認履歴を同じトランザクションで記録します。",
+        ),
+    ] = None,
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPUpdateRequest)
     _rate_limit(request.client_name, "update")
@@ -450,6 +641,7 @@ def update_opportunity(
                 request_id=request.request_id,
                 client_name=request.client_name,
                 opportunity_id=opportunity_id,
+                collection_target_id=collection_target_id,
             )
             return MCPWriteResponse.model_validate(
                 {
@@ -461,6 +653,116 @@ def update_opportunity(
             )
     except DomainValidationError as exc:
         raise _domain_error(request, "update", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="preview_opportunity_patch",
+    title="募集情報の部分更新をプレビュー",
+    description=(
+        "保存せずに現在値へ変更項目をマージし、全項目検証、更新競合、変更差分、一次情報URLの重複を確認します。"
+        "get_opportunityのupdated_atをexpected_updated_atへそのまま指定してください。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def preview_opportunity_patch_tool(
+    opportunity_id: Annotated[str, Field(description="更新対象のUUID。")],
+    changes: OpportunityPatchPayload,
+    expected_updated_at: Annotated[
+        datetime,
+        Field(description="get_opportunityで取得した現在のupdated_at。取得後の競合更新を検出します。"),
+    ],
+    request_id: Annotated[str, Field(min_length=8, max_length=100, description="検証操作を識別する一意なID。")],
+    client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
+) -> MCPOpportunityPreviewResponse:
+    _rate_limit(client_name, "patch_preview")
+    with SessionLocal() as db:
+        item, data = _prepare_opportunity_patch(
+            db,
+            opportunity_id=opportunity_id,
+            changes=changes,
+            expected_updated_at=expected_updated_at,
+            request_id=request_id,
+            client_name=client_name,
+        )
+        matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=item.id)
+        warnings = [source_duplicate_warning(matches, data.source_url)] if matches else []
+        diff = opportunity_patch_changes(item, data)
+        return MCPOpportunityPreviewResponse.model_validate(
+            {
+                "valid": True,
+                "message": "変更内容を保存できます。" if not warnings else "保存できますが、確認が必要な警告があります。",
+                "expected_updated_at": item.updated_at,
+                "changes": diff,
+                "warnings": warnings,
+                "merged_payload": data.model_dump(mode="json"),
+            }
+        )
+
+
+@mcp.tool(
+    name="patch_opportunity",
+    title="募集情報を部分更新",
+    description=(
+        "指定した項目だけを更新し、サーバー側で現在値とマージして全項目を再検証します。"
+        "expected_updated_atが現在値と違う場合は上書きせず拒否します。先にpreview_opportunity_patchを実行してください。"
+    ),
+    annotations=PATCHING,
+)
+def patch_opportunity_tool(
+    opportunity_id: Annotated[str, Field(description="更新対象のUUID。")],
+    changes: OpportunityPatchPayload,
+    expected_updated_at: Annotated[
+        datetime,
+        Field(description="get_opportunityまたはプレビューで取得したupdated_at。"),
+    ],
+    request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。")],
+    client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
+    collection_target_id: Annotated[
+        int | None,
+        Field(ge=1, description="指定すると更新成功と同時に収集確認結果foundを記録します。"),
+    ] = None,
+) -> MCPWriteResponse:
+    _rate_limit(client_name, "patch")
+    try:
+        with SessionLocal() as db:
+            _, data = _prepare_opportunity_patch(
+                db,
+                opportunity_id=opportunity_id,
+                changes=changes,
+                expected_updated_at=expected_updated_at,
+                request_id=request_id,
+                client_name=client_name,
+                allow_idempotent_replay=is_patch_replay(
+                    db, request_id=request_id, opportunity_id=opportunity_id
+                ),
+            )
+            item, replayed = write_opportunity(
+                db,
+                data=data,
+                request_id=request_id,
+                client_name=client_name,
+                opportunity_id=opportunity_id,
+                collection_target_id=collection_target_id,
+                expected_updated_at=expected_updated_at,
+                action="patch",
+            )
+            return MCPWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "募集情報を部分更新しました",
+                    "opportunity": opportunity_dict(item),
+                }
+            )
+    except DomainValidationError as exc:
+        request = type(
+            "PatchRequest",
+            (),
+            {"request_id": request_id, "client_name": client_name, "source_url": changes.get("source_url")},
+        )()
+        raise _domain_error(request, "patch", exc) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
 
@@ -540,6 +842,254 @@ def update_recruitment_status_tool(
 
 
 @mcp.tool(
+    name="list_collection_targets",
+    title="業界別の情報収集対象を一覧",
+    description=(
+        "運営者用の情報収集対象を企業名、業界、業種、優先度、確認期限で絞り込みます。"
+        "無効化済みの対象はinclude_inactive=trueの場合だけ返します。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def list_collection_targets_tool(
+    query: Annotated[str | None, Field(description="企業名の部分一致キーワード。", max_length=200)] = None,
+    industry: Annotated[IndustryValue | None, Field(description="業界。省略すると全業界。")] = None,
+    sector: Annotated[str | None, Field(description="業種名。")] = None,
+    priority_tier: Annotated[int | None, Field(ge=1, le=3, description="内部収集優先度。1が最優先。")] = None,
+    due_only: Annotated[bool, Field(description="未確認または次回確認期限を過ぎた対象だけを返します。")] = False,
+    include_inactive: Annotated[bool, Field(description="無効化済みの対象も含めます。")] = False,
+    page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
+    per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数。")] = 20,
+) -> MCPCollectionTargetListResponse:
+    with SessionLocal() as db:
+        result = list_collection_targets(
+            db,
+            query=query,
+            industry=industry,
+            sector=sector,
+            priority_tier=priority_tier,
+            due_only=due_only,
+            include_inactive=include_inactive,
+            page=page,
+            per_page=per_page,
+        )
+        return MCPCollectionTargetListResponse.model_validate(
+            {
+                "items": [collection_target_dict(db, item) for item in result.items],
+                "total": result.total,
+                "page": result.page,
+                "per_page": result.per_page,
+                "total_pages": result.total_pages,
+            }
+        )
+
+
+@mcp.tool(
+    name="get_collection_target",
+    title="情報収集対象を1件取得",
+    description="収集対象、公式ページ、同じ企業・業界の登録済み募集をIDで取得します。認証が必要です。",
+    annotations=READ_ONLY,
+)
+def get_collection_target_tool(
+    target_id: Annotated[int, Field(ge=1, description="収集対象ID。")],
+) -> CollectionTargetResponse:
+    with SessionLocal() as db:
+        target = get_collection_target_record(db, target_id)
+        if target is None:
+            raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"})
+        return CollectionTargetResponse.model_validate(collection_target_dict(db, target))
+
+
+@mcp.tool(
+    name="get_collection_queue",
+    title="次に確認する企業を取得",
+    description=(
+        "有効な収集対象から、未確認または確認期限を過ぎた企業を優先度順に返します。"
+        "各公式ページを確認し、募集の有無にかかわらずrecord_collection_checkを実行してください。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def get_collection_queue_tool(
+    industry: Annotated[IndustryValue | None, Field(description="対象業界。省略すると全業界。")] = None,
+    limit: Annotated[int, Field(ge=1, le=50, description="取得件数。")] = 20,
+) -> MCPCollectionQueueResponse:
+    with SessionLocal() as db:
+        items = collection_queue(db, industry=industry, limit=limit)
+        return MCPCollectionQueueResponse.model_validate(
+            {"items": [collection_target_dict(db, item) for item in items]}
+        )
+
+
+@mcp.tool(
+    name="list_collection_checks",
+    title="情報収集の確認履歴を取得",
+    description="指定した収集対象について、募集あり・なし・確認不能などの確認履歴を新しい順に返します。認証が必要です。",
+    annotations=READ_ONLY,
+)
+def list_collection_checks_tool(
+    target_id: Annotated[int, Field(ge=1, description="収集対象ID。")],
+    limit: Annotated[int, Field(ge=1, le=100, description="取得件数。")]=20,
+) -> MCPCollectionCheckListResponse:
+    try:
+        with SessionLocal() as db:
+            items = list_collection_checks(db, target_id=target_id, limit=limit)
+            return MCPCollectionCheckListResponse.model_validate(
+                {"items": [collection_check_dict(item) for item in items]}
+            )
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="add_collection_target",
+    title="情報収集対象を追加",
+    description=(
+        "企業と業界の組み合わせを内部の収集キューへ追加します。企業公式ページを1件以上指定します。"
+        "priority_tierは企業評価ではなく確認順です。認証が必要です。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def add_collection_target_tool(payload: CollectionTargetCreatePayload) -> MCPCollectionWriteResponse:
+    request = _parse_collection_payload(payload, CollectionTargetCreateRequest, "collection_target_create")
+    _rate_limit(request.client_name, "collection_target_create")
+    try:
+        with SessionLocal() as db:
+            target, replayed = create_collection_target(db, request)
+            return MCPCollectionWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "情報収集対象を追加しました",
+                    "target": collection_target_dict(db, target),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_target_create", exc) from exc
+
+
+@mcp.tool(
+    name="update_collection_target",
+    title="情報収集対象を部分更新",
+    description=(
+        "指定した項目だけを変更します。sectorまたはselection_reasonをnullにすると値を解除できます。"
+        "削除の代わりにis_active=falseで収集対象から外せます。認証が必要です。"
+    ),
+    annotations=PATCHING,
+)
+def update_collection_target_tool(
+    target_id: Annotated[int, Field(ge=1, description="更新する収集対象ID。")],
+    payload: CollectionTargetUpdatePayload,
+) -> MCPCollectionWriteResponse:
+    request = _parse_collection_payload(payload, CollectionTargetUpdateRequest, "collection_target_update")
+    _rate_limit(request.client_name, "collection_target_update")
+    try:
+        with SessionLocal() as db:
+            target, replayed = update_collection_target(db, target_id=target_id, payload=request)
+            return MCPCollectionWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "情報収集対象を更新しました",
+                    "target": collection_target_dict(db, target),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_target_update", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="add_collection_source",
+    title="企業公式ページを追加",
+    description="既存の収集対象へ確認先となる企業公式ページを追加します。認証が必要です。",
+    annotations=APPEND_ONLY,
+)
+def add_collection_source_tool(
+    target_id: Annotated[int, Field(ge=1, description="追加先の収集対象ID。")],
+    payload: CollectionSourceCreatePayload,
+) -> MCPCollectionSourceWriteResponse:
+    request = _parse_collection_payload(payload, CollectionSourceCreateRequest, "collection_source_create")
+    _rate_limit(request.client_name, "collection_source_create")
+    try:
+        with SessionLocal() as db:
+            source, replayed = create_collection_source(db, target_id=target_id, payload=request)
+            return MCPCollectionSourceWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "企業公式ページを追加しました",
+                    "source": collection_source_dict(source),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_source_create", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="update_collection_source",
+    title="企業公式ページを部分更新",
+    description="URL、種類、有効状態のうち指定した項目だけを変更します。認証が必要です。",
+    annotations=PATCHING,
+)
+def update_collection_source_tool(
+    source_id: Annotated[int, Field(ge=1, description="更新する公式ページID。")],
+    payload: CollectionSourceUpdatePayload,
+) -> MCPCollectionSourceWriteResponse:
+    request = _parse_collection_payload(payload, CollectionSourceUpdateRequest, "collection_source_update")
+    _rate_limit(request.client_name, "collection_source_update")
+    try:
+        with SessionLocal() as db:
+            source, replayed = update_collection_source(db, source_id=source_id, payload=request)
+            return MCPCollectionSourceWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "企業公式ページを更新しました",
+                    "source": collection_source_dict(source),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_source_update", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された公式ページが見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="record_collection_check",
+    title="企業公式ページの確認結果を記録",
+    description=(
+        "募集を発見した場合だけでなく、募集中なし、ページ確認不能、人の確認が必要な場合も履歴へ記録し、"
+        "次回確認日を更新します。認証が必要です。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def record_collection_check_tool(
+    target_id: Annotated[int, Field(ge=1, description="確認した収集対象ID。")],
+    payload: CollectionCheckPayload,
+) -> MCPCollectionCheckWriteResponse:
+    request = _parse_collection_payload(payload, CollectionCheckRequest, "collection_check_create")
+    _rate_limit(request.client_name, "collection_check_create")
+    try:
+        with SessionLocal() as db:
+            check, target, replayed = record_collection_check(db, target_id=target_id, payload=request)
+            return MCPCollectionCheckWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "確認結果と次回確認日を記録しました",
+                    "check": collection_check_dict(check),
+                    "target": collection_target_dict(db, target),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_check_create", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
     title="直近の書き込み履歴を取得",
     description=(
         "自分を含むクライアントによる直近の登録・更新の記録を返します。"
@@ -573,9 +1123,7 @@ async def _list_tools_with_security_schemes() -> list[MCPTool]:
         tool.model_copy(
             update={
                 "securitySchemes": (
-                    [{"type": "noauth"}]
-                    if tool.name in ANONYMOUS_TOOLS
-                    else [{"type": "oauth2", "scopes": ["mcp"]}]
+                    [{"type": "noauth"}] if tool.name in ANONYMOUS_TOOLS else [{"type": "oauth2", "scopes": ["mcp"]}]
                 )
             }
         )

@@ -386,6 +386,202 @@ ClientName = Annotated[
     Field(description="監査ログとレート制限に記録される呼び出し元の名前。", examples=["chatgpt"]),
 ]
 
+CollectionSourceType = Literal["recruit", "internship", "event", "news", "other"]
+CollectionCheckResult = Literal["found", "no_opening", "unreachable", "needs_review"]
+
+
+class CollectionSourceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    source_type: Annotated[
+        CollectionSourceType,
+        Field(description="公式ページの種類。recruit=採用総合、internship=インターン、event=イベント、news=告知。"),
+    ]
+    url: Annotated[
+        str,
+        Field(description="企業自身が公開する一次情報のURL（https必須）。"),
+    ]
+
+    @field_validator("url")
+    @classmethod
+    def official_source_url(cls, value: str) -> str:
+        return validate_source_host(validate_https_url(value) or value)
+
+
+class CollectionTargetCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    company_name: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    industry: Annotated[IndustryValue, Field(description="収集対象として分類する業界。")]
+    sector: Annotated[
+        str | None,
+        StringConstraints(strip_whitespace=True, min_length=1),
+        Field(description="業界配下の業種。まだ判断できない場合はnull。"),
+    ] = None
+    priority_tier: Annotated[int, Field(ge=1, le=3, description="内部の収集優先度。1が最優先、3が低優先。")]
+    check_interval_days: Annotated[int, Field(ge=1, le=365, description="公式ページを再確認する間隔。")]
+    selection_reason: Annotated[
+        str | None,
+        StringConstraints(strip_whitespace=True, max_length=500),
+        Field(description="収集対象に含める内部運用上の理由。企業の評価には使用しません。"),
+    ] = None
+    sources: Annotated[
+        list[CollectionSourceInput],
+        Field(min_length=1, max_length=20, description="確認する企業公式ページ。1件以上指定します。"),
+    ]
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+    @field_validator("selection_reason")
+    @classmethod
+    def plain_reason(cls, value: str | None) -> str | None:
+        return validate_plain_text(value)
+
+    @field_validator("sources")
+    @classmethod
+    def unique_sources(cls, sources: list[CollectionSourceInput]) -> list[CollectionSourceInput]:
+        if len({source.url for source in sources}) != len(sources):
+            raise ValueError("同じURLを重複して指定できません")
+        return sources
+
+
+class CollectionTargetUpdateRequest(BaseModel):
+    """A real patch: omitted values stay unchanged, while sector=null clears the sector."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    company_name: Annotated[str | None, StringConstraints(min_length=1, max_length=200)] = None
+    industry: IndustryValue | None = None
+    sector: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=1)] = None
+    priority_tier: Annotated[int | None, Field(ge=1, le=3)] = None
+    check_interval_days: Annotated[int | None, Field(ge=1, le=365)] = None
+    selection_reason: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
+    is_active: bool | None = None
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+    @field_validator("selection_reason")
+    @classmethod
+    def plain_reason(cls, value: str | None) -> str | None:
+        return validate_plain_text(value)
+
+    @model_validator(mode="after")
+    def has_change(self) -> "CollectionTargetUpdateRequest":
+        editable = {
+            "company_name",
+            "industry",
+            "sector",
+            "priority_tier",
+            "check_interval_days",
+            "selection_reason",
+            "is_active",
+        }
+        if not self.model_fields_set.intersection(editable):
+            raise ValueError("更新する項目を1件以上指定してください")
+        return self
+
+
+class CollectionSourceCreateRequest(CollectionSourceInput):
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+
+class CollectionSourceUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    source_type: CollectionSourceType | None = None
+    url: str | None = None
+    is_active: bool | None = None
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+    @field_validator("url")
+    @classmethod
+    def official_source_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_source_host(validate_https_url(value) or value)
+
+    @model_validator(mode="after")
+    def has_change(self) -> "CollectionSourceUpdateRequest":
+        if not self.model_fields_set.intersection({"source_type", "url", "is_active"}):
+            raise ValueError("更新する項目を1件以上指定してください")
+        return self
+
+
+class CollectionCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    result: Annotated[
+        CollectionCheckResult,
+        Field(
+            description="found=募集を発見、no_opening=募集中なし、unreachable=確認不能、needs_review=人の確認が必要。"
+        ),
+    ]
+    source_url: str | None = None
+    opportunity_id: str | None = None
+    note: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+    @field_validator("source_url")
+    @classmethod
+    def checked_source_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_source_host(validate_https_url(value) or value)
+
+    @field_validator("note")
+    @classmethod
+    def plain_note(cls, value: str | None) -> str | None:
+        return validate_plain_text(value)
+
+
+def _inline_model_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Inline nested definitions because FastMCP wraps a tool payload below its own root schema."""
+
+    schema = model.model_json_schema()
+    definitions = schema.pop("$defs", {})
+
+    def inline(value: Any) -> Any:
+        if isinstance(value, dict):
+            reference = value.get("$ref")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                return inline(definitions[reference.rsplit("/", 1)[-1]])
+            return {key: inline(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [inline(item) for item in value]
+        return value
+
+    return inline(schema)
+
+
+CollectionTargetCreatePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_inline_model_schema(CollectionTargetCreateRequest)),
+    Field(description="追加する業界別収集対象、公式情報源、冪等化情報。"),
+]
+CollectionTargetUpdatePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_inline_model_schema(CollectionTargetUpdateRequest)),
+    Field(description="変更する収集対象の項目だけを含む部分更新。sector=nullで業種を解除できます。"),
+]
+CollectionSourceCreatePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_inline_model_schema(CollectionSourceCreateRequest)),
+    Field(description="収集対象へ追加する企業公式ページ。"),
+]
+CollectionSourceUpdatePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_inline_model_schema(CollectionSourceUpdateRequest)),
+    Field(description="変更する公式ページの項目だけを含む部分更新。"),
+]
+CollectionCheckPayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_inline_model_schema(CollectionCheckRequest)),
+    Field(description="公式ページを確認した結果。募集がなかった場合も記録します。"),
+]
+
 
 class MCPWriteRequest(OpportunityInput):
     request_id: RequestId
@@ -410,6 +606,15 @@ UpdatePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(MCPUpdateRequest.model_json_schema()),
     Field(description="更新後の全項目。部分更新ではないため、変更しない項目も現在値を必ず含めてください。"),
+]
+
+_opportunity_patch_schema = OpportunityInput.model_json_schema()
+_opportunity_patch_schema["required"] = []
+_opportunity_patch_schema["title"] = "OpportunityPatch"
+OpportunityPatchPayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_opportunity_patch_schema),
+    Field(description="変更する募集情報の項目だけを指定します。省略した項目は現在値を維持します。"),
 ]
 
 
@@ -481,6 +686,21 @@ class MCPValidationResponse(BaseModel):
     duplicates: list[OpportunitySummary]
 
 
+class OpportunityFieldChange(BaseModel):
+    field: str
+    before: Any = None
+    after: Any = None
+
+
+class MCPOpportunityPreviewResponse(BaseModel):
+    valid: bool
+    message: str
+    expected_updated_at: datetime
+    changes: list[OpportunityFieldChange]
+    warnings: list[ErrorItem]
+    merged_payload: dict[str, Any]
+
+
 class MCPSectorsResponse(BaseModel):
     industry: MasterItem
     sectors: list[MasterItem]
@@ -500,3 +720,92 @@ class MCPWriteHistoryItem(BaseModel):
 
 class MCPWriteHistoryResponse(BaseModel):
     items: list[MCPWriteHistoryItem]
+
+
+class CollectionSourceResponse(BaseModel):
+    id: int
+    source_type: CollectionSourceType
+    url: str
+    is_active: bool
+    last_checked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CollectionOpportunityReference(BaseModel):
+    id: str
+    public_code: str
+    url: str
+    event_name: str
+    recruitment_status: str
+    source_url: str
+    updated_at: datetime
+
+
+class CollectionTargetResponse(BaseModel):
+    id: int
+    company: CompanyItem
+    industry: MasterItem
+    sector: MasterItem | None
+    priority_tier: int
+    check_interval_days: int
+    last_checked_at: datetime | None
+    next_check_at: datetime | None
+    last_check_result: CollectionCheckResult | None
+    last_found_at: datetime | None
+    is_active: bool
+    selection_reason: str | None
+    sources: list[CollectionSourceResponse]
+    opportunities: list[CollectionOpportunityReference]
+    created_at: datetime
+    updated_at: datetime
+
+
+class MCPCollectionTargetListResponse(BaseModel):
+    items: list[CollectionTargetResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class MCPCollectionQueueResponse(BaseModel):
+    items: list[CollectionTargetResponse]
+
+
+class MCPCollectionWriteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    target: CollectionTargetResponse
+
+
+class MCPCollectionSourceWriteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    source: CollectionSourceResponse
+
+
+class CollectionCheckResponse(BaseModel):
+    id: int
+    collection_target_id: int
+    result: CollectionCheckResult
+    checked_at: datetime
+    source_url: str | None
+    opportunity_id: str | None
+    request_id: str
+    client_name: str
+    note: str | None
+
+
+class MCPCollectionCheckWriteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    check: CollectionCheckResponse
+    target: CollectionTargetResponse
+
+
+class MCPCollectionCheckListResponse(BaseModel):
+    items: list[CollectionCheckResponse]

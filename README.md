@@ -112,9 +112,12 @@ https://<公開ホスト名>/mcp
 | `get_master_values` | 不要 | 選択可能な固定値マスタを全件返す |
 | `get_sectors` | 不要 | 指定した業界に属する業種だけを返す |
 | `find_similar_opportunities` | 不要 | 同じ企業の登録済み募集を探し、二重登録を防ぐ |
+| `find_opportunities_by_source_url` | 不要 | 計測パラメータ等を除いた一次情報URLで既存募集を探す |
 | `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
 | `add_opportunity` | 必要 | 募集情報を1件追加する |
 | `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
+| `preview_opportunity_patch` | 必要 | 部分更新を保存せず検証し、変更差分と警告を返す |
+| `patch_opportunity` | 必要 | 楽観ロック付きで指定項目だけを更新する |
 | `update_recruitment_status` | 必要 | 募集状況と締め切りだけを更新する |
 | `list_recent_writes` | 必要 | 直近の登録・更新の記録を返す |
 | `list_collection_targets` | 必要 | 業界別の情報収集対象を検索・一覧する |
@@ -134,16 +137,20 @@ https://<公開ホスト名>/mcp
 推奨操作順は次のとおりです。
 
 1. `get_master_values` で選択可能な固定値を取得し、業種は `get_sectors` で業界配下に絞る
-2. `find_similar_opportunities` で同じ募集が登録済みでないか確認する
+2. `find_similar_opportunities` と `find_opportunities_by_source_url` で同じ募集が登録済みでないか確認する
 3. 内容に自信がない場合は `validate_opportunity` で先に検証する
 4. `add_opportunity` または `update_opportunity` を呼ぶ
 5. 検証エラーでは、返された項目をすべて修正し、同じ `request_id` で再試行する
 
 `add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合は `update_recruitment_status` を使います。
 
+その他の一部項目だけを直す場合は、`get_opportunity` が返す `updated_at` と変更項目を `preview_opportunity_patch` へ渡し、差分を確認してから同じ内容を `patch_opportunity` へ渡します。サーバー側で現在値とマージした後に全項目を検証します。取得後に別の更新があった場合は `expected_updated_at` の不一致として拒否されるため、古い値で上書きしません。
+
 `source_url` には企業自身の採用ページなど一次情報を指定します。求人サイト・就活情報サイト・口コミサイトのURLは拒否されます。これらの掲載内容は各社が構築したデータベースであり、規約上も自動的な再利用が認められていないためです。自由記述の項目には出典の文章を転記せず、日程・対象・報酬などの事実だけを要約して記載し、担当者名などの個人名と個人宛の連絡先は含めません。
 
 同じ企業の同名イベントを新規登録しようとすると、既存の登録を示して拒否します。別日程・別コースとして意図的に分ける場合だけ、`add_opportunity` の `allow_duplicate` を `true` にしてください。
+
+一次情報URLは、ホスト名の大文字小文字、末尾スラッシュ、フラグメント、既知の計測パラメータを除いて照合します。同じ公式ページに複数募集が掲載される場合があるため、URL一致は一律の登録拒否ではなく、既存募集を確認するための警告として扱います。
 
 ### 業界別の情報収集キュー
 
@@ -153,8 +160,9 @@ https://<公開ホスト名>/mcp
 
 1. `add_collection_target` で企業、業界、優先度、確認間隔、1件以上の企業公式ページを登録する
 2. `get_collection_queue` で未確認または次回確認期限を過ぎた企業を取得する
-3. 公式ページを確認し、`find_similar_opportunities` を経て募集を追加または更新する
-4. 募集がない場合も含め、`record_collection_check` で `found`、`no_opening`、`unreachable`、`needs_review` のいずれかを記録する
+3. 公式ページを確認し、`find_similar_opportunities` と `find_opportunities_by_source_url` を経て募集を追加または更新する
+4. 募集を追加・更新する場合は `collection_target_id` を渡し、募集と確認結果 `found` を同じトランザクションで記録する
+5. 募集がない場合は `record_collection_check` で `no_opening`、`unreachable`、`needs_review` のいずれかを記録する
 
 収集対象の更新は部分更新です。省略した項目は維持され、`sector` と `selection_reason` は明示的に `null` を指定すると解除されます。収集を止める場合はデータを削除せず、`update_collection_target` で `is_active` を `false` にします。公式ページも同様に `update_collection_source` で無効化できます。すべての書き込みは `request_id` で冪等化され、監査ログに記録されます。
 

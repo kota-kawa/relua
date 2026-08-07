@@ -608,6 +608,15 @@ UpdatePayload = Annotated[
     Field(description="更新後の全項目。部分更新ではないため、変更しない項目も現在値を必ず含めてください。"),
 ]
 
+_opportunity_patch_schema = OpportunityInput.model_json_schema()
+_opportunity_patch_schema["required"] = []
+_opportunity_patch_schema["title"] = "OpportunityPatch"
+OpportunityPatchPayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_opportunity_patch_schema),
+    Field(description="変更する募集情報の項目だけを指定します。省略した項目は現在値を維持します。"),
+]
+
 
 class ErrorItem(BaseModel):
     field: str
@@ -675,6 +684,21 @@ class MCPValidationResponse(BaseModel):
     valid: bool
     message: str
     duplicates: list[OpportunitySummary]
+
+
+class OpportunityFieldChange(BaseModel):
+    field: str
+    before: Any = None
+    after: Any = None
+
+
+class MCPOpportunityPreviewResponse(BaseModel):
+    valid: bool
+    message: str
+    expected_updated_at: datetime
+    changes: list[OpportunityFieldChange]
+    warnings: list[ErrorItem]
+    merged_payload: dict[str, Any]
 
 
 class MCPSectorsResponse(BaseModel):

@@ -222,6 +222,7 @@ class Opportunity(Base):
     recruitment_start_date: Mapped[date | None] = mapped_column(Date)
     entry_url: Mapped[str | None] = mapped_column(String(2048))
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    normalized_source_url: Mapped[str | None] = mapped_column(String(2048), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     #: Shown to users as 最終更新 beside the source link, so it must mean "when the source was last
     #: read into this record". Deliberately no onupdate: a maintenance write such as the deadline

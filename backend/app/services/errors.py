@@ -28,6 +28,8 @@ FIELD_LABELS = {
     "recruitment_start_date": "募集開始日",
     "entry_url": "エントリーはこちら",
     "source_url": "情報源",
+    "expected_updated_at": "更新前の最終確認日時",
+    "collection_target_id": "情報収集対象ID",
     "priority_tier": "収集優先度",
     "check_interval_days": "確認間隔",
     "selection_reason": "選定理由",

@@ -79,9 +79,12 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "get_master_values",
         "get_sectors",
         "find_similar_opportunities",
+        "find_opportunities_by_source_url",
         "validate_opportunity",
         "add_opportunity",
         "update_opportunity",
+        "preview_opportunity_patch",
+        "patch_opportunity",
         "update_recruitment_status",
         "list_recent_writes",
         "list_collection_targets",
@@ -108,6 +111,9 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["get_collection_queue"]["annotations"]["readOnlyHint"] is True
     assert tools["get_collection_queue"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["update_collection_target"]["annotations"]["destructiveHint"] is False
+    assert tools["patch_opportunity"]["annotations"]["destructiveHint"] is False
+    assert tools["preview_opportunity_patch"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["find_opportunities_by_source_url"]["securitySchemes"] == [{"type": "noauth"}]
 
 
 def test_search_filters_publish_their_allowed_values():
@@ -254,6 +260,59 @@ def test_validate_checks_the_payload_without_writing_anything(tools, db):
     assert call("search_opportunity", {})["total"] == 1
 
 
+def test_source_url_matching_ignores_tracking_parameters_and_warns_on_validation(tools, db):
+    existing = seed(db)
+    variant = "https://EXAMPLE.com/source/?utm_source=chatgpt#details"
+
+    matches = call("find_opportunities_by_source_url", {"source_url": variant})["matches"]
+    validated = call(
+        "validate_opportunity",
+        write_args(
+            request_id="source-duplicate-0001",
+            company_name="株式会社別企業",
+            event_name="別イベント",
+            source_url=variant,
+        ),
+    )
+
+    assert [item["id"] for item in matches] == [existing.id]
+    assert [item["id"] for item in validated["duplicates"]] == [existing.id]
+
+
+def test_patch_preview_updates_only_selected_fields_and_rejects_stale_writes(tools, db):
+    item = seed(db)
+    current = call("get_opportunity", {"reference": item.id})
+    new_deadline = (date.today() + timedelta(days=75)).isoformat()
+    arguments = {
+        "opportunity_id": item.id,
+        "changes": {"deadline": new_deadline},
+        "expected_updated_at": current["updated_at"],
+        "request_id": "patch-opportunity-0001",
+        "client_name": "pytest",
+    }
+
+    preview = call("preview_opportunity_patch", arguments | {"request_id": "patch-preview-0001"})
+    updated = call("patch_opportunity", arguments)
+    replay = call("patch_opportunity", arguments)
+
+    assert preview["changes"] == [
+        {"field": "deadline", "before": current["deadline"], "after": new_deadline}
+    ]
+    assert updated["opportunity"]["deadline"] == new_deadline
+    assert updated["opportunity"]["description"] == current["description"]
+    assert replay["idempotent_replay"] is True
+
+    stale = tool_error(
+        "patch_opportunity",
+        arguments
+        | {
+            "changes": {"deadline": (date.today() + timedelta(days=90)).isoformat()},
+            "request_id": "patch-opportunity-0002",
+        },
+    )
+    assert stale["errors"][0]["field"] == "更新前の最終確認日時"
+
+
 def test_update_recruitment_status_touches_only_the_status_and_deadline(tools, db):
     item = seed(db)
     new_deadline = (date.today() + timedelta(days=60)).isoformat()
@@ -336,6 +395,31 @@ def collection_target_args(**overrides) -> dict:
         "client_name": "pytest",
     }
     return {"payload": payload | overrides}
+
+
+def test_opportunity_write_can_complete_collection_target_atomically(tools, db):
+    target = call(
+        "add_collection_target",
+        collection_target_args(
+            company_name="株式会社テスト",
+            sources=[{"source_type": "recruit", "url": "https://example.com/source"}],
+            request_id="collection-for-write-0001",
+        ),
+    )["target"]
+
+    written = call(
+        "add_opportunity",
+        write_args(request_id="opportunity-with-target-0001")
+        | {"collection_target_id": target["id"]},
+    )
+    refreshed = call("get_collection_target", {"target_id": target["id"]})
+    checks = call("list_collection_checks", {"target_id": target["id"]})["items"]
+
+    assert written["success"] is True
+    assert refreshed["last_check_result"] == "found"
+    assert refreshed["last_found_at"] is not None
+    assert checks[0]["opportunity_id"] == written["opportunity"]["id"]
+    assert checks[0]["request_id"] == "opportunity-with-target-0001"
 
 
 def test_collection_target_schema_is_actionable_for_mcp_clients():

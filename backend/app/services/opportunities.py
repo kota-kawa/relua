@@ -2,7 +2,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import (
     PUBLIC_CODE_LENGTH,
     AuditLog,
+    CollectionCheck,
+    CollectionTarget,
     Company,
     Degree,
     EventFormat,
@@ -29,7 +31,7 @@ from app.models import (
 from app.schemas import OpportunityInput
 from app.services.errors import FIELD_LABELS, master_error
 from app.services.masters import choices, resolve_many, resolve_one
-from app.services.normalization import normalize_common, normalize_company_name, normalize_tag
+from app.services.normalization import normalize_common, normalize_company_name, normalize_source_url, normalize_tag
 from app.services.serialization import detail_url, opportunity_dict, public_detail_url
 
 
@@ -68,6 +70,10 @@ def opportunity_query() -> Select[tuple[Opportunity]]:
 
 def get_opportunity(db: Session, opportunity_id: str) -> Opportunity | None:
     return db.scalar(opportunity_query().where(Opportunity.id == opportunity_id))
+
+
+def get_opportunity_for_update(db: Session, opportunity_id: str) -> Opportunity | None:
+    return db.scalar(opportunity_query().where(Opportunity.id == opportunity_id).with_for_update())
 
 
 def get_opportunity_by_public_ref(db: Session, reference: str) -> Opportunity | None:
@@ -222,6 +228,16 @@ def find_exact_duplicates(
     ]
 
 
+def find_source_url_duplicates(
+    db: Session, *, source_url: str, exclude_id: str | None = None, limit: int = 20
+) -> list[Opportunity]:
+    normalized = normalize_source_url(source_url)
+    stmt = opportunity_query().where(Opportunity.normalized_source_url == normalized)
+    if exclude_id:
+        stmt = stmt.where(Opportunity.id != exclude_id)
+    return list(db.scalars(stmt.order_by(Opportunity.updated_at.desc()).limit(limit)).unique())
+
+
 def _reused_request_id_error(request_id: str) -> dict[str, Any]:
     return {
         "field": "request_id",
@@ -244,6 +260,21 @@ def _duplicate_error(matches: list[Opportunity]) -> dict[str, Any]:
             "既存の登録を直す場合はupdate_opportunityを使い、"
             "別日程・別コースで意図的に分けて登録する場合はallow_duplicateをtrueにしてください"
         ),
+        "existing": [
+            {"id": item.id, "public_code": item.public_code, "url": detail_url(item), "event_name": item.event_name}
+            for item in matches
+        ],
+    }
+
+
+def source_duplicate_warning(matches: list[Opportunity], source_url: str) -> dict[str, Any]:
+    return {
+        "field": "情報源",
+        "received": source_url,
+        "reason": "同じ一次情報URLを使用する募集が既に登録されています",
+        "expected": "別の募集であることを確認してください",
+        "example": None,
+        "alternative": "同じページに複数募集が掲載されている場合はそのまま登録できます",
         "existing": [
             {"id": item.id, "public_code": item.public_code, "url": detail_url(item), "event_name": item.event_name}
             for item in matches
@@ -325,8 +356,179 @@ def _hash_payload(payload: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _request_hash(data: OpportunityInput) -> str:
-    return _hash_payload(data.model_dump(mode="json"))
+def _request_hash(data: OpportunityInput, **context: Any) -> str:
+    payload = data.model_dump(mode="json")
+    payload.update({f"_{key}": value for key, value in context.items() if value is not None})
+    return _hash_payload(payload)
+
+
+def opportunity_input_dict(item: Opportunity) -> dict[str, Any]:
+    """Return the exact write shape so a partial patch can merge without losing fields."""
+    return {
+        "recruitment_status": item.status.name,
+        "company_name": item.company.name,
+        "industry": item.industry.name,
+        "sector": item.sector.name,
+        "event_name": item.event_name,
+        "deadline": item.deadline,
+        "event_type": item.event_type.name,
+        "description": item.description,
+        "event_format": item.event_format.name,
+        "location": item.location,
+        "selection_process": item.selection_process,
+        "homepage_url": item.homepage_url,
+        "job_categories": [value.name for value in sorted(item.job_categories, key=lambda value: value.sort_order)],
+        "tags": [value.name for value in sorted(item.tags, key=lambda value: value.name)],
+        "event_start_date": item.event_start_date,
+        "event_end_date": item.event_end_date,
+        "period_note": item.period_note,
+        "requirements": item.requirements,
+        "compensation": item.compensation,
+        "graduation_years": [
+            value.name for value in sorted(item.graduation_years, key=lambda value: value.sort_order)
+        ],
+        "degrees": [value.name for value in sorted(item.degrees, key=lambda value: value.sort_order)],
+        "audience_note": item.audience_note,
+        "recruitment_start_date": item.recruitment_start_date,
+        "entry_url": item.entry_url,
+        "source_url": item.source_url,
+    }
+
+
+def opportunity_patch_changes(item: Opportunity, data: OpportunityInput) -> list[dict[str, Any]]:
+    before = opportunity_input_dict(item)
+    after = data.model_dump()
+    return [
+        {"field": field, "before": before[field], "after": after[field]}
+        for field in before
+        if before[field] != after[field]
+    ]
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    return value.astimezone(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+
+
+def optimistic_lock_error(expected: datetime, actual: datetime) -> dict[str, Any]:
+    return {
+        "field": "更新前の最終確認日時",
+        "received": expected.isoformat(),
+        "reason": "取得後に募集情報が更新されています",
+        "expected": actual.isoformat(),
+        "example": actual.isoformat(),
+        "alternative": "get_opportunityで最新値を取得し、変更内容を確認して新しいrequest_idで再試行してください",
+    }
+
+
+def ensure_expected_updated_at(item: Opportunity, expected: datetime) -> None:
+    if _as_utc(item.updated_at) != _as_utc(expected):
+        raise DomainValidationError([optimistic_lock_error(expected, item.updated_at)])
+
+
+def is_patch_replay(db: Session, *, request_id: str, opportunity_id: str) -> bool:
+    previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
+    return bool(
+        previous
+        and previous.operation == "patch"
+        and previous.opportunity_id == opportunity_id
+    )
+
+
+def _collection_target_for_write(
+    db: Session,
+    *,
+    collection_target_id: int | None,
+    data: OpportunityInput,
+    industry: Industry,
+    request_id: str,
+) -> CollectionTarget | None:
+    if collection_target_id is None:
+        return None
+    target = db.scalar(
+        select(CollectionTarget)
+        .options(
+            selectinload(CollectionTarget.company),
+            selectinload(CollectionTarget.sources),
+        )
+        .where(CollectionTarget.id == collection_target_id)
+        .with_for_update()
+    )
+    if target is None:
+        raise DomainValidationError(
+            [{"field": "情報収集対象ID", "received": collection_target_id, "reason": "収集対象が見つかりません"}]
+        )
+    if not target.is_active:
+        raise DomainValidationError(
+            [{"field": "情報収集対象ID", "received": collection_target_id, "reason": "収集対象が無効化されています"}]
+        )
+    if target.company.normalized_name != normalize_company_name(data.company_name) or target.industry_id != industry.id:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "情報収集対象ID",
+                    "received": collection_target_id,
+                    "reason": "収集対象の企業・業界と募集情報が一致しません",
+                    "expected": f"{target.company.name} / {target.industry.name}",
+                }
+            ]
+        )
+    existing_check = db.scalar(select(CollectionCheck).where(CollectionCheck.request_id == request_id))
+    if existing_check is not None:
+        raise DomainValidationError([_reused_request_id_error(request_id)])
+    return target
+
+
+def _record_collection_success(
+    db: Session,
+    *,
+    target: CollectionTarget,
+    item: Opportunity,
+    request_id: str,
+    client_name: str,
+) -> None:
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    target.last_checked_at = now
+    target.last_found_at = now
+    target.last_check_result = "found"
+    target.next_check_at = now + timedelta(days=target.check_interval_days)
+    for source in target.sources:
+        if normalize_source_url(source.url) == item.normalized_source_url:
+            source.last_checked_at = now
+            break
+    check = CollectionCheck(
+        collection_target_id=target.id,
+        result="found",
+        checked_at=now,
+        source_url=item.source_url,
+        opportunity=item,
+        request_id=request_id,
+        client_name=client_name,
+        note="募集情報の書き込みと同時に記録",
+    )
+    db.add(check)
+    db.flush()
+    db.add(
+        AuditLog(
+            action="collection_check_create",
+            entity_type="collection_check",
+            entity_id=str(check.id),
+            request_id=request_id,
+            client_name=client_name,
+            source_url=item.source_url,
+            success=True,
+            changes={
+                "before": None,
+                "after": {
+                    "collection_target_id": target.id,
+                    "result": "found",
+                    "opportunity_id": item.id,
+                    "checked_at": now.isoformat(),
+                },
+            },
+        )
+    )
 
 
 def write_opportunity(
@@ -337,9 +539,17 @@ def write_opportunity(
     client_name: str,
     opportunity_id: str | None = None,
     allow_duplicate: bool = False,
+    collection_target_id: int | None = None,
+    expected_updated_at: datetime | None = None,
+    action: str | None = None,
 ) -> tuple[Opportunity, bool]:
-    operation = "update" if opportunity_id else "create"
-    request_hash = _request_hash(data)
+    operation = action or ("update" if opportunity_id else "create")
+    request_hash = _request_hash(
+        data,
+        collection_target_id=collection_target_id,
+        expected_updated_at=expected_updated_at.isoformat() if expected_updated_at else None,
+        action=action,
+    )
     previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
     if previous:
         target_mismatch = opportunity_id is not None and previous.opportunity_id != opportunity_id
@@ -361,10 +571,20 @@ def write_opportunity(
     if errors:
         raise DomainValidationError(errors)
 
+    collection_target = _collection_target_for_write(
+        db,
+        collection_target_id=collection_target_id,
+        data=data,
+        industry=resolved["industry"],
+        request_id=request_id,
+    )
+
     if opportunity_id:
-        item = get_opportunity(db, opportunity_id)
+        item = get_opportunity_for_update(db, opportunity_id) if expected_updated_at else get_opportunity(db, opportunity_id)
         if item is None:
             raise LookupError("opportunity_not_found")
+        if expected_updated_at:
+            ensure_expected_updated_at(item, expected_updated_at)
         before = opportunity_dict(item)
         is_new = False
     else:
@@ -391,6 +611,7 @@ def write_opportunity(
     ]
     for field in scalar_fields:
         setattr(item, field, getattr(data, field))
+    item.normalized_source_url = normalize_source_url(data.source_url)
     item.status = resolved["recruitment_status"]
     item.company = _company(db, data.company_name)
     item.industry = resolved["industry"]
@@ -401,12 +622,23 @@ def write_opportunity(
     item.graduation_years = resolved["graduation_years"]
     item.degrees = resolved["degrees"]
     item.tags = _tags(db, data.tags)
-    # The model has no onupdate, so every write that re-read the source states the timestamp itself.
-    # func.now() keeps this on the database clock, the same one created_at's server_default uses.
-    item.updated_at = func.now()
+    # Every source-backed write advances the version used by optimistic locking. Python's
+    # microsecond clock also keeps SQLite tests from collapsing two writes into one timestamp.
+    verified_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    if item.updated_at is not None and verified_at <= _as_utc(item.updated_at):
+        verified_at = _as_utc(item.updated_at) + timedelta(microseconds=1)
+    item.updated_at = verified_at
     if is_new:
         db.add(item)
     db.flush()
+    if collection_target is not None:
+        _record_collection_success(
+            db,
+            target=collection_target,
+            item=item,
+            request_id=request_id,
+            client_name=client_name,
+        )
     response = opportunity_dict(item)
     json_response = jsonable_encoder(response)
 

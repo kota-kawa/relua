@@ -579,12 +579,13 @@ def record_failed_attempt(
     client_name: str,
     source_url: str | None,
     errors: list[dict[str, Any]],
+    entity_type: str = "opportunity",
 ) -> None:
     db.rollback()
     db.add(
         AuditLog(
             action=action,
-            entity_type="opportunity",
+            entity_type=entity_type,
             request_id=request_id,
             client_name=client_name,
             source_url=source_url,

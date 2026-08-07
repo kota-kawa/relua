@@ -117,6 +117,15 @@ https://<公開ホスト名>/mcp
 | `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
 | `update_recruitment_status` | 必要 | 募集状況と締め切りだけを更新する |
 | `list_recent_writes` | 必要 | 直近の登録・更新の記録を返す |
+| `list_collection_targets` | 必要 | 業界別の情報収集対象を検索・一覧する |
+| `get_collection_target` | 必要 | 収集対象、公式ページ、登録済み募集を1件取得する |
+| `get_collection_queue` | 必要 | 未確認または再確認期限を過ぎた企業を優先度順に返す |
+| `list_collection_checks` | 必要 | 企業ごとの情報収集・確認履歴を新しい順に返す |
+| `add_collection_target` | 必要 | 企業・業界・優先度・確認間隔・公式ページを収集対象へ追加する |
+| `update_collection_target` | 必要 | 収集対象を部分更新または無効化する |
+| `add_collection_source` | 必要 | 収集対象へ企業公式ページを追加する |
+| `update_collection_source` | 必要 | 公式ページのURL・種類・有効状態を部分更新する |
+| `record_collection_check` | 必要 | 募集の有無や確認不能などの確認結果と次回確認日を記録する |
 
 各ツールは `title`、`annotations`（`readOnlyHint` など）、`outputSchema` を公開します。読み取り専用かどうかがクライアント側で判別できるため、ChatGPTやClaudeは読み取りツールの自動承認を判断できます。
 
@@ -135,6 +144,19 @@ https://<公開ホスト名>/mcp
 `source_url` には企業自身の採用ページなど一次情報を指定します。求人サイト・就活情報サイト・口コミサイトのURLは拒否されます。これらの掲載内容は各社が構築したデータベースであり、規約上も自動的な再利用が認められていないためです。自由記述の項目には出典の文章を転記せず、日程・対象・報酬などの事実だけを要約して記載し、担当者名などの個人名と個人宛の連絡先は含めません。
 
 同じ企業の同名イベントを新規登録しようとすると、既存の登録を示して拒否します。別日程・別コースとして意図的に分ける場合だけ、`add_opportunity` の `allow_duplicate` を `true` にしてください。
+
+### 業界別の情報収集キュー
+
+運営者用MCPでは、募集がまだ登録されていない企業も業界別の収集対象として管理できます。収集優先度は企業の評価や公開ランキングではなく、公式ページを確認する内部の作業順です。収集対象の読み取りを含め、これらのツールはすべて認証を必要とします。
+
+推奨操作順は次のとおりです。
+
+1. `add_collection_target` で企業、業界、優先度、確認間隔、1件以上の企業公式ページを登録する
+2. `get_collection_queue` で未確認または次回確認期限を過ぎた企業を取得する
+3. 公式ページを確認し、`find_similar_opportunities` を経て募集を追加または更新する
+4. 募集がない場合も含め、`record_collection_check` で `found`、`no_opening`、`unreachable`、`needs_review` のいずれかを記録する
+
+収集対象の更新は部分更新です。省略した項目は維持され、`sector` と `selection_reason` は明示的に `null` を指定すると解除されます。収集を止める場合はデータを削除せず、`update_collection_target` で `is_active` を `false` にします。公式ページも同様に `update_collection_source` で無効化できます。すべての書き込みは `request_id` で冪等化され、監査ログに記録されます。
 
 ## 内部REST API
 

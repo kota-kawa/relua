@@ -115,6 +115,76 @@ class Company(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class CollectionTarget(Base):
+    """An internal company/industry pair the operator intends to monitor."""
+
+    __tablename__ = "collection_targets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False)
+    industry_id: Mapped[int] = mapped_column(ForeignKey("industries.id", ondelete="RESTRICT"), nullable=False)
+    sector_id: Mapped[int | None] = mapped_column(ForeignKey("sectors.id", ondelete="RESTRICT"))
+    #: This is an internal collection order, not a rating of the company. 1 is checked first.
+    priority_tier: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    check_interval_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_check_result: Mapped[str | None] = mapped_column(String(32))
+    last_found_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    selection_reason: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    company: Mapped[Company] = relationship()
+    industry: Mapped[Industry] = relationship()
+    sector: Mapped[Sector | None] = relationship()
+    sources: Mapped[list["CollectionSource"]] = relationship(
+        back_populates="target", cascade="all, delete-orphan", lazy="selectin"
+    )
+    checks: Mapped[list["CollectionCheck"]] = relationship(back_populates="target", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "industry_id", name="uq_collection_target_company_industry"),
+        CheckConstraint("priority_tier BETWEEN 1 AND 3", name="ck_collection_target_priority"),
+        CheckConstraint("check_interval_days BETWEEN 1 AND 365", name="ck_collection_target_interval"),
+        CheckConstraint(
+            "last_check_result IS NULL OR last_check_result IN ('found', 'no_opening', 'unreachable', 'needs_review')",
+            name="ck_collection_target_result",
+        ),
+        Index("ix_collection_targets_queue", "is_active", "priority_tier", "next_check_at"),
+    )
+
+
+class CollectionSource(Base):
+    __tablename__ = "collection_sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection_target_id: Mapped[int] = mapped_column(
+        ForeignKey("collection_targets.id", ondelete="CASCADE"), nullable=False
+    )
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    target: Mapped[CollectionTarget] = relationship(back_populates="sources")
+
+    __table_args__ = (
+        UniqueConstraint("collection_target_id", "url", name="uq_collection_source_target_url"),
+        CheckConstraint(
+            "source_type IN ('recruit', 'internship', 'event', 'news', 'other')",
+            name="ck_collection_source_type",
+        ),
+    )
+
+
 class Tag(Base):
     __tablename__ = "tags"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -180,6 +250,49 @@ class Opportunity(Base):
         Index("ix_opportunities_deadline", "deadline"),
         Index("ix_opportunities_filter", "status_id", "industry_id", "event_type_id"),
     )
+
+
+class CollectionCheck(Base):
+    """Append-only evidence of a collection attempt, including attempts that found nothing."""
+
+    __tablename__ = "collection_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection_target_id: Mapped[int] = mapped_column(
+        ForeignKey("collection_targets.id", ondelete="CASCADE"), nullable=False
+    )
+    result: Mapped[str] = mapped_column(String(32), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(2048))
+    opportunity_id: Mapped[str | None] = mapped_column(ForeignKey("opportunities.id", ondelete="SET NULL"))
+    request_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    client_name: Mapped[str] = mapped_column(String(100), default="mcp-client", nullable=False)
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    target: Mapped[CollectionTarget] = relationship(back_populates="checks")
+    opportunity: Mapped[Opportunity | None] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "result IN ('found', 'no_opening', 'unreachable', 'needs_review')",
+            name="ck_collection_check_result",
+        ),
+    )
+
+
+class CollectionRequestRecord(Base):
+    """Idempotency keys for collection-target MCP writes."""
+
+    __tablename__ = "collection_request_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class AuditLog(Base):

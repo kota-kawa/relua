@@ -84,6 +84,15 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "update_opportunity",
         "update_recruitment_status",
         "list_recent_writes",
+        "list_collection_targets",
+        "get_collection_target",
+        "get_collection_queue",
+        "list_collection_checks",
+        "add_collection_target",
+        "update_collection_target",
+        "add_collection_source",
+        "update_collection_source",
+        "record_collection_check",
     }
     for name, tool in tools.items():
         assert tool["title"], f"{name} has no title"
@@ -96,6 +105,9 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["update_opportunity"]["annotations"]["destructiveHint"] is True
     assert tools["add_opportunity"]["annotations"]["destructiveHint"] is False
     assert tools["update_recruitment_status"]["annotations"]["destructiveHint"] is False
+    assert tools["get_collection_queue"]["annotations"]["readOnlyHint"] is True
+    assert tools["get_collection_queue"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["update_collection_target"]["annotations"]["destructiveHint"] is False
 
 
 def test_search_filters_publish_their_allowed_values():
@@ -309,3 +321,132 @@ def test_list_recent_writes_reports_successes_and_failures(tools, db):
     assert history[0]["errors"][0]["field"] == "業種"
     assert history[1]["url"].endswith("/opportunities/" + call("search_opportunity", {})["items"][0]["public_code"])
     assert call("list_recent_writes", {"client_name": "nobody"})["items"] == []
+
+
+def collection_target_args(**overrides) -> dict:
+    payload = {
+        "company_name": "株式会社収集テスト",
+        "industry": "IT・通信",
+        "sector": "Webサービス",
+        "priority_tier": 1,
+        "check_interval_days": 14,
+        "selection_reason": "業界内の掲載範囲を確認するため",
+        "sources": [{"source_type": "recruit", "url": "https://example.com/recruit"}],
+        "request_id": "collection-create-0001",
+        "client_name": "pytest",
+    }
+    return {"payload": payload | overrides}
+
+
+def test_collection_target_schema_is_actionable_for_mcp_clients():
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    schemas = {tool.name: tool.inputSchema for tool in listed}
+    payload = schemas["add_collection_target"]["properties"]["payload"]
+
+    assert payload["properties"]["industry"]["enum"][0] == "IT・通信"
+    assert payload["properties"]["priority_tier"]["minimum"] == 1
+    assert payload["properties"]["sources"]["items"]["properties"]["url"]["description"]
+    assert schemas["record_collection_check"]["properties"]["payload"]["properties"]["result"]["enum"] == [
+        "found",
+        "no_opening",
+        "unreachable",
+        "needs_review",
+    ]
+
+
+def test_collection_queue_supports_create_patch_source_management_and_checks(tools, db):
+    created = call("add_collection_target", collection_target_args())
+    target = created["target"]
+
+    assert created["idempotent_replay"] is False
+    assert target["company"]["name"] == "株式会社収集テスト"
+    assert target["sources"][0]["url"] == "https://example.com/recruit"
+    assert call("get_collection_queue", {"industry": "IT・通信"})["items"][0]["id"] == target["id"]
+    assert call("get_collection_target", {"target_id": target["id"]})["id"] == target["id"]
+
+    updated = call(
+        "update_collection_target",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "priority_tier": 2,
+                "selection_reason": None,
+                "request_id": "collection-update-0001",
+                "client_name": "pytest",
+            },
+        },
+    )
+    assert updated["target"]["priority_tier"] == 2
+    assert updated["target"]["selection_reason"] is None
+
+    added_source = call(
+        "add_collection_source",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "source_type": "internship",
+                "url": "https://example.com/internship",
+                "request_id": "collection-source-0001",
+                "client_name": "pytest",
+            },
+        },
+    )["source"]
+    changed_source = call(
+        "update_collection_source",
+        {
+            "source_id": added_source["id"],
+            "payload": {
+                "is_active": False,
+                "request_id": "collection-source-update-0001",
+                "client_name": "pytest",
+            },
+        },
+    )
+    assert changed_source["source"]["is_active"] is False
+
+    checked = call(
+        "record_collection_check",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "result": "no_opening",
+                "source_url": "https://example.com/recruit",
+                "request_id": "collection-check-0001",
+                "client_name": "pytest",
+            },
+        },
+    )
+    replay = call(
+        "record_collection_check",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "result": "no_opening",
+                "source_url": "https://example.com/recruit",
+                "request_id": "collection-check-0001",
+                "client_name": "pytest",
+            },
+        },
+    )
+    assert checked["target"]["last_check_result"] == "no_opening"
+    assert checked["target"]["next_check_at"] is not None
+    assert replay["idempotent_replay"] is True
+    history = call("list_collection_checks", {"target_id": target["id"]})["items"]
+    assert len(history) == 1
+    assert history[0]["result"] == "no_opening"
+    assert call("get_collection_queue", {})["items"] == []
+    assert call("list_collection_targets", {"include_inactive": True})["total"] == 1
+
+
+def test_collection_targets_reject_bad_classification_and_non_primary_sources(tools, db):
+    classification = tool_error("add_collection_target", collection_target_args(sector="銀行"))
+    source = tool_error(
+        "add_collection_target",
+        collection_target_args(
+            request_id="collection-create-0002",
+            sources=[{"source_type": "recruit", "url": "https://job.mynavi.jp/example"}],
+        ),
+    )
+
+    assert classification["errors"][0]["field"] == "業種"
+    assert source["errors"][0]["field"] == "公式情報源"

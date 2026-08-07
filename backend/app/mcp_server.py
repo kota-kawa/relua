@@ -13,6 +13,17 @@ from pydantic import Field, ValidationError
 from app.config import get_settings
 from app.db import SessionLocal
 from app.schemas import (
+    CollectionCheckPayload,
+    CollectionCheckRequest,
+    CollectionSourceCreatePayload,
+    CollectionSourceCreateRequest,
+    CollectionSourceUpdatePayload,
+    CollectionSourceUpdateRequest,
+    CollectionTargetCreatePayload,
+    CollectionTargetCreateRequest,
+    CollectionTargetResponse,
+    CollectionTargetUpdatePayload,
+    CollectionTargetUpdateRequest,
     DegreeValue,
     EventFormatValue,
     EventTypeValue,
@@ -20,6 +31,12 @@ from app.schemas import (
     IndustryValue,
     JobCategoryValue,
     MastersResponse,
+    MCPCollectionCheckListResponse,
+    MCPCollectionCheckWriteResponse,
+    MCPCollectionQueueResponse,
+    MCPCollectionSourceWriteResponse,
+    MCPCollectionTargetListResponse,
+    MCPCollectionWriteResponse,
     MCPDuplicateResponse,
     MCPSearchResponse,
     MCPSectorsResponse,
@@ -34,6 +51,22 @@ from app.schemas import (
     SortValue,
     UpdatePayload,
     WritePayload,
+)
+from app.services.collection_targets import (
+    collection_check_dict,
+    collection_queue,
+    collection_source_dict,
+    collection_target_dict,
+    create_collection_source,
+    create_collection_target,
+    list_collection_checks,
+    list_collection_targets,
+    record_collection_check,
+    update_collection_source,
+    update_collection_target,
+)
+from app.services.collection_targets import (
+    get_collection_target as get_collection_target_record,
 )
 from app.services.errors import pydantic_errors
 from app.services.master_cache import master_payload
@@ -91,6 +124,8 @@ mcp = FastMCP(
         "自由記述には出典の文章を転記せず、日程・対象・報酬などの事実だけを自分の言葉で書いてください。"
         "出典独自の言い回しやキャッチコピー、担当者名などの個人名、個人宛の連絡先は登録しないでください。"
         "情報源には企業自身の採用ページなど一次情報を指定し、求人サイトや口コミサイトの掲載ページは使用しないでください。"
+        "情報収集を進める場合はget_collection_queueで次の企業を取得し、確認後は募集の有無にかかわらず"
+        "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
     ),
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -114,6 +149,7 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 APPEND_ONLY = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 #: A full replacement drops any field the caller omits, which is destructive in the MCP sense.
 REPLACING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+PATCHING = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
 def _json_error(payload: dict[str, Any]) -> ToolError:
@@ -190,6 +226,48 @@ def _domain_error(request: Any, action: str, exc: DomainValidationError) -> Tool
             client_name=request.client_name,
             source_url=getattr(request, "source_url", None),
             errors=exc.errors,
+        )
+    return _validation_error(request.client_name, request.request_id, exc.errors)
+
+
+def _collection_source_url(request: Any) -> str | None:
+    source_url = getattr(request, "source_url", None) or getattr(request, "url", None)
+    if source_url:
+        return source_url
+    sources = getattr(request, "sources", None) or []
+    return sources[0].url if sources else None
+
+
+def _parse_collection_payload(raw: dict[str, Any], model: type[Any], action: str) -> Any:
+    request_id = raw.get("request_id") if isinstance(raw, dict) else None
+    client_name = (raw.get("client_name") if isinstance(raw, dict) else None) or "mcp-client"
+    try:
+        return model.model_validate(raw)
+    except ValidationError as exc:
+        errors = pydantic_errors(exc, raw)
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action=action,
+                request_id=request_id,
+                client_name=client_name,
+                source_url=None,
+                errors=errors,
+                entity_type="collection_target",
+            )
+        raise _validation_error(client_name, request_id, errors) from exc
+
+
+def _collection_domain_error(request: Any, action: str, exc: DomainValidationError) -> ToolError:
+    with SessionLocal() as db:
+        record_failed_attempt(
+            db,
+            action=action,
+            request_id=request.request_id,
+            client_name=request.client_name,
+            source_url=_collection_source_url(request),
+            errors=exc.errors,
+            entity_type="collection_target",
         )
     return _validation_error(request.client_name, request.request_id, exc.errors)
 
@@ -540,6 +618,254 @@ def update_recruitment_status_tool(
 
 
 @mcp.tool(
+    name="list_collection_targets",
+    title="業界別の情報収集対象を一覧",
+    description=(
+        "運営者用の情報収集対象を企業名、業界、業種、優先度、確認期限で絞り込みます。"
+        "無効化済みの対象はinclude_inactive=trueの場合だけ返します。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def list_collection_targets_tool(
+    query: Annotated[str | None, Field(description="企業名の部分一致キーワード。", max_length=200)] = None,
+    industry: Annotated[IndustryValue | None, Field(description="業界。省略すると全業界。")] = None,
+    sector: Annotated[str | None, Field(description="業種名。")] = None,
+    priority_tier: Annotated[int | None, Field(ge=1, le=3, description="内部収集優先度。1が最優先。")] = None,
+    due_only: Annotated[bool, Field(description="未確認または次回確認期限を過ぎた対象だけを返します。")] = False,
+    include_inactive: Annotated[bool, Field(description="無効化済みの対象も含めます。")] = False,
+    page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
+    per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数。")] = 20,
+) -> MCPCollectionTargetListResponse:
+    with SessionLocal() as db:
+        result = list_collection_targets(
+            db,
+            query=query,
+            industry=industry,
+            sector=sector,
+            priority_tier=priority_tier,
+            due_only=due_only,
+            include_inactive=include_inactive,
+            page=page,
+            per_page=per_page,
+        )
+        return MCPCollectionTargetListResponse.model_validate(
+            {
+                "items": [collection_target_dict(db, item) for item in result.items],
+                "total": result.total,
+                "page": result.page,
+                "per_page": result.per_page,
+                "total_pages": result.total_pages,
+            }
+        )
+
+
+@mcp.tool(
+    name="get_collection_target",
+    title="情報収集対象を1件取得",
+    description="収集対象、公式ページ、同じ企業・業界の登録済み募集をIDで取得します。認証が必要です。",
+    annotations=READ_ONLY,
+)
+def get_collection_target_tool(
+    target_id: Annotated[int, Field(ge=1, description="収集対象ID。")],
+) -> CollectionTargetResponse:
+    with SessionLocal() as db:
+        target = get_collection_target_record(db, target_id)
+        if target is None:
+            raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"})
+        return CollectionTargetResponse.model_validate(collection_target_dict(db, target))
+
+
+@mcp.tool(
+    name="get_collection_queue",
+    title="次に確認する企業を取得",
+    description=(
+        "有効な収集対象から、未確認または確認期限を過ぎた企業を優先度順に返します。"
+        "各公式ページを確認し、募集の有無にかかわらずrecord_collection_checkを実行してください。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def get_collection_queue_tool(
+    industry: Annotated[IndustryValue | None, Field(description="対象業界。省略すると全業界。")] = None,
+    limit: Annotated[int, Field(ge=1, le=50, description="取得件数。")] = 20,
+) -> MCPCollectionQueueResponse:
+    with SessionLocal() as db:
+        items = collection_queue(db, industry=industry, limit=limit)
+        return MCPCollectionQueueResponse.model_validate(
+            {"items": [collection_target_dict(db, item) for item in items]}
+        )
+
+
+@mcp.tool(
+    name="list_collection_checks",
+    title="情報収集の確認履歴を取得",
+    description="指定した収集対象について、募集あり・なし・確認不能などの確認履歴を新しい順に返します。認証が必要です。",
+    annotations=READ_ONLY,
+)
+def list_collection_checks_tool(
+    target_id: Annotated[int, Field(ge=1, description="収集対象ID。")],
+    limit: Annotated[int, Field(ge=1, le=100, description="取得件数。")]=20,
+) -> MCPCollectionCheckListResponse:
+    try:
+        with SessionLocal() as db:
+            items = list_collection_checks(db, target_id=target_id, limit=limit)
+            return MCPCollectionCheckListResponse.model_validate(
+                {"items": [collection_check_dict(item) for item in items]}
+            )
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="add_collection_target",
+    title="情報収集対象を追加",
+    description=(
+        "企業と業界の組み合わせを内部の収集キューへ追加します。企業公式ページを1件以上指定します。"
+        "priority_tierは企業評価ではなく確認順です。認証が必要です。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def add_collection_target_tool(payload: CollectionTargetCreatePayload) -> MCPCollectionWriteResponse:
+    request = _parse_collection_payload(payload, CollectionTargetCreateRequest, "collection_target_create")
+    _rate_limit(request.client_name, "collection_target_create")
+    try:
+        with SessionLocal() as db:
+            target, replayed = create_collection_target(db, request)
+            return MCPCollectionWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "情報収集対象を追加しました",
+                    "target": collection_target_dict(db, target),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_target_create", exc) from exc
+
+
+@mcp.tool(
+    name="update_collection_target",
+    title="情報収集対象を部分更新",
+    description=(
+        "指定した項目だけを変更します。sectorまたはselection_reasonをnullにすると値を解除できます。"
+        "削除の代わりにis_active=falseで収集対象から外せます。認証が必要です。"
+    ),
+    annotations=PATCHING,
+)
+def update_collection_target_tool(
+    target_id: Annotated[int, Field(ge=1, description="更新する収集対象ID。")],
+    payload: CollectionTargetUpdatePayload,
+) -> MCPCollectionWriteResponse:
+    request = _parse_collection_payload(payload, CollectionTargetUpdateRequest, "collection_target_update")
+    _rate_limit(request.client_name, "collection_target_update")
+    try:
+        with SessionLocal() as db:
+            target, replayed = update_collection_target(db, target_id=target_id, payload=request)
+            return MCPCollectionWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "情報収集対象を更新しました",
+                    "target": collection_target_dict(db, target),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_target_update", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="add_collection_source",
+    title="企業公式ページを追加",
+    description="既存の収集対象へ確認先となる企業公式ページを追加します。認証が必要です。",
+    annotations=APPEND_ONLY,
+)
+def add_collection_source_tool(
+    target_id: Annotated[int, Field(ge=1, description="追加先の収集対象ID。")],
+    payload: CollectionSourceCreatePayload,
+) -> MCPCollectionSourceWriteResponse:
+    request = _parse_collection_payload(payload, CollectionSourceCreateRequest, "collection_source_create")
+    _rate_limit(request.client_name, "collection_source_create")
+    try:
+        with SessionLocal() as db:
+            source, replayed = create_collection_source(db, target_id=target_id, payload=request)
+            return MCPCollectionSourceWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "企業公式ページを追加しました",
+                    "source": collection_source_dict(source),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_source_create", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="update_collection_source",
+    title="企業公式ページを部分更新",
+    description="URL、種類、有効状態のうち指定した項目だけを変更します。認証が必要です。",
+    annotations=PATCHING,
+)
+def update_collection_source_tool(
+    source_id: Annotated[int, Field(ge=1, description="更新する公式ページID。")],
+    payload: CollectionSourceUpdatePayload,
+) -> MCPCollectionSourceWriteResponse:
+    request = _parse_collection_payload(payload, CollectionSourceUpdateRequest, "collection_source_update")
+    _rate_limit(request.client_name, "collection_source_update")
+    try:
+        with SessionLocal() as db:
+            source, replayed = update_collection_source(db, source_id=source_id, payload=request)
+            return MCPCollectionSourceWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "企業公式ページを更新しました",
+                    "source": collection_source_dict(source),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_source_update", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された公式ページが見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="record_collection_check",
+    title="企業公式ページの確認結果を記録",
+    description=(
+        "募集を発見した場合だけでなく、募集中なし、ページ確認不能、人の確認が必要な場合も履歴へ記録し、"
+        "次回確認日を更新します。認証が必要です。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def record_collection_check_tool(
+    target_id: Annotated[int, Field(ge=1, description="確認した収集対象ID。")],
+    payload: CollectionCheckPayload,
+) -> MCPCollectionCheckWriteResponse:
+    request = _parse_collection_payload(payload, CollectionCheckRequest, "collection_check_create")
+    _rate_limit(request.client_name, "collection_check_create")
+    try:
+        with SessionLocal() as db:
+            check, target, replayed = record_collection_check(db, target_id=target_id, payload=request)
+            return MCPCollectionCheckWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "確認結果と次回確認日を記録しました",
+                    "check": collection_check_dict(check),
+                    "target": collection_target_dict(db, target),
+                }
+            )
+    except DomainValidationError as exc:
+        raise _collection_domain_error(request, "collection_check_create", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"}) from exc
+
+
+@mcp.tool(
     title="直近の書き込み履歴を取得",
     description=(
         "自分を含むクライアントによる直近の登録・更新の記録を返します。"
@@ -573,9 +899,7 @@ async def _list_tools_with_security_schemes() -> list[MCPTool]:
         tool.model_copy(
             update={
                 "securitySchemes": (
-                    [{"type": "noauth"}]
-                    if tool.name in ANONYMOUS_TOOLS
-                    else [{"type": "oauth2", "scopes": ["mcp"]}]
+                    [{"type": "noauth"}] if tool.name in ANONYMOUS_TOOLS else [{"type": "oauth2", "scopes": ["mcp"]}]
                 )
             }
         )

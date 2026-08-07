@@ -9,4 +9,4 @@ export const CONTACT_FORM_URL =
 export const OPERATOR_NAME = "relua運営者";
 
 //: Shown on the terms and policy pages. Bump whenever either document changes in substance.
-export const POLICY_UPDATED_AT = "2026年8月6日";
+export const POLICY_UPDATED_AT = "2026年8月7日";

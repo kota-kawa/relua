@@ -58,7 +58,7 @@ export default function Terms() {
           <h2>2. 利用条件</h2>
           <p>
             本サービスは、会員登録なしに、どなたでも無償でご利用いただけます。
-            利用者の個人情報を収集・保有することはありません。
+            氏名やメールアドレスなど、利用者を直接特定する個人情報を収集・保有することはありません。
           </p>
           <p>
             保存した募集、閲覧履歴、共有用のデータは、
@@ -66,10 +66,35 @@ export default function Terms() {
             そのため、ブラウザのデータを消去した場合や別の端末をご利用の場合、
             これらの情報は引き継がれません。
           </p>
+          <p>
+            なお、アクセス状況の把握とサービス改善のため、Google アナリティクスを利用しています。
+            収集する情報と利用目的については、次項をご確認ください。
+          </p>
+        </section>
+
+        <section className="legal-section" id="analytics">
+          <h2>3. アクセス解析ツールについて</h2>
+          <p>
+            本サービスでは、利用状況を把握し、機能や利便性を改善するため、Google LLC が提供する
+            Google アナリティクスを利用しています。
+          </p>
+          <p>
+            Google アナリティクスは Cookie を使用し、ページの閲覧状況、アクセス日時、端末やブラウザに関する情報などを収集します。
+            これらの情報は
+            <a href="https://policies.google.com/privacy?hl=ja" target="_blank" rel="noopener noreferrer">
+              Google のプライバシーポリシー
+            </a>
+            に基づいて管理されます。
+            Google アナリティクスによるデータ収集は、Cookie を無効にするか、
+            <a href="https://tools.google.com/dlpage/gaoptout?hl=ja" target="_blank" rel="noopener noreferrer">
+              Google アナリティクス オプトアウト アドオン
+            </a>
+            を利用することで無効にできます。
+          </p>
         </section>
 
         <section className="legal-section">
-          <h2>3. 掲載情報について</h2>
+          <h2>4. 掲載情報について</h2>
           <p>
             掲載情報は、各企業の公開情報をもとに本サービスが要約した<strong>参考情報</strong>です。
             正確かつ最新の内容に保つよう努めていますが、
@@ -91,7 +116,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>4. 免責事項</h2>
+          <h2>5. 免責事項</h2>
           <p>本サービスは、次の事項について責任を負いません。</p>
           <ul className="legal-list">
             <li>掲載情報の誤り、記載漏れ、更新の遅れによって利用者に生じた損害</li>
@@ -107,7 +132,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>5. 禁止事項</h2>
+          <h2>6. 禁止事項</h2>
           <p>本サービスのご利用にあたり、次の行為はご遠慮ください。</p>
           <ul className="legal-list">
             <li>法令または公序良俗に反する行為</li>
@@ -118,7 +143,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>6. 知的財産</h2>
+          <h2>7. 知的財産</h2>
           <p>
             掲載している企業名、サービス名、イベント名は、各権利者の商標または登録商標です。
             本サービスは、これらをどの企業のどの募集であるかを示す事実の記載として使用しています。
@@ -131,7 +156,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>7. 掲載内容に関するご連絡</h2>
+          <h2>8. 掲載内容に関するご連絡</h2>
           <p>
             掲載内容の誤り、掲載の停止のご希望、その他権利に関するご懸念については、
             お問い合わせフォームからご連絡ください。
@@ -143,7 +168,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>8. サービスの変更・終了</h2>
+          <h2>9. サービスの変更・終了</h2>
           <p>
             本サービスは、利用者への事前の通知なく、
             内容の変更、提供の中断、または終了を行う場合があります。
@@ -151,7 +176,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>9. 本規約の変更</h2>
+          <h2>10. 本規約の変更</h2>
           <p>
             本規約は、必要に応じて変更する場合があります。
             変更後の規約は、本ページに掲載した時点から効力を生じます。
@@ -159,7 +184,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>10. 準拠法・裁判管轄</h2>
+          <h2>11. 準拠法・裁判管轄</h2>
           <p>
             本規約は日本法に準拠し、日本法にしたがって解釈されます。
             本サービスに関して紛争が生じた場合は、
@@ -168,7 +193,7 @@ export default function Terms() {
         </section>
 
         <section className="legal-section">
-          <h2>11. 運営者</h2>
+          <h2>12. 運営者</h2>
           <p>
             本サービスは、{OPERATOR_NAME}が個人として運営しています。
             ご連絡はお問い合わせフォームにて承ります。

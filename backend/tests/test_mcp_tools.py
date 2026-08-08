@@ -8,6 +8,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from app import mcp_server
+from app.models import Opportunity
 from app.schemas import OpportunityInput
 from app.services import rate_limit
 from app.services.opportunities import write_opportunity
@@ -86,6 +87,9 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "preview_opportunity_patch",
         "patch_opportunity",
         "update_recruitment_status",
+        "preview_delete_opportunity",
+        "delete_opportunity",
+        "restore_opportunity",
         "list_recent_writes",
         "list_collection_targets",
         "get_collection_target",
@@ -108,6 +112,13 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["update_opportunity"]["annotations"]["destructiveHint"] is True
     assert tools["add_opportunity"]["annotations"]["destructiveHint"] is False
     assert tools["update_recruitment_status"]["annotations"]["destructiveHint"] is False
+    assert tools["delete_opportunity"]["annotations"]["destructiveHint"] is True
+    assert tools["delete_opportunity"]["annotations"]["idempotentHint"] is True
+    assert tools["delete_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["preview_delete_opportunity"]["annotations"]["readOnlyHint"] is True
+    assert tools["preview_delete_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["restore_opportunity"]["annotations"]["destructiveHint"] is False
+    assert tools["restore_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["get_collection_queue"]["annotations"]["readOnlyHint"] is True
     assert tools["get_collection_queue"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["update_collection_target"]["annotations"]["destructiveHint"] is False
@@ -370,6 +381,153 @@ def test_update_recruitment_status_rejects_an_unusable_date(tools, db):
     )["error"] == "not_found"
 
 
+def test_delete_preview_soft_delete_and_restore_preserve_the_record(tools, db):
+    item = seed(db)
+    preview = call("preview_delete_opportunity", {"opportunity_id": item.id})
+    current = call("get_opportunity", {"reference": item.id})
+    arguments = {
+        "opportunity_id": item.id,
+        "expected_updated_at": preview["expected_updated_at"],
+        "request_id": "delete-opportunity-0001",
+        "client_name": "pytest",
+    }
+
+    deleted = call("delete_opportunity", arguments)
+    replay = call("delete_opportunity", arguments)
+    restored = call(
+        "restore_opportunity",
+        {
+            "opportunity_id": item.id,
+            "request_id": "restore-opportunity-0001",
+            "client_name": "pytest",
+        },
+    )
+    restore_replay = call(
+        "restore_opportunity",
+        {
+            "opportunity_id": item.id,
+            "request_id": "restore-opportunity-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert preview["opportunity"]["id"] == item.id
+    assert preview["linked_collection_checks"] == 0
+    assert preview["expected_updated_at"] == current["updated_at"]
+    assert len(preview["effects"]) == 3
+    assert deleted["success"] is True
+    assert deleted["idempotent_replay"] is False
+    assert deleted["deleted"]["id"] == item.id
+    assert deleted["deleted"]["public_code"] == item.public_code
+    assert deleted["deleted"]["company_name"] == "株式会社テスト"
+    assert deleted["deleted"]["event_name"] == "開発インターン"
+    assert deleted["deleted"]["source_url"] == "https://example.com/source"
+    assert deleted["deleted"]["deleted_at"] is not None
+    assert replay["idempotent_replay"] is True
+    assert replay["deleted"] == deleted["deleted"]
+    stored = db.get(Opportunity, item.id)
+    assert stored is not None
+    assert stored.deleted_at is None
+    assert restored["opportunity"]["id"] == item.id
+    assert restored["opportunity"]["public_code"] == item.public_code
+    assert restore_replay["idempotent_replay"] is True
+    assert call("search_opportunity", {})["total"] == 1
+    assert call("get_opportunity", {"reference": item.id})["id"] == item.id
+
+    history = call("list_recent_writes", {"limit": 10})["items"]
+    assert [entry["action"] for entry in history] == ["restore", "delete", "create"]
+
+
+def test_delete_opportunity_rejects_stale_data_and_reused_request_ids(tools, db):
+    item = seed(db)
+    current = call("get_opportunity", {"reference": item.id})
+    call(
+        "patch_opportunity",
+        {
+            "opportunity_id": item.id,
+            "changes": {"description": "更新後の説明です。"},
+            "expected_updated_at": current["updated_at"],
+            "request_id": "patch-before-delete-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    stale = tool_error(
+        "delete_opportunity",
+        {
+            "opportunity_id": item.id,
+            "expected_updated_at": current["updated_at"],
+            "request_id": "delete-stale-0001",
+            "client_name": "pytest",
+        },
+    )
+    reused = tool_error(
+        "delete_opportunity",
+        {
+            "opportunity_id": item.id,
+            "expected_updated_at": call("get_opportunity", {"reference": item.id})["updated_at"],
+            "request_id": "patch-before-delete-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert stale["errors"][0]["field"] == "更新前の最終確認日時"
+    assert reused["errors"][0]["field"] == "request_id"
+    assert call("get_opportunity", {"reference": item.id})["description"] == "更新後の説明です。"
+
+
+def test_soft_deleted_opportunity_is_hidden_until_restored(tools, db):
+    item = seed(db)
+    preview = call("preview_delete_opportunity", {"opportunity_id": item.id})
+
+    call(
+        "delete_opportunity",
+        {
+            "opportunity_id": item.id,
+            "expected_updated_at": preview["expected_updated_at"],
+            "request_id": "delete-hidden-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert call("search_opportunity", {})["total"] == 0
+    assert tool_error("get_opportunity", {"reference": item.id})["error"] == "not_found"
+    assert tool_error("preview_delete_opportunity", {"opportunity_id": item.id})["error"] == "not_found"
+    assert db.get(Opportunity, item.id) is not None
+    assert db.get(Opportunity, item.id).deleted_at is not None
+
+
+def test_restore_rejects_a_new_active_duplicate(tools, db):
+    item = seed(db)
+    preview = call("preview_delete_opportunity", {"opportunity_id": item.id})
+    call(
+        "delete_opportunity",
+        {
+            "opportunity_id": item.id,
+            "expected_updated_at": preview["expected_updated_at"],
+            "request_id": "delete-before-replace-0001",
+            "client_name": "pytest",
+        },
+    )
+    replacement = call(
+        "add_opportunity",
+        write_args(request_id="replacement-opportunity-0001"),
+    )
+
+    error = tool_error(
+        "restore_opportunity",
+        {
+            "opportunity_id": item.id,
+            "request_id": "restore-duplicate-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert error["errors"][0]["reason"] == "同じ企業の同名イベントが公開中のため復元できません"
+    assert error["errors"][0]["existing"][0]["id"] == replacement["opportunity"]["id"]
+    assert call("search_opportunity", {})["total"] == 1
+
+
 def test_list_recent_writes_reports_successes_and_failures(tools, db):
     seed(db)
     tool_error("add_opportunity", write_args(request_id="history-fail-0001", event_name="別の募集", sector="銀行"))
@@ -420,6 +578,34 @@ def test_opportunity_write_can_complete_collection_target_atomically(tools, db):
     assert refreshed["last_found_at"] is not None
     assert checks[0]["opportunity_id"] == written["opportunity"]["id"]
     assert checks[0]["request_id"] == "opportunity-with-target-0001"
+
+    preview = call(
+        "preview_delete_opportunity",
+        {"opportunity_id": written["opportunity"]["id"]},
+    )
+    assert preview["linked_collection_checks"] == 1
+    call(
+        "delete_opportunity",
+        {
+            "opportunity_id": written["opportunity"]["id"],
+            "expected_updated_at": preview["expected_updated_at"],
+            "request_id": "delete-with-target-0001",
+            "client_name": "pytest",
+        },
+    )
+    assert call("get_collection_target", {"target_id": target["id"]})["opportunities"] == []
+    assert call("list_collection_checks", {"target_id": target["id"]})["items"][0]["opportunity_id"] == written["opportunity"]["id"]
+
+    call(
+        "restore_opportunity",
+        {
+            "opportunity_id": written["opportunity"]["id"],
+            "request_id": "restore-with-target-0001",
+            "client_name": "pytest",
+        },
+    )
+    restored_target = call("get_collection_target", {"target_id": target["id"]})
+    assert restored_target["opportunities"][0]["id"] == written["opportunity"]["id"]
 
 
 def test_collection_target_schema_is_actionable_for_mcp_clients():

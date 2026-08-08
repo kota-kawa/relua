@@ -13,7 +13,11 @@ def run() -> int:
             raise RuntimeError("募集状況マスタ「締切」がありません")
         result = db.execute(
             update(Opportunity)
-            .where(Opportunity.deadline < date.today(), Opportunity.status_id != closed_id)
+            .where(
+                Opportunity.deadline < date.today(),
+                Opportunity.status_id != closed_id,
+                Opportunity.deleted_at.is_(None),
+            )
             .values(status_id=closed_id)
         )
         db.commit()

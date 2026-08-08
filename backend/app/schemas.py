@@ -675,6 +675,41 @@ class MCPWriteResponse(BaseModel):
     opportunity: OpportunityResponse
 
 
+class OpportunityDeletionSummary(BaseModel):
+    id: str
+    public_code: str
+    company_name: str
+    event_name: str
+    source_url: str
+
+
+class MCPDeletePreviewResponse(BaseModel):
+    valid: bool
+    message: str
+    opportunity: OpportunityDeletionSummary
+    expected_updated_at: datetime
+    linked_collection_checks: int
+    effects: list[str]
+
+
+class DeletedOpportunity(OpportunityDeletionSummary):
+    deleted_at: datetime
+
+
+class MCPDeleteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    deleted: DeletedOpportunity
+
+
+class MCPRestoreResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    opportunity: OpportunityResponse
+
+
 class MCPDuplicateResponse(BaseModel):
     message: str
     matches: list[OpportunitySummary]

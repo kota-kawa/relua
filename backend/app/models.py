@@ -224,6 +224,9 @@ class Opportunity(Base):
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     normalized_source_url: Mapped[str | None] = mapped_column(String(2048), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    #: Soft-deleted postings disappear from every public/query surface but retain their identifiers,
+    #: relationships, and audit history so an operator can restore an accidental deletion.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     #: Shown to users as 最終更新 beside the source link, so it must mean "when the source was last
     #: read into this record". Deliberately no onupdate: a maintenance write such as the deadline
     #: sweep would silently make an unverified record look freshly checked. Only the MCP write paths

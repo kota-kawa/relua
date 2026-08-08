@@ -10,17 +10,15 @@ from mcp.server.fastmcp.exceptions import ToolError
 from app import mcp_server
 from app.models import Opportunity
 from app.schemas import OpportunityInput
-from app.services import rate_limit
 from app.services.opportunities import write_opportunity
 from tests.test_validation import valid_payload
 
 
 @pytest.fixture
 def tools(db, monkeypatch):
-    """Point the tool layer at the test session and take Redis out of the path.
+    """Point the tool layer at the test session.
 
-    The tools open their own sessions through SessionLocal, which no dependency override reaches,
-    and the rate limiter refuses writes outright when Redis is unreachable.
+    The tools open their own sessions through SessionLocal, which no dependency override reaches.
     """
 
     class Sessions:
@@ -34,8 +32,6 @@ def tools(db, monkeypatch):
             return False
 
     monkeypatch.setattr(mcp_server, "SessionLocal", Sessions())
-    monkeypatch.setattr(mcp_server, "enforce_rate_limit", lambda client_name, operation: None)
-    monkeypatch.setattr(rate_limit, "register_validation_failure", lambda client_name, request_id: 1)
     monkeypatch.setattr(mcp_server, "register_validation_failure", lambda client_name, request_id: 1)
     return mcp_server
 
@@ -553,6 +549,21 @@ def collection_target_args(**overrides) -> dict:
         "client_name": "pytest",
     }
     return {"payload": payload | overrides}
+
+
+def test_collection_targets_allow_large_operator_imports(tools):
+    for index in range(100):
+        created = call(
+            "add_collection_target",
+            collection_target_args(
+                company_name=f"株式会社一括登録{index:03d}",
+                sources=[{"source_type": "recruit", "url": f"https://example.com/recruit/{index}"}],
+                request_id=f"bulk-collection-{index:03d}",
+            ),
+        )
+        assert created["success"] is True
+
+    assert call("list_collection_targets", {"limit": 100})["total"] == 100
 
 
 def test_opportunity_write_can_complete_collection_target_atomically(tools, db):

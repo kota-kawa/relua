@@ -102,12 +102,7 @@ from app.services.opportunities import (
 from app.services.opportunities import (
     get_opportunity as get_opportunity_record,
 )
-from app.services.rate_limit import (
-    RateLimitExceeded,
-    RateLimitUnavailable,
-    enforce_rate_limit,
-    register_validation_failure,
-)
+from app.services.rate_limit import register_validation_failure
 from app.services.serialization import master_dict, opportunity_dict, opportunity_summary
 
 settings = get_settings()
@@ -179,25 +174,6 @@ DELETING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentH
 
 def _json_error(payload: dict[str, Any]) -> ToolError:
     return ToolError(json.dumps(payload, ensure_ascii=False, default=str))
-
-
-def _rate_limit(client_name: str, operation: str) -> None:
-    try:
-        enforce_rate_limit(client_name, operation)
-    except RateLimitExceeded as exc:
-        raise _json_error(
-            {
-                "error": "rate_limit_exceeded",
-                "message": "1分あたりの操作上限を超えました。時間をおいて再試行してください。",
-            }
-        ) from exc
-    except RateLimitUnavailable as exc:
-        raise _json_error(
-            {
-                "error": "write_temporarily_unavailable",
-                "message": "入力制御サービスに接続できないため、安全のため書き込みを停止しています。",
-            }
-        ) from exc
 
 
 def _validation_error(client_name: str, request_id: str | None, errors: list[dict[str, Any]]) -> ToolError:
@@ -541,7 +517,6 @@ def validate_opportunity(
     ] = None,
 ) -> MCPValidationResponse:
     request = _parse_payload(payload, MCPWriteRequest)
-    _rate_limit(request.client_name, "validate")
     data = _write_input(request)
     with SessionLocal() as db:
         errors = validate_write(db, data=data)
@@ -594,7 +569,6 @@ def add_opportunity(
     ] = None,
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPWriteRequest)
-    _rate_limit(request.client_name, "create")
     data = _write_input(request)
     try:
         with SessionLocal() as db:
@@ -640,7 +614,6 @@ def update_opportunity(
     ] = None,
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPUpdateRequest)
-    _rate_limit(request.client_name, "update")
     data = _write_input(request)
     try:
         with SessionLocal() as db:
@@ -685,7 +658,6 @@ def preview_opportunity_patch_tool(
     request_id: Annotated[str, Field(min_length=8, max_length=100, description="検証操作を識別する一意なID。")],
     client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
 ) -> MCPOpportunityPreviewResponse:
-    _rate_limit(client_name, "patch_preview")
     with SessionLocal() as db:
         item, data = _prepare_opportunity_patch(
             db,
@@ -733,7 +705,6 @@ def patch_opportunity_tool(
         Field(ge=1, description="指定すると更新成功と同時に収集確認結果foundを記録します。"),
     ] = None,
 ) -> MCPWriteResponse:
-    _rate_limit(client_name, "patch")
     try:
         with SessionLocal() as db:
             _, data = _prepare_opportunity_patch(
@@ -796,7 +767,6 @@ def update_recruitment_status_tool(
     ] = None,
     clear_deadline: Annotated[bool, Field(description="締め切りを未設定に戻す場合はtrueにします。")] = False,
 ) -> MCPWriteResponse:
-    _rate_limit(client_name, "status_update")
     parsed_deadline: date | None = None
     if deadline is not None:
         try:
@@ -920,7 +890,6 @@ def delete_opportunity_tool(
         Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。"),
     ] = "mcp-client",
 ) -> MCPDeleteResponse:
-    _rate_limit(client_name, "delete")
     try:
         with SessionLocal() as db:
             deleted, replayed = delete_opportunity(
@@ -976,7 +945,6 @@ def restore_opportunity_tool(
         Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。"),
     ] = "mcp-client",
 ) -> MCPRestoreResponse:
-    _rate_limit(client_name, "restore")
     try:
         with SessionLocal() as db:
             restored, replayed = restore_opportunity(
@@ -1117,7 +1085,6 @@ def list_collection_checks_tool(
 )
 def add_collection_target_tool(payload: CollectionTargetCreatePayload) -> MCPCollectionWriteResponse:
     request = _parse_collection_payload(payload, CollectionTargetCreateRequest, "collection_target_create")
-    _rate_limit(request.client_name, "collection_target_create")
     try:
         with SessionLocal() as db:
             target, replayed = create_collection_target(db, request)
@@ -1147,7 +1114,6 @@ def update_collection_target_tool(
     payload: CollectionTargetUpdatePayload,
 ) -> MCPCollectionWriteResponse:
     request = _parse_collection_payload(payload, CollectionTargetUpdateRequest, "collection_target_update")
-    _rate_limit(request.client_name, "collection_target_update")
     try:
         with SessionLocal() as db:
             target, replayed = update_collection_target(db, target_id=target_id, payload=request)
@@ -1176,7 +1142,6 @@ def add_collection_source_tool(
     payload: CollectionSourceCreatePayload,
 ) -> MCPCollectionSourceWriteResponse:
     request = _parse_collection_payload(payload, CollectionSourceCreateRequest, "collection_source_create")
-    _rate_limit(request.client_name, "collection_source_create")
     try:
         with SessionLocal() as db:
             source, replayed = create_collection_source(db, target_id=target_id, payload=request)
@@ -1205,7 +1170,6 @@ def update_collection_source_tool(
     payload: CollectionSourceUpdatePayload,
 ) -> MCPCollectionSourceWriteResponse:
     request = _parse_collection_payload(payload, CollectionSourceUpdateRequest, "collection_source_update")
-    _rate_limit(request.client_name, "collection_source_update")
     try:
         with SessionLocal() as db:
             source, replayed = update_collection_source(db, source_id=source_id, payload=request)
@@ -1237,7 +1201,6 @@ def record_collection_check_tool(
     payload: CollectionCheckPayload,
 ) -> MCPCollectionCheckWriteResponse:
     request = _parse_collection_payload(payload, CollectionCheckRequest, "collection_check_create")
-    _rate_limit(request.client_name, "collection_check_create")
     try:
         with SessionLocal() as db:
             check, target, replayed = record_collection_check(db, target_id=target_id, payload=request)

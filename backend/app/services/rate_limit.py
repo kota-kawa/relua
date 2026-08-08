@@ -22,8 +22,8 @@ def redis_client() -> Redis:
 def _fixed_window(key: str, limit: int, window_seconds: int) -> None:
     """Count one hit in a fixed window and refuse once the limit is passed.
 
-    A Redis outage raises RateLimitUnavailable rather than passing the call through: the callers guard
-    writes and password checks, where losing the limiter is worse than refusing the request.
+    A Redis outage raises RateLimitUnavailable rather than passing the call through. The callers guard
+    login and client-registration attempts, where losing the limiter is worse than refusing the request.
     """
     try:
         value = redis_client().incr(key)
@@ -35,10 +35,6 @@ def _fixed_window(key: str, limit: int, window_seconds: int) -> None:
         raise
     except RedisError as exc:
         raise RateLimitUnavailable from exc
-
-
-def enforce_rate_limit(client_name: str, operation: str) -> None:
-    _fixed_window(f"mcp-rate:{client_name}:{operation}", get_settings().mcp_rate_limit_per_minute, 60)
 
 
 def enforce_login_rate_limit(identifier: str) -> None:

@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     api_internal_token: str = Field(default="local-development-internal-token", min_length=16)
     mcp_api_token: str = Field(default="local-development-mcp-token", min_length=16)
-    mcp_rate_limit_per_minute: int = Field(default=30, ge=1, le=300)
     #: Public origin of the Next.js site. Every record MCP returns carries its detail page URL,
     #: so a remote client can cite the entry instead of only naming it.
     site_url: str = "http://localhost:3100"

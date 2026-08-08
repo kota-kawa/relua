@@ -53,8 +53,8 @@ class SearchResult:
         return max(1, math.ceil(self.total / self.per_page))
 
 
-def opportunity_query() -> Select[tuple[Opportunity]]:
-    return select(Opportunity).options(
+def opportunity_query(*, include_deleted: bool = False) -> Select[tuple[Opportunity]]:
+    stmt = select(Opportunity).options(
         selectinload(Opportunity.status),
         selectinload(Opportunity.company),
         selectinload(Opportunity.industry),
@@ -66,14 +66,25 @@ def opportunity_query() -> Select[tuple[Opportunity]]:
         selectinload(Opportunity.degrees),
         selectinload(Opportunity.tags),
     )
+    return stmt if include_deleted else stmt.where(Opportunity.deleted_at.is_(None))
 
 
 def get_opportunity(db: Session, opportunity_id: str) -> Opportunity | None:
     return db.scalar(opportunity_query().where(Opportunity.id == opportunity_id))
 
 
-def get_opportunity_for_update(db: Session, opportunity_id: str) -> Opportunity | None:
-    return db.scalar(opportunity_query().where(Opportunity.id == opportunity_id).with_for_update())
+def get_opportunity_including_deleted(db: Session, opportunity_id: str) -> Opportunity | None:
+    return db.scalar(opportunity_query(include_deleted=True).where(Opportunity.id == opportunity_id))
+
+
+def get_opportunity_for_update(
+    db: Session, opportunity_id: str, *, include_deleted: bool = False
+) -> Opportunity | None:
+    return db.scalar(
+        opportunity_query(include_deleted=include_deleted)
+        .where(Opportunity.id == opportunity_id)
+        .with_for_update()
+    )
 
 
 def get_opportunity_by_public_ref(db: Session, reference: str) -> Opportunity | None:
@@ -112,7 +123,12 @@ def search_opportunities(
     per_page: int = 20,
 ) -> SearchResult:
     stmt = opportunity_query().join(Opportunity.company)
-    count_stmt = select(func.count(func.distinct(Opportunity.id))).select_from(Opportunity).join(Opportunity.company)
+    count_stmt = (
+        select(func.count(func.distinct(Opportunity.id)))
+        .select_from(Opportunity)
+        .join(Opportunity.company)
+        .where(Opportunity.deleted_at.is_(None))
+    )
 
     filters = []
     if q:
@@ -247,6 +263,25 @@ def _reused_request_id_error(request_id: str) -> dict[str, Any]:
         "example": "client-20260726-0001",
         "alternative": "新しいrequest_idを発行してください",
     }
+
+
+def _active_idempotency_target(db: Session, opportunity_id: str) -> Opportunity:
+    item = get_opportunity_including_deleted(db, opportunity_id)
+    if item is None:
+        raise RuntimeError("idempotency target not found")
+    if item.deleted_at is not None:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "募集情報ID",
+                    "received": opportunity_id,
+                    "reason": "前回の操作対象は現在削除されています",
+                    "expected": "公開中の募集情報ID",
+                    "alternative": "restore_opportunityで復元してから、新しいrequest_idで操作してください",
+                }
+            ]
+        )
+    return item
 
 
 def _duplicate_error(matches: list[Opportunity]) -> dict[str, Any]:
@@ -411,6 +446,13 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
 
 
+def _next_version_timestamp(item: Opportunity) -> datetime:
+    moment = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    if item.updated_at is not None and moment <= _as_utc(item.updated_at):
+        return _as_utc(item.updated_at) + timedelta(microseconds=1)
+    return moment
+
+
 def optimistic_lock_error(expected: datetime, actual: datetime) -> dict[str, Any]:
     return {
         "field": "更新前の最終確認日時",
@@ -555,10 +597,7 @@ def write_opportunity(
         target_mismatch = opportunity_id is not None and previous.opportunity_id != opportunity_id
         if previous.operation != operation or previous.request_hash != request_hash or target_mismatch:
             raise DomainValidationError([_reused_request_id_error(request_id)])
-        item = get_opportunity(db, previous.opportunity_id)
-        if item is None:
-            raise RuntimeError("idempotency target not found")
-        return item, True
+        return _active_idempotency_target(db, previous.opportunity_id), True
 
     if opportunity_id is None and not allow_duplicate:
         # Idempotency only catches a replay of the same request_id. A client that re-reads the same
@@ -624,10 +663,7 @@ def write_opportunity(
     item.tags = _tags(db, data.tags)
     # Every source-backed write advances the version used by optimistic locking. Python's
     # microsecond clock also keeps SQLite tests from collapsing two writes into one timestamp.
-    verified_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
-    if item.updated_at is not None and verified_at <= _as_utc(item.updated_at):
-        verified_at = _as_utc(item.updated_at) + timedelta(microseconds=1)
-    item.updated_at = verified_at
+    item.updated_at = _next_version_timestamp(item)
     if is_new:
         db.add(item)
     db.flush()
@@ -697,10 +733,7 @@ def update_recruitment_status(
             or previous.opportunity_id != opportunity_id
         ):
             raise DomainValidationError([_reused_request_id_error(request_id)])
-        item = get_opportunity(db, previous.opportunity_id)
-        if item is None:
-            raise RuntimeError("idempotency target not found")
-        return item, True
+        return _active_idempotency_target(db, previous.opportunity_id), True
 
     item = get_opportunity(db, opportunity_id)
     if item is None:
@@ -777,8 +810,186 @@ def update_recruitment_status(
     return item, False
 
 
+def preview_opportunity_deletion(db: Session, *, opportunity_id: str) -> tuple[Opportunity, int]:
+    item = get_opportunity(db, opportunity_id)
+    if item is None:
+        raise LookupError("opportunity_not_found")
+    linked_checks = int(
+        db.scalar(
+            select(func.count(CollectionCheck.id)).where(CollectionCheck.opportunity_id == opportunity_id)
+        )
+        or 0
+    )
+    return item, linked_checks
+
+
+def _deletion_state(item: Opportunity, deleted_at: datetime) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "public_code": item.public_code,
+        "company_name": item.company.name,
+        "event_name": item.event_name,
+        "source_url": item.source_url,
+        "deleted_at": _as_utc(deleted_at).isoformat(),
+    }
+
+
+def delete_opportunity(
+    db: Session,
+    *,
+    opportunity_id: str,
+    expected_updated_at: datetime,
+    request_id: str,
+    client_name: str,
+) -> tuple[dict[str, Any], bool]:
+    """Hide one posting from active queries while retaining it for restoration."""
+    normalized_expected = _as_utc(expected_updated_at).isoformat()
+    request_hash = _hash_payload(
+        {"opportunity_id": opportunity_id, "expected_updated_at": normalized_expected}
+    )
+    previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
+    if previous:
+        if (
+            previous.operation != "delete"
+            or previous.opportunity_id != opportunity_id
+            or previous.request_hash != request_hash
+        ):
+            raise DomainValidationError([_reused_request_id_error(request_id)])
+        return previous.response_data, True
+
+    item = get_opportunity_for_update(db, opportunity_id)
+    if item is None:
+        deleted = get_opportunity_including_deleted(db, opportunity_id)
+        if deleted is not None and deleted.deleted_at is not None:
+            raise DomainValidationError(
+                [
+                    {
+                        "field": "募集情報ID",
+                        "received": opportunity_id,
+                        "reason": "募集情報は既に削除されています",
+                        "expected": "公開中の募集情報ID",
+                        "alternative": "復元する場合はrestore_opportunityを使用してください",
+                    }
+                ]
+            )
+        raise LookupError("opportunity_not_found")
+    ensure_expected_updated_at(item, expected_updated_at)
+
+    before = jsonable_encoder(opportunity_dict(item))
+    deleted_at = _next_version_timestamp(item)
+    item.deleted_at = deleted_at
+    item.updated_at = deleted_at
+    db.flush()
+    response = _deletion_state(item, deleted_at)
+    db.add(
+        AuditLog(
+            action="delete",
+            entity_type="opportunity",
+            entity_id=opportunity_id,
+            request_id=request_id,
+            client_name=client_name,
+            source_url=item.source_url,
+            success=True,
+            changes={
+                "request": {"expected_updated_at": normalized_expected},
+                "before": before,
+                "after": jsonable_encoder(response),
+            },
+        )
+    )
+    db.add(
+        IdempotencyRecord(
+            request_id=request_id,
+            operation="delete",
+            request_hash=request_hash,
+            opportunity_id=item.id,
+            response_data=jsonable_encoder(response),
+        )
+    )
+    db.commit()
+    return response, False
+
+
+def restore_opportunity(
+    db: Session,
+    *,
+    opportunity_id: str,
+    request_id: str,
+    client_name: str,
+) -> tuple[dict[str, Any], bool]:
+    request_hash = _hash_payload({"opportunity_id": opportunity_id})
+    previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
+    if previous:
+        if (
+            previous.operation != "restore"
+            or previous.opportunity_id != opportunity_id
+            or previous.request_hash != request_hash
+        ):
+            raise DomainValidationError([_reused_request_id_error(request_id)])
+        return previous.response_data, True
+
+    item = get_opportunity_for_update(db, opportunity_id, include_deleted=True)
+    if item is None:
+        raise LookupError("opportunity_not_found")
+    if item.deleted_at is None:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "募集情報ID",
+                    "received": opportunity_id,
+                    "reason": "募集情報は削除されていません",
+                    "expected": "削除済みの募集情報ID",
+                    "alternative": "公開中の募集情報はget_opportunityで確認できます",
+                }
+            ]
+        )
+
+    duplicates = find_exact_duplicates(
+        db,
+        company_name=item.company.name,
+        event_name=item.event_name,
+        exclude_id=item.id,
+    )
+    if duplicates:
+        error = _duplicate_error(duplicates)
+        error["reason"] = "同じ企業の同名イベントが公開中のため復元できません"
+        error["alternative"] = "公開中の登録を確認し、重複を解消してから復元してください"
+        raise DomainValidationError([error])
+
+    before = jsonable_encoder(opportunity_dict(item)) | {
+        "deleted_at": _as_utc(item.deleted_at).isoformat()
+    }
+    item.deleted_at = None
+    item.updated_at = _next_version_timestamp(item)
+    db.flush()
+    response = jsonable_encoder(opportunity_dict(item))
+    db.add(
+        AuditLog(
+            action="restore",
+            entity_type="opportunity",
+            entity_id=item.id,
+            request_id=request_id,
+            client_name=client_name,
+            source_url=item.source_url,
+            success=True,
+            changes={"before": before, "after": response},
+        )
+    )
+    db.add(
+        IdempotencyRecord(
+            request_id=request_id,
+            operation="restore",
+            request_hash=request_hash,
+            opportunity_id=item.id,
+            response_data=response,
+        )
+    )
+    db.commit()
+    return response, False
+
+
 def recent_write_logs(db: Session, *, client_name: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-    """What this connection already wrote, so an agent can see its own history instead of re-registering."""
+    """Recent creates, updates, deletes, and restores for reviewing write history."""
     stmt = select(AuditLog).where(AuditLog.entity_type == "opportunity")
     if client_name:
         stmt = stmt.where(AuditLog.client_name == client_name)

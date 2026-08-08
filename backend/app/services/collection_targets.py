@@ -70,6 +70,7 @@ def _opportunity_references(db: Session, target: CollectionTarget) -> list[dict[
         .where(
             Opportunity.company_id == target.company_id,
             Opportunity.industry_id == target.industry_id,
+            Opportunity.deleted_at.is_(None),
         )
         .order_by(Opportunity.updated_at.desc(), Opportunity.id)
     )

@@ -37,8 +37,11 @@ from app.schemas import (
     MCPCollectionSourceWriteResponse,
     MCPCollectionTargetListResponse,
     MCPCollectionWriteResponse,
+    MCPDeletePreviewResponse,
+    MCPDeleteResponse,
     MCPDuplicateResponse,
     MCPOpportunityPreviewResponse,
+    MCPRestoreResponse,
     MCPSearchResponse,
     MCPSectorsResponse,
     MCPUpdateRequest,
@@ -77,6 +80,7 @@ from app.services.master_cache import master_payload
 from app.services.masters import sectors_for_industry
 from app.services.opportunities import (
     DomainValidationError,
+    delete_opportunity,
     ensure_expected_updated_at,
     find_exact_duplicates,
     find_similar_opportunities,
@@ -85,8 +89,10 @@ from app.services.opportunities import (
     is_patch_replay,
     opportunity_input_dict,
     opportunity_patch_changes,
+    preview_opportunity_deletion,
     recent_write_logs,
     record_failed_attempt,
+    restore_opportunity,
     search_opportunities,
     source_duplicate_warning,
     update_recruitment_status,
@@ -128,7 +134,7 @@ ANONYMOUS_TOOLS = frozenset(
 mcp = FastMCP(
     "All Job",
     instructions=(
-        "日本のインターン・本選考情報を検索・登録・更新するMCPです。"
+        "日本のインターン・本選考情報を検索・登録・更新・削除・復元するMCPです。"
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
         "追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
         "同じ募集が登録済みでないかfind_similar_opportunitiesで確かめてください。"
@@ -136,6 +142,8 @@ mcp = FastMCP(
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "その他の一部項目だけを直す場合はpreview_opportunity_patchで差分を確認してからpatch_opportunityを使ってください。"
+        "誤登録を削除する場合はpreview_delete_opportunityで影響を確認してからdelete_opportunityを使ってください。"
+        "誤って削除した募集はrestore_opportunityで同じIDと公開コードのまま復元できます。"
         "日付はYYYY-MM-DD、URLはhttpsを使用し、推測できない任意項目はnullにしてください。"
         "自由記述には出典の文章を転記せず、日程・対象・報酬などの事実だけを自分の言葉で書いてください。"
         "出典独自の言い回しやキャッチコピー、担当者名などの個人名、個人宛の連絡先は登録しないでください。"
@@ -166,6 +174,7 @@ APPEND_ONLY = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempot
 #: A full replacement drops any field the caller omits, which is destructive in the MCP sense.
 REPLACING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
 PATCHING = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+DELETING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
 
 
 def _json_error(payload: dict[str, Any]) -> ToolError:
@@ -842,6 +851,164 @@ def update_recruitment_status_tool(
 
 
 @mcp.tool(
+    name="preview_delete_opportunity",
+    title="募集情報の削除をプレビュー",
+    description=(
+        "募集情報を削除した場合の対象と影響を、保存せずに確認します。"
+        "返されたexpected_updated_atをdelete_opportunityへそのまま渡してください。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def preview_delete_opportunity_tool(
+    opportunity_id: Annotated[
+        str,
+        Field(description="削除を検討している募集情報のUUID。get_opportunityのidを指定します。"),
+    ],
+) -> MCPDeletePreviewResponse:
+    with SessionLocal() as db:
+        try:
+            item, linked_checks = preview_opportunity_deletion(db, opportunity_id=opportunity_id)
+        except LookupError as exc:
+            raise _json_error({"error": "not_found", "message": "指定された公開中の募集情報が見つかりません"}) from exc
+        return MCPDeletePreviewResponse.model_validate(
+            {
+                "valid": True,
+                "message": "この募集情報を削除できます。対象と影響を確認してください。",
+                "opportunity": {
+                    "id": item.id,
+                    "public_code": item.public_code,
+                    "company_name": item.company.name,
+                    "event_name": item.event_name,
+                    "source_url": item.source_url,
+                },
+                "expected_updated_at": item.updated_at,
+                "linked_collection_checks": linked_checks,
+                "effects": [
+                    "公開検索、詳細ページ、収集対象の登録済み募集一覧に表示されなくなります",
+                    "募集情報と収集確認履歴の関連付けは保持されます",
+                    "restore_opportunityで同じIDと公開コードのまま復元できます",
+                ],
+            }
+        )
+
+
+@mcp.tool(
+    name="delete_opportunity",
+    title="募集情報を削除",
+    description=(
+        "誤登録や不要になった募集情報を公開データから論理削除します。"
+        "先にpreview_delete_opportunityを実行し、そのidとexpected_updated_atを指定してください。"
+        "取得後に更新されていた場合は削除せず拒否します。削除後はrestore_opportunityで復元できます。認証が必要です。"
+    ),
+    annotations=DELETING,
+)
+def delete_opportunity_tool(
+    opportunity_id: Annotated[
+        str,
+        Field(description="削除対象のUUID。誤削除を避けるため、get_opportunityで取得したidを指定します。"),
+    ],
+    expected_updated_at: Annotated[
+        datetime,
+        Field(description="get_opportunityで取得した現在のupdated_at。取得後の競合更新を検出します。"),
+    ],
+    request_id: Annotated[
+        str,
+        Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。"),
+    ],
+    client_name: Annotated[
+        str,
+        Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。"),
+    ] = "mcp-client",
+) -> MCPDeleteResponse:
+    _rate_limit(client_name, "delete")
+    try:
+        with SessionLocal() as db:
+            deleted, replayed = delete_opportunity(
+                db,
+                opportunity_id=opportunity_id,
+                expected_updated_at=expected_updated_at,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPDeleteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "同じ削除操作は処理済みです" if replayed else "募集情報を論理削除しました",
+                    "deleted": deleted,
+                }
+            )
+    except DomainValidationError as exc:
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action="delete",
+                request_id=request_id,
+                client_name=client_name,
+                source_url=None,
+                errors=exc.errors,
+            )
+        raise _validation_error(client_name, request_id, exc.errors) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="restore_opportunity",
+    title="削除済み募集情報を復元",
+    description=(
+        "論理削除された募集情報を、元のIDと公開コードを維持したまま公開状態へ戻します。"
+        "同じ企業の同名イベントが既に公開中の場合は、重複を避けるため復元を拒否します。認証が必要です。"
+    ),
+    annotations=PATCHING,
+)
+def restore_opportunity_tool(
+    opportunity_id: Annotated[
+        str,
+        Field(description="delete_opportunityが返した削除済み募集情報のUUID。"),
+    ],
+    request_id: Annotated[
+        str,
+        Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。"),
+    ],
+    client_name: Annotated[
+        str,
+        Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。"),
+    ] = "mcp-client",
+) -> MCPRestoreResponse:
+    _rate_limit(client_name, "restore")
+    try:
+        with SessionLocal() as db:
+            restored, replayed = restore_opportunity(
+                db,
+                opportunity_id=opportunity_id,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPRestoreResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "同じ復元操作は処理済みです" if replayed else "募集情報を復元しました",
+                    "opportunity": restored,
+                }
+            )
+    except DomainValidationError as exc:
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action="restore",
+                request_id=request_id,
+                client_name=client_name,
+                source_url=None,
+                errors=exc.errors,
+            )
+        raise _validation_error(client_name, request_id, exc.errors) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された削除済み募集情報が見つかりません"}) from exc
+
+
+@mcp.tool(
     name="list_collection_targets",
     title="業界別の情報収集対象を一覧",
     description=(
@@ -1092,7 +1259,7 @@ def record_collection_check_tool(
 @mcp.tool(
     title="直近の書き込み履歴を取得",
     description=(
-        "自分を含むクライアントによる直近の登録・更新の記録を返します。"
+        "自分を含むクライアントによる直近の登録・更新・削除・復元の記録を返します。"
         "同じ募集を登録し直していないか、どの入力が失敗したかを確認できます。"
     ),
     annotations=READ_ONLY,

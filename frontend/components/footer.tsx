@@ -12,8 +12,6 @@ export function Footer() {
           <p>散らばった募集情報をつなぎ、次の可能性を見えるようにする。</p>
         </div>
         <div className="footer-links">
-          <Link href="/">募集を探す</Link>
-          <Link href="/saved">保存した募集</Link>
           <Link href="/about">Why Relua?</Link>
           <Link href="/terms">利用規約・免責事項</Link>
           <Link href="/policy">掲載ポリシー</Link>

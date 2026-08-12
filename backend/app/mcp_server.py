@@ -80,6 +80,7 @@ from app.services.master_cache import master_payload
 from app.services.masters import sectors_for_industry
 from app.services.opportunities import (
     DomainValidationError,
+    InvalidSearchCursor,
     delete_opportunity,
     ensure_expected_updated_at,
     find_exact_duplicates,
@@ -324,7 +325,9 @@ def _prepare_opportunity_patch(
     title="募集情報を検索",
     description=(
         "登録済みの募集情報をキーワードと固定値で検索し、概要の一覧を返します。ログインは不要です。"
-        "説明文は冒頭のみ返るため、全文が必要な1件はget_opportunityで取得してください。"
+        "続きがある場合はnext_cursorを同じ検索条件でcursorへ渡すため、一覧の途中でレコードが削除されても"
+        "ページ境界の重複や取得漏れが起きません。説明文は冒頭のみ返るため、全文が必要な1件は"
+        "get_opportunityで取得してください。"
     ),
     annotations=READ_ONLY,
 )
@@ -348,32 +351,44 @@ def search_opportunity(
         SortValue,
         Field(description="deadline=締切が近い順（締切なしは末尾）、updated=更新が新しい順、created=登録が新しい順。"),
     ] = "deadline",
-    page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
+    cursor: Annotated[
+        str | None,
+        Field(
+            max_length=2048,
+            description=(
+                "続きの取得に使うカーソル。初回はnullにし、続きがある間は直前の応答のnext_cursorを"
+                "検索条件を変えずにそのまま渡します。"
+            ),
+        ),
+    ] = None,
     per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数（1〜50）。")] = 20,
 ) -> MCPSearchResponse:
     with SessionLocal() as db:
-        result = search_opportunities(
-            db,
-            q=query,
-            status=recruitment_status,
-            industry=industry,
-            sector=sector,
-            event_type=event_type,
-            event_format=event_format,
-            job_category=job_category,
-            graduation_year=graduation_year,
-            degree=degree,
-            sort=sort,
-            page=page,
-            per_page=per_page,
-        )
+        try:
+            result = search_opportunities(
+                db,
+                q=query,
+                status=recruitment_status,
+                industry=industry,
+                sector=sector,
+                event_type=event_type,
+                event_format=event_format,
+                job_category=job_category,
+                graduation_year=graduation_year,
+                degree=degree,
+                sort=sort,
+                page=None,
+                per_page=per_page,
+                cursor=cursor,
+            )
+        except InvalidSearchCursor as exc:
+            raise _json_error({"error": "invalid_cursor", "message": str(exc)}) from exc
         return MCPSearchResponse.model_validate(
             {
                 "items": [opportunity_summary(item) for item in result.items],
                 "total": result.total,
-                "page": result.page,
                 "per_page": result.per_page,
-                "total_pages": result.total_pages,
+                "next_cursor": result.next_cursor,
             }
         )
 

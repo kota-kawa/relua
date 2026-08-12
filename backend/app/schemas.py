@@ -663,9 +663,10 @@ class OpportunitySummary(BaseModel):
 class MCPSearchResponse(BaseModel):
     items: list[OpportunitySummary]
     total: int
-    page: int
     per_page: int
-    total_pages: int
+    next_cursor: str | None = Field(
+        description="続きがある場合のカーソル。次のsearch_opportunityへ同じ検索条件とともにそのまま渡します。"
+    )
 
 
 class MCPWriteResponse(BaseModel):

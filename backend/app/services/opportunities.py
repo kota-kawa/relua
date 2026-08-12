@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hashlib
 import json
 import math
@@ -41,16 +43,94 @@ class DomainValidationError(Exception):
         super().__init__("validation_failed")
 
 
+class InvalidSearchCursor(ValueError):
+    """The opaque search cursor is malformed or belongs to different filters."""
+
+
 @dataclass
 class SearchResult:
     items: list[Opportunity]
     total: int
     page: int
     per_page: int
+    next_cursor: str | None = None
 
     @property
     def total_pages(self) -> int:
         return max(1, math.ceil(self.total / self.per_page))
+
+
+def _search_signature(
+    *,
+    q: str | None,
+    status: list[str] | None,
+    industry: list[str] | None,
+    sector: list[str] | None,
+    event_type: list[str] | None,
+    event_format: list[str] | None,
+    job_category: list[str] | None,
+    graduation_year: list[str] | None,
+    degree: list[str] | None,
+    sort: str,
+) -> str:
+    filters = {
+        "q": q.strip() if q else None,
+        "status": sorted(status or []),
+        "industry": sorted(industry or []),
+        "sector": sorted(sector or []),
+        "event_type": sorted(event_type or []),
+        "event_format": sorted(event_format or []),
+        "job_category": sorted(job_category or []),
+        "graduation_year": sorted(graduation_year or []),
+        "degree": sorted(degree or []),
+        "sort": sort,
+    }
+    encoded = json.dumps(filters, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _encode_search_cursor(item: Opportunity, *, sort: str, signature: str, snapshot_at: datetime) -> str:
+    sort_value = getattr(item, "deadline" if sort == "deadline" else f"{sort}_at")
+    payload = {
+        "v": 1,
+        "sort": sort,
+        "signature": signature,
+        "snapshot_at": snapshot_at.isoformat(),
+        "value": sort_value.isoformat() if sort_value is not None else None,
+        "id": item.id,
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_search_cursor(cursor: str, *, sort: str, signature: str) -> tuple[datetime, date | datetime | None, str]:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        raw = base64.b64decode(cursor + padding, altchars=b"-_", validate=True)
+        payload = json.loads(raw)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != 1
+            or payload.get("sort") != sort
+            or payload.get("signature") != signature
+            or not isinstance(payload.get("id"), str)
+        ):
+            raise ValueError
+        snapshot_at = datetime.fromisoformat(payload["snapshot_at"])
+        if snapshot_at.tzinfo is None:
+            raise ValueError
+        raw_value = payload.get("value")
+        if sort == "deadline":
+            value = date.fromisoformat(raw_value) if raw_value is not None else None
+        else:
+            if not isinstance(raw_value, str):
+                raise ValueError
+            value = datetime.fromisoformat(raw_value)
+    except (binascii.Error, json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
+        raise InvalidSearchCursor(
+            "検索カーソルが無効です。最初のページからやり直し、同じ検索条件で返されたnext_cursorをそのまま渡してください。"
+        ) from exc
+    return snapshot_at, value, payload["id"]
 
 
 def opportunity_query(*, include_deleted: bool = False) -> Select[tuple[Opportunity]]:
@@ -119,9 +199,31 @@ def search_opportunities(
     graduation_year: list[str] | None = None,
     degree: list[str] | None = None,
     sort: str = "deadline",
-    page: int = 1,
+    page: int | None = 1,
     per_page: int = 20,
+    cursor: str | None = None,
 ) -> SearchResult:
+    cursor_mode = page is None or cursor is not None
+    signature = _search_signature(
+        q=q,
+        status=status,
+        industry=industry,
+        sector=sector,
+        event_type=event_type,
+        event_format=event_format,
+        job_category=job_category,
+        graduation_year=graduation_year,
+        degree=degree,
+        sort=sort,
+    )
+    snapshot_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    cursor_value: date | datetime | None = None
+    cursor_id: str | None = None
+    if cursor_mode and cursor:
+        snapshot_at, cursor_value, cursor_id = _decode_search_cursor(
+            cursor, sort=sort, signature=signature
+        )
+
     stmt = opportunity_query().join(Opportunity.company)
     count_stmt = (
         select(func.count(func.distinct(Opportunity.id)))
@@ -189,16 +291,66 @@ def search_opportunities(
         stmt = stmt.where(*filters)
         count_stmt = count_stmt.where(*filters)
 
+    if cursor_mode:
+        # Keep a multi-call scan bounded to records that had not changed when it began. Combined
+        # with keyset pagination below, deleting already-returned rows cannot move the next boundary.
+        snapshot_filters = (
+            Opportunity.created_at <= snapshot_at,
+            Opportunity.updated_at <= snapshot_at,
+        )
+        stmt = stmt.where(*snapshot_filters)
+        count_stmt = count_stmt.where(*snapshot_filters)
+
     if sort == "updated":
         stmt = stmt.order_by(Opportunity.updated_at.desc(), Opportunity.id)
+        if cursor_id is not None:
+            assert isinstance(cursor_value, datetime)
+            stmt = stmt.where(
+                or_(
+                    Opportunity.updated_at < cursor_value,
+                    and_(Opportunity.updated_at == cursor_value, Opportunity.id > cursor_id),
+                )
+            )
     elif sort == "created":
         stmt = stmt.order_by(Opportunity.created_at.desc(), Opportunity.id)
+        if cursor_id is not None:
+            assert isinstance(cursor_value, datetime)
+            stmt = stmt.where(
+                or_(
+                    Opportunity.created_at < cursor_value,
+                    and_(Opportunity.created_at == cursor_value, Opportunity.id > cursor_id),
+                )
+            )
     else:
         stmt = stmt.order_by(Opportunity.deadline.is_(None), Opportunity.deadline.asc(), Opportunity.id)
+        if cursor_id is not None:
+            if cursor_value is None:
+                stmt = stmt.where(Opportunity.deadline.is_(None), Opportunity.id > cursor_id)
+            else:
+                assert isinstance(cursor_value, date)
+                stmt = stmt.where(
+                    or_(
+                        Opportunity.deadline.is_(None),
+                        Opportunity.deadline > cursor_value,
+                        and_(Opportunity.deadline == cursor_value, Opportunity.id > cursor_id),
+                    )
+                )
 
     total = int(db.scalar(count_stmt) or 0)
-    stmt = stmt.offset((page - 1) * per_page).limit(per_page)
-    return SearchResult(items=list(db.scalars(stmt).unique()), total=total, page=page, per_page=per_page)
+    if not cursor_mode:
+        assert page is not None
+        stmt = stmt.offset((page - 1) * per_page).limit(per_page)
+        return SearchResult(items=list(db.scalars(stmt).unique()), total=total, page=page, per_page=per_page)
+
+    items = list(db.scalars(stmt.limit(per_page + 1)).unique())
+    has_more = len(items) > per_page
+    items = items[:per_page]
+    next_cursor = (
+        _encode_search_cursor(items[-1], sort=sort, signature=signature, snapshot_at=snapshot_at)
+        if has_more and items
+        else None
+    )
+    return SearchResult(items=items, total=total, page=1, per_page=per_page, next_cursor=next_cursor)
 
 
 def _company_opportunities(db: Session, company_name: str, exclude_id: str | None = None) -> list[Opportunity]:
@@ -781,7 +933,7 @@ def update_recruitment_status(
     item.status = status
     item.deadline = new_deadline
     #: A status edit is still an agent reporting what the source says now, so it refreshes the stamp.
-    item.updated_at = func.now()
+    item.updated_at = _next_version_timestamp(item)
     db.flush()
     json_response = jsonable_encoder(opportunity_dict(item))
 

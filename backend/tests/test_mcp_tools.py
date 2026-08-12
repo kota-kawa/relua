@@ -140,7 +140,7 @@ def test_search_filters_publish_their_allowed_values():
         "graduation_year",
         "degree",
         "sort",
-        "page",
+        "cursor",
         "per_page",
     }
     assert all(properties[name].get("description") for name in properties)
@@ -169,6 +169,87 @@ def test_search_returns_summaries_with_a_citable_url(tools, db):
     assert hit["company_name"] == "株式会社テスト"
     assert "description" not in hit
     assert hit["description_excerpt"].startswith("プロダクト開発")
+
+
+def test_search_cursor_does_not_skip_or_repeat_rows_after_deleting_a_previous_page(tools, db):
+    deadlines = [date.today() + timedelta(days=days) for days in (1, 2, 3)]
+    items = [
+        seed(
+            db,
+            event_name=f"カーソル検証{index}",
+            deadline=deadline.isoformat(),
+            source_url=f"https://example.com/cursor-{index}",
+        )
+        for index, deadline in enumerate(deadlines, start=1)
+    ]
+
+    first_page = call("search_opportunity", {"sort": "deadline", "per_page": 1})
+    assert [item["id"] for item in first_page["items"]] == [items[0].id]
+    assert first_page["next_cursor"]
+
+    preview = call("preview_delete_opportunity", {"opportunity_id": items[0].id})
+    call(
+        "delete_opportunity",
+        {
+            "opportunity_id": items[0].id,
+            "expected_updated_at": preview["expected_updated_at"],
+            "request_id": "cursor-delete-0001",
+            "client_name": "pytest",
+        },
+    )
+    second_page = call(
+        "search_opportunity",
+        {"sort": "deadline", "per_page": 1, "cursor": first_page["next_cursor"]},
+    )
+
+    assert [item["id"] for item in second_page["items"]] == [items[1].id]
+    assert set(item["id"] for item in first_page["items"]).isdisjoint(
+        item["id"] for item in second_page["items"]
+    )
+
+
+def test_search_cursor_does_not_repeat_a_returned_row_after_its_deadline_moves(tools, db):
+    items = [
+        seed(
+            db,
+            event_name=f"締切移動検証{index}",
+            deadline=(date.today() + timedelta(days=index)).isoformat(),
+            source_url=f"https://example.com/cursor-move-{index}",
+        )
+        for index in range(1, 4)
+    ]
+    first_page = call("search_opportunity", {"sort": "deadline", "per_page": 1})
+
+    call(
+        "update_recruitment_status",
+        {
+            "opportunity_id": items[0].id,
+            "recruitment_status": "募集中",
+            "deadline": (date.today() + timedelta(days=10)).isoformat(),
+            "request_id": "cursor-move-0001",
+            "client_name": "pytest",
+        },
+    )
+    second_page = call(
+        "search_opportunity",
+        {"sort": "deadline", "per_page": 1, "cursor": first_page["next_cursor"]},
+    )
+
+    assert [item["id"] for item in first_page["items"]] == [items[0].id]
+    assert [item["id"] for item in second_page["items"]] == [items[1].id]
+
+
+def test_search_cursor_rejects_changed_search_conditions(tools, db):
+    seed(db, event_name="カーソル条件1", source_url="https://example.com/cursor-filter-1")
+    seed(db, event_name="カーソル条件2", source_url="https://example.com/cursor-filter-2")
+    first_page = call("search_opportunity", {"sort": "deadline", "per_page": 1})
+
+    error = tool_error(
+        "search_opportunity",
+        {"sort": "created", "per_page": 1, "cursor": first_page["next_cursor"]},
+    )
+
+    assert error["error"] == "invalid_cursor"
 
 
 def test_search_accepts_the_filters_the_rest_api_has(tools, db):

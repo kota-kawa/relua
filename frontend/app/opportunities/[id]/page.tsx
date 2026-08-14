@@ -5,8 +5,9 @@ import { BackLink } from "@/components/back-link";
 import { BookmarkButton } from "@/components/bookmark-button";
 import { CalendarDays, ExternalLink, Flag, MapPin } from "@/components/icons";
 import { OpportunityActions } from "@/components/opportunity-actions";
+import { OpportunityCard } from "@/components/opportunity-card";
 import { RecentTracker } from "@/components/recent-tracker";
-import { ApiError, getOpportunity } from "@/lib/api";
+import { ApiError, getOpportunity, getSameCompanyOpportunities } from "@/lib/api";
 import { CONTACT_FORM_URL } from "@/lib/constants";
 import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 
@@ -33,8 +34,14 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 
 export default async function OpportunityDetail({ params }: Props) {
   let item;
+  let sameCompanyOpportunities;
+  const id = (await params).id;
   try {
-    item = await getOpportunity((await params).id);
+    [item, sameCompanyOpportunities] = await Promise.all([
+      getOpportunity(id),
+      // This secondary path must never take the primary detail page down.
+      getSameCompanyOpportunities(id).catch(() => []),
+    ]);
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) notFound();
     throw error;
@@ -133,6 +140,23 @@ export default async function OpportunityDetail({ params }: Props) {
               </a>
             </aside>
           </div>
+
+          {sameCompanyOpportunities.length > 0 && (
+            <section className="same-company-opportunities" aria-labelledby="same-company-heading">
+              <div className="same-company-heading">
+                <div>
+                  <p className="eyebrow">MORE FROM THIS COMPANY</p>
+                  <h2 id="same-company-heading">同じ企業の他の募集</h2>
+                </div>
+                <p>{item.company.name}が現在掲載している、その他の募集です。</p>
+              </div>
+              <div className="card-grid same-company-grid">
+                {sameCompanyOpportunities.map((opportunity) => (
+                  <OpportunityCard key={opportunity.id} item={opportunity} />
+                ))}
+              </div>
+            </section>
+          )}
         </article>
       </div>
 

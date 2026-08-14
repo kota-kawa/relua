@@ -364,11 +364,23 @@ def search_opportunities(
     return SearchResult(items=items, total=total, page=1, per_page=per_page, next_cursor=next_cursor)
 
 
-def _company_opportunities(db: Session, company_name: str, exclude_id: str | None = None) -> list[Opportunity]:
+def _company_opportunities(
+    db: Session,
+    company_name: str,
+    exclude_id: str | None = None,
+    *,
+    recruitment_statuses: list[str] | None = None,
+    deadline_on_or_after: date | None = None,
+) -> list[Opportunity]:
     normalized = normalize_company_name(company_name)
     stmt = opportunity_query().join(Opportunity.company).where(Company.normalized_name == normalized)
     if exclude_id:
         stmt = stmt.where(Opportunity.id != exclude_id)
+    if recruitment_statuses:
+        status_ids = select(RecruitmentStatus.id).where(RecruitmentStatus.name.in_(recruitment_statuses))
+        stmt = stmt.where(Opportunity.status_id.in_(status_ids))
+    if deadline_on_or_after:
+        stmt = stmt.where(or_(Opportunity.deadline.is_(None), Opportunity.deadline >= deadline_on_or_after))
     return list(db.scalars(stmt.order_by(Opportunity.updated_at.desc())).unique())
 
 
@@ -378,6 +390,8 @@ def find_similar_opportunities(
     company_name: str,
     event_name: str | None = None,
     exclude_id: str | None = None,
+    recruitment_statuses: list[str] | None = None,
+    deadline_on_or_after: date | None = None,
     limit: int = 20,
 ) -> list[Opportunity]:
     """Entries of the same company, narrowed by a loose event-name match.
@@ -386,7 +400,13 @@ def find_similar_opportunities(
     Event names match on containment in either direction, which catches "サマーインターン" against
     "サマーインターン2027" — near-misses a caller should look at before adding a second record.
     """
-    items = _company_opportunities(db, company_name, exclude_id)
+    items = _company_opportunities(
+        db,
+        company_name,
+        exclude_id,
+        recruitment_statuses=recruitment_statuses,
+        deadline_on_or_after=deadline_on_or_after,
+    )
     if event_name:
         target = normalize_common(event_name)
         items = [

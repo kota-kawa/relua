@@ -466,6 +466,12 @@ button, summary, select { cursor: pointer; }
 .source-links a { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; font-weight: 750; }
 .updated-note { margin: 18px 0 0; color: #929b97; font-size: 12px; text-align: center; }
 .correction-link { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 8px 0 0; color: #929b97; font-size: 11px; }
+.same-company-opportunities { margin-top: 88px; padding-top: 48px; border-top: 1px solid var(--line); }
+.same-company-heading { display: flex; align-items: end; justify-content: space-between; gap: 32px; margin-bottom: 25px; }
+.same-company-heading .eyebrow { margin-bottom: 9px; font-size: 11px; }
+.same-company-heading h2 { margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: 27px; font-weight: 600; }
+.same-company-heading > p { max-width: 390px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; text-align: right; }
+.same-company-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 /* About — Why Relua? */
 .hex-field {
@@ -773,6 +779,7 @@ button, summary, select { cursor: pointer; }
   .deadline-box { width: 100%; }
   .detail-layout { grid-template-columns: 1fr; gap: 45px; }
   .detail-sidebar { position: static; }
+  .same-company-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .concept-pair { grid-template-columns: 1fr; gap: 18px; }
   .honeycomb-section { grid-template-columns: 1fr; gap: 32px; }
   .honeycomb-figure { padding: 26px; }
@@ -890,6 +897,10 @@ button, summary, select { cursor: pointer; }
   .detail-hero { margin-inline: -3px; padding: 30px 24px; border-radius: 8px; }
   .detail-hero h1 { font-size: 27px; }
   .detail-layout { margin-top: 45px; }
+  .same-company-opportunities { margin-top: 62px; padding-top: 36px; }
+  .same-company-heading { display: block; }
+  .same-company-heading > p { margin-top: 12px; text-align: left; }
+  .same-company-grid { grid-template-columns: 1fr; }
   /* 保存 / 共有 share a row; the calendar button takes the full width so
      "デバイスのカレンダーに追加" stops wrapping onto three lines. */
   .detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

@@ -56,6 +56,10 @@ export async function getOpportunity(id: string): Promise<Opportunity> {
   return apiFetch<Opportunity>(`/opportunities/${encodeURIComponent(id)}`);
 }
 
+export async function getSameCompanyOpportunities(id: string): Promise<Opportunity[]> {
+  return apiFetch<Opportunity[]>(`/opportunities/${encodeURIComponent(id)}/same-company`);
+}
+
 export async function getMasters(): Promise<Masters> {
   return apiFetch<Masters>("/masters");
 }

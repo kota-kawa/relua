@@ -9,3 +9,6 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["UP047", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/20260814_0010_seed_food_daily_collection_targets.py" = ["I001"]

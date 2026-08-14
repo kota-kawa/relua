@@ -8,6 +8,7 @@ import unicodedata
 import zlib
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "20260814_0010"
@@ -15,14 +16,13 @@ down_revision = "20260814_0009"
 branch_labels = None
 depends_on = None
 
-CLIENT_NAME = "migration-food-daily-20260814"
-SELECTION_REASONS = {
+CLIENT = "migration-food-daily-20260814"
+REASONS = {
     "食品": "食品メーカーの企業カバレッジを拡充し、新卒採用・インターン情報を継続確認するため。",
     "日用品": "日用品・生活消費財メーカーの企業カバレッジを拡充し、新卒採用・インターン情報を継続確認するため。",
 }
-
-# The compressed payload keeps this one-time data migration small while retaining the curated list in the revision.
-ENTRIES_PAYLOAD = (
+# Compressed JSON keeps this one-time data migration compact while retaining the curated 180-company payload.
+PAYLOAD = (
     "eNqlWltv28gV/itFHvq0St77VizQRVtsUaDoQxHsw5CixTEpjsrLGsqTRcZey45vsWPHie9WnMiyE0tyYjlxkh9DU5en/oWeGUq2"
     "SGqY0QYIAgcxP5451+87w4cP7wWrTb/0tnOx394/Ca6Xb65fdCpf7v1wr3e0F6yV4AfVtgvWnx48mJqauo8msUHyxCb3ZXJ/svDg"
     "3i8/PLw3/GD7+VK78Yn3eF7Bkzjy6NHb9nmre/S5u7wm8v48MbGBciiJcXPVbL86Gwcjj3UtglPfCy6WfPfc9058tykCldOxTF2R"
@@ -37,8 +37,8 @@ ENTRIES_PAYLOAD = (
     "CkJFTKEM0Isc/2x/y7AeVmE27bGez82kyQzB+p05N63Fm49PwpoYn1WEHXoSA6RK9Cw2ctbQSZnDBpadsB+GXiDI8MB51GIdkyGj"
     "r+d77lH4SHD5StCTwKhp+dzB9F6eBItg0QGzK/SbUO3klVzGMsjUaOZBGzdMEtZ805OjiDRHt6OzaM4vVbqrZXGtUCS25UiRphnM"
     "nHXWG763wqaQEJX6ryTFZyLtApS+iptCVFQkmbhoCRbXg5UnY4gfBUfFW6/2vH34RhzARsDtEGROwhTW00osQEITABoa/Ckiy4mm"
-    "9fYp886+WBIXCsRQUX7YEMjg7mYlBOnUmzdXM9+jhMBfgJ8pEkPRik4mWYqs7Z2w7i5qdgFGKIpb3WoFldfiIoEOhizCETlEpUZ/2"
-    "Am1vxEyo86cc0vUIUcXxQGBaVHGzm+mYWiC7acp3lZi0uGQicanvaNGe2NLSOJZSMXYMKNmDKTnHAvW9fekhOUYNjGLCYVzwl7w"
+    "9fYp886+WBIXCsRQUX7YEMjg7mYlBOnUmzdXM9+jhMBfgJ8pEkPRik4mWYqs7Z2w7i5qdgFGKIpb3WoFldfiIoEOhizCETlEpUZ/"
+    "2Am1vxEyo86cc0vUIUcXxQGBaVHGzm+mYWiC7acp3lZi0uGQicanvaNGe2NLSOJZSMXYMKNmDKTnHAvW9fekhOUYNjGLCYVzwl7w"
     "+3E1bGJjRIJBOOha4dMgLtU/+N42O0k1jI3vtnwP3rUqyIllWZqMEdodxh9qzEse++dZP5e88v+uZ5mEXaGEiv5aSyjJiaZBKKBA"
     "TZKZkIbeNc2GVjkE77tNbOGSLWYjQf33jz/etOaD5ofO8lxnpSEC4chy9OSLrGxOw9Yj1HQUy9YjQu52h/bnn/7yLQSUmxi9Rgvq"
     "9eBiCdiCeBypMnkE2qQQk9tUbrXEYSjLiEG0n12CV8cypoAsGZqkzav9//zd97ZuVSqrihormFVGH6+5h9QkOKKR45JP95Il/xzL"
@@ -67,69 +67,25 @@ ENTRIES_PAYLOAD = (
     "VuyL387p6U1rWlid9Oky/XbHUuLL06By0tv6PPIrTn7FgtzJgFkq5vv2BUsaessU2pk6PXUsIyMuT4bxAKP9pdLZX+9UP7TL06kJ"
     "pOJHaApldCQlVjm//B8ebOIS"
 )
-TIER1_PAYLOAD = (
-    "eNqNU0lSAkEQ/AsHT/7Dq3fDv0hXKAiyCYIKweIMIPsyGAE46mOKnhl+YXUNB+xuI7gxlVlLZyZXicuzCxRrBAehhODJYloWH3b+"
-    "a+h+J84TKN4QfBSbyPmKquOgPZR+4Qh9JwihTJy905LlpEEYoVghdCx1GMWNBjRBABSe2gtNOslG6DFa+ad9SF0IdebQlhQKR1XE"
-    "nK41+B8IAwTXVvfU68SPbQujkOZd/qm7IMdyjYNaN2gYYkIBRY8IsZJqghpIY2tEJo7Br7BxfYtESreRGghZhCTCxCD0GPpk1OEt"
-    "bYMzQOGiGJrzd9ubsDJXkSiUNUiWPExOw5U+Tbr9MJ+llnD1okPzQtCsWQMmFwu5yhMUh1NDYxn5mW0LtL5Vx9MTyCP140hPG/kg"
-    "+2lWHn8esipITF+HDvqP+Ywnpm1tHOCkuQZU5UsadIYBkTUzRtNxPAwC/4/gTqvv/ExUc2XjUavHIiiDlvdm9nTycz5YfmrFyEuF"
-    "lZZsC1V3psF8vdt4QVfPXgxZwxMsWmQ3bye/dLujzIIipBX39aHMEb/DXS11tpj94Vz/AqdAOO0="
-)
 
 
-def _load_payload(payload: str) -> object:
-    return json.loads(zlib.decompress(base64.b64decode(payload)).decode("utf-8"))
+def _entries() -> list[list[str]]:
+    raw = zlib.decompress(base64.b64decode(PAYLOAD)).decode("utf-8")
+    return json.loads(raw)
 
 
-ENTRIES: list[list[str]] = _load_payload(ENTRIES_PAYLOAD)  # type: ignore[assignment]
-TIER1_COMPANIES = set(_load_payload(TIER1_PAYLOAD))  # type: ignore[arg-type]
-
-
-def _normalize_company_name(value: str) -> str:
+def _normalize(value: str) -> str:
     value = unicodedata.normalize("NFKC", value).strip()
     value = re.sub(r"\s+", "", value)
     value = re.sub(r"[（(](?:株)[）)]|㈱", "株式会社", value)
     return value.replace("株式会社", "").replace("有限会社", "").casefold()
 
 
-def _hash_payload(payload: dict[str, object]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()
-    return hashlib.sha256(encoded).hexdigest()
+def _scalar(bind: sa.Connection, sql: str, **params: object) -> object | None:
+    return bind.execute(sa.text(sql), params).scalar_one_or_none()
 
 
-def _scalar(bind: sa.Connection, query: str, params: dict[str, object]) -> object | None:
-    return bind.execute(sa.text(query), params).scalar_one_or_none()
-
-
-def _remember(
-    bind: sa.Connection,
-    *,
-    request_id: str,
-    operation: str,
-    request_hash: str,
-    entity_type: str,
-    entity_id: int,
-) -> None:
-    bind.execute(
-        sa.text(
-            """
-            INSERT INTO collection_request_records
-                (request_id, operation, request_hash, entity_type, entity_id)
-            VALUES
-                (:request_id, :operation, :request_hash, :entity_type, :entity_id)
-            """
-        ),
-        {
-            "request_id": request_id,
-            "operation": operation,
-            "request_hash": request_hash,
-            "entity_type": entity_type,
-            "entity_id": str(entity_id),
-        },
-    )
-
-
-def _audit(
+def _record(
     bind: sa.Connection,
     *,
     action: str,
@@ -137,14 +93,33 @@ def _audit(
     entity_id: int,
     request_id: str,
     source_url: str,
+    payload: dict[str, object],
 ) -> None:
+    request_hash = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    bind.execute(
+        sa.text(
+            """
+            INSERT INTO collection_request_records
+                (request_id, operation, request_hash, entity_type, entity_id)
+            VALUES (:request_id, :action, :request_hash, :entity_type, :entity_id)
+            """
+        ),
+        {
+            "request_id": request_id,
+            "action": action,
+            "request_hash": request_hash,
+            "entity_type": entity_type,
+            "entity_id": str(entity_id),
+        },
+    )
     bind.execute(
         sa.text(
             """
             INSERT INTO audit_logs
                 (action, entity_type, entity_id, request_id, client_name, source_url, success)
-            VALUES
-                (:action, :entity_type, :entity_id, :request_id, :client_name, :source_url, :success)
+            VALUES (:action, :entity_type, :entity_id, :request_id, :client, :source_url, true)
             """
         ),
         {
@@ -152,42 +127,43 @@ def _audit(
             "entity_type": entity_type,
             "entity_id": str(entity_id),
             "request_id": request_id,
-            "client_name": CLIENT_NAME,
+            "client": CLIENT,
             "source_url": source_url,
-            "success": True,
         },
     )
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    industry_id = _scalar(bind, "SELECT id FROM industries WHERE name = :name", {"name": "メーカー"})
+    industry_id = _scalar(bind, "SELECT id FROM industries WHERE name='メーカー'")
     if industry_id is None:
         raise RuntimeError("メーカー industry master is missing")
 
-    sector_ids: dict[str, int] = {}
-    for sector_name in ("食品", "日用品"):
+    sectors = {}
+    for name in ("食品", "日用品"):
         sector_id = _scalar(
             bind,
-            "SELECT id FROM sectors WHERE industry_id = :industry_id AND name = :sector_name",
-            {"industry_id": industry_id, "sector_name": sector_name},
+            "SELECT id FROM sectors WHERE industry_id=:industry_id AND name=:name",
+            industry_id=industry_id,
+            name=name,
         )
         if sector_id is None:
-            raise RuntimeError(f"{sector_name} sector master is missing under メーカー")
-        sector_ids[sector_name] = int(sector_id)
+            raise RuntimeError(f"{name} sector master is missing under メーカー")
+        sectors[name] = int(sector_id)
 
     created = reclassified = sources_added = covered = 0
-    for index, (company_name, sector_name, source_url) in enumerate(ENTRIES, start=1):
-        normalized = _normalize_company_name(company_name)
+    for index, (company_name, sector_name, source_url) in enumerate(_entries(), 1):
+        normalized = _normalize(company_name)
         company_id = _scalar(
             bind,
             """
             SELECT id FROM companies
-            WHERE normalized_name = :normalized OR name = :company_name
-            ORDER BY CASE WHEN normalized_name = :normalized THEN 0 ELSE 1 END
+            WHERE normalized_name=:normalized OR name=:name
+            ORDER BY CASE WHEN normalized_name=:normalized THEN 0 ELSE 1 END
             LIMIT 1
             """,
-            {"normalized": normalized, "company_name": company_name},
+            normalized=normalized,
+            name=company_name,
         )
         if company_id is None:
             bind.execute(
@@ -196,8 +172,8 @@ def upgrade() -> None:
             )
             company_id = _scalar(
                 bind,
-                "SELECT id FROM companies WHERE normalized_name = :normalized",
-                {"normalized": normalized},
+                "SELECT id FROM companies WHERE normalized_name=:normalized",
+                normalized=normalized,
             )
         if company_id is None:
             raise RuntimeError(f"failed to resolve company: {company_name}")
@@ -205,16 +181,14 @@ def upgrade() -> None:
 
         target = bind.execute(
             sa.text(
-                """
-                SELECT id, sector_id FROM collection_targets
-                WHERE company_id = :company_id AND industry_id = :industry_id
-                """
+                "SELECT id, sector_id FROM collection_targets "
+                "WHERE company_id=:company_id AND industry_id=:industry_id"
             ),
             {"company_id": company_id, "industry_id": industry_id},
         ).mappings().one_or_none()
         target_created = target is None
-        desired_sector_id = sector_ids[sector_name]
-        priority = 1 if company_name in TIER1_COMPANIES else 2
+        desired_sector = sectors[sector_name]
+        priority = 1 if index <= 20 or 119 <= index <= 138 else 2
         interval = 7 if priority == 1 else 14
 
         if target_created:
@@ -222,85 +196,79 @@ def upgrade() -> None:
                 sa.text(
                     """
                     INSERT INTO collection_targets
-                        (company_id, industry_id, sector_id, priority_tier, check_interval_days, selection_reason)
+                        (
+                            company_id, industry_id, sector_id, priority_tier,
+                            check_interval_days, is_active, selection_reason
+                        )
                     VALUES
-                        (:company_id, :industry_id, :sector_id, :priority, :interval, :reason)
+                        (:company_id, :industry_id, :sector_id, :priority, :interval, true, :reason)
                     """
                 ),
                 {
                     "company_id": company_id,
                     "industry_id": industry_id,
-                    "sector_id": desired_sector_id,
+                    "sector_id": desired_sector,
                     "priority": priority,
                     "interval": interval,
-                    "reason": SELECTION_REASONS[sector_name],
+                    "reason": REASONS[sector_name],
                 },
             )
             target_id = _scalar(
                 bind,
-                "SELECT id FROM collection_targets WHERE company_id = :company_id AND industry_id = :industry_id",
-                {"company_id": company_id, "industry_id": industry_id},
+                "SELECT id FROM collection_targets WHERE company_id=:company_id AND industry_id=:industry_id",
+                company_id=company_id,
+                industry_id=industry_id,
             )
             if target_id is None:
-                raise RuntimeError(f"failed to create collection target: {company_name}")
+                raise RuntimeError(f"failed to create target: {company_name}")
             target_id = int(target_id)
             created += 1
             request_id = f"migration-food-daily-20260814-target-{index:03d}"
-            _remember(
-                bind,
-                request_id=request_id,
-                operation="collection_target_create",
-                request_hash=_hash_payload({"company": company_name, "sector": sector_name, "url": source_url}),
-                entity_type="collection_target",
-                entity_id=target_id,
-            )
-            _audit(
+            _record(
                 bind,
                 action="collection_target_create",
                 entity_type="collection_target",
                 entity_id=target_id,
                 request_id=request_id,
                 source_url=source_url,
+                payload={"company": company_name, "sector": sector_name, "url": source_url},
             )
         else:
             target_id = int(target["id"])
-            if target["sector_id"] != desired_sector_id:
+            if target["sector_id"] != desired_sector:
                 bind.execute(
                     sa.text(
-                        "UPDATE collection_targets SET sector_id = :sector_id, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+                        "UPDATE collection_targets "
+                        "SET sector_id=:sector_id, updated_at=CURRENT_TIMESTAMP WHERE id=:id"
                     ),
-                    {"sector_id": desired_sector_id, "id": target_id},
+                    {"sector_id": desired_sector, "id": target_id},
                 )
                 reclassified += 1
                 request_id = f"migration-food-daily-20260814-update-{index:03d}"
-                _remember(
-                    bind,
-                    request_id=request_id,
-                    operation="collection_target_update",
-                    request_hash=_hash_payload({"target_id": target_id, "sector": sector_name}),
-                    entity_type="collection_target",
-                    entity_id=target_id,
-                )
-                _audit(
+                _record(
                     bind,
                     action="collection_target_update",
                     entity_type="collection_target",
                     entity_id=target_id,
                     request_id=request_id,
                     source_url=source_url,
+                    payload={"target_id": target_id, "sector": sector_name},
                 )
 
         source_id = _scalar(
             bind,
-            "SELECT id FROM collection_sources WHERE collection_target_id = :target_id AND url = :url",
-            {"target_id": target_id, "url": source_url},
+            "SELECT id FROM collection_sources WHERE collection_target_id=:target_id AND url=:url",
+            target_id=target_id,
+            url=source_url,
         )
         if source_id is None:
-            source_type = "recruit" if "/recruit" in source_url else "other"
+            source_type = "recruit" if "recruit" in source_url else "other"
             bind.execute(
                 sa.text(
-                    "INSERT INTO collection_sources (collection_target_id, source_type, url) "
-                    "VALUES (:target_id, :source_type, :url)"
+                    """
+                    INSERT INTO collection_sources (collection_target_id, source_type, url, is_active)
+                    VALUES (:target_id, :source_type, :url, true)
+                    """
                 ),
                 {"target_id": target_id, "source_type": source_type, "url": source_url},
             )
@@ -308,29 +276,23 @@ def upgrade() -> None:
             if not target_created:
                 source_id = _scalar(
                     bind,
-                    "SELECT id FROM collection_sources WHERE collection_target_id = :target_id AND url = :url",
-                    {"target_id": target_id, "url": source_url},
+                    "SELECT id FROM collection_sources WHERE collection_target_id=:target_id AND url=:url",
+                    target_id=target_id,
+                    url=source_url,
                 )
                 if source_id is None:
-                    raise RuntimeError(f"failed to create collection source: {company_name}")
+                    raise RuntimeError(f"failed to create source: {company_name}")
                 request_id = f"migration-food-daily-20260814-source-{index:03d}"
-                _remember(
-                    bind,
-                    request_id=request_id,
-                    operation="collection_source_create",
-                    request_hash=_hash_payload({"target_id": target_id, "type": source_type, "url": source_url}),
-                    entity_type="collection_source",
-                    entity_id=int(source_id),
-                )
-                _audit(
+                _record(
                     bind,
                     action="collection_source_create",
                     entity_type="collection_source",
                     entity_id=int(source_id),
                     request_id=request_id,
                     source_url=source_url,
+                    payload={"target_id": target_id, "type": source_type, "url": source_url},
                 )
-        elif not target_created and target["sector_id"] == desired_sector_id:
+        elif not target_created and target["sector_id"] == desired_sector:
             covered += 1
 
     print(
@@ -342,5 +304,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Curated operational data may be enriched or linked to opportunities after deployment.
-    # A downgrade therefore intentionally leaves these collection targets intact.
     pass

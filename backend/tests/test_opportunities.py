@@ -9,6 +9,7 @@ from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, Opport
 from app.schemas import OpportunityInput
 from app.services.opportunities import (
     DomainValidationError,
+    find_similar_opportunities,
     get_opportunity_by_public_ref,
     search_opportunities,
     write_opportunity,
@@ -80,6 +81,54 @@ def test_company_normalization_reuses_existing_company(db):
     second_item, _ = write_opportunity(db, data=second, request_id="normalize-0002", client_name="pytest")
     assert first_item.company_id == second_item.company_id
     assert second_item.company.name == "株式会社テスト"
+
+
+def test_same_company_suggestions_can_be_limited_to_current_openings(db):
+    today = date.today()
+    current, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload() | {"event_name": "本選考"}),
+        request_id="related-current-0001",
+        client_name="pytest",
+    )
+    open_item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "(株)テスト",
+                "event_name": "サマーインターン",
+                "source_url": "https://example.com/related-open",
+            }
+        ),
+        request_id="related-open-0001",
+        client_name="pytest",
+    )
+    closed_item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "event_name": "終了済み説明会",
+                "deadline": (today - timedelta(days=1)).isoformat(),
+                "source_url": "https://example.com/related-closed",
+            }
+        ),
+        request_id="related-closed-0001",
+        client_name="pytest",
+    )
+
+    matches = find_similar_opportunities(
+        db,
+        company_name="株式会社テスト",
+        exclude_id=current.id,
+        recruitment_statuses=["募集予定", "募集中", "通年募集"],
+        deadline_on_or_after=today,
+        limit=3,
+    )
+
+    assert [item.id for item in matches] == [open_item.id]
+    assert closed_item.id not in {item.id for item in matches}
 
 
 def test_sector_must_belong_to_industry(db):

@@ -6,7 +6,11 @@ from sqlalchemy.orm import Session
 from app.dates import today_in_tokyo
 from app.db import get_db
 from app.schemas import OpportunityListResponse, OpportunityResponse
-from app.services.opportunities import get_opportunity_by_public_ref, search_opportunities
+from app.services.opportunities import (
+    find_similar_opportunities,
+    get_opportunity_by_public_ref,
+    search_opportunities,
+)
 from app.services.serialization import opportunity_dict
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
@@ -59,3 +63,23 @@ def opportunity_detail(opportunity_id: str, db: Annotated[Session, Depends(get_d
     if item is None:
         raise HTTPException(status_code=404, detail="募集情報が見つかりません")
     return opportunity_dict(item)
+
+
+@router.get("/{opportunity_id}/same-company", response_model=list[OpportunityResponse])
+def same_company_opportunities(
+    opportunity_id: str,
+    db: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, object]]:
+    item = get_opportunity_by_public_ref(db, opportunity_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="募集情報が見つかりません")
+
+    matches = find_similar_opportunities(
+        db,
+        company_name=item.company.name,
+        exclude_id=item.id,
+        recruitment_statuses=["募集予定", "募集中", "通年募集"],
+        deadline_on_or_after=today_in_tokyo(),
+        limit=3,
+    )
+    return [opportunity_dict(match) for match in matches]

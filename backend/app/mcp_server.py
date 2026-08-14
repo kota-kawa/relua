@@ -334,7 +334,7 @@ def _prepare_opportunity_patch(
 def search_opportunity(
     query: Annotated[
         str | None,
-        Field(description="企業名・イベント名・内容・募集要件に対する部分一致キーワード。"),
+        Field(description="企業名・イベント名・職種・内容・募集要件に対するキーワード。表記揺れも検索できます。"),
     ] = None,
     recruitment_status: Annotated[list[RecruitmentStatusValue] | None, Field(description="募集状況で絞り込みます。")] = None,
     industry: Annotated[list[IndustryValue] | None, Field(description="業界で絞り込みます。")] = None,
@@ -349,8 +349,13 @@ def search_opportunity(
     degree: Annotated[list[DegreeValue] | None, Field(description="対象学位で絞り込みます。")] = None,
     sort: Annotated[
         SortValue,
-        Field(description="deadline=締切が近い順（締切なしは末尾）、updated=更新が新しい順、created=登録が新しい順。"),
-    ] = "deadline",
+        Field(
+            description=(
+                "並び順。relevance=関連度順、deadline=締切が近い順（締切なしは末尾）、"
+                "updated=更新が新しい順、created=登録が新しい順。キーワードなしのrelevanceは締切順になります。"
+            )
+        ),
+    ] = "relevance",
     cursor: Annotated[
         str | None,
         Field(

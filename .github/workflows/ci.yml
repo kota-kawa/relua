@@ -18,6 +18,20 @@ jobs:
     name: Backend Lint & Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: relua_test
+          POSTGRES_USER: relua
+          POSTGRES_PASSWORD: relua_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relua -d relua_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: backend
@@ -34,6 +48,17 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: pytest --cov=app --cov-report=term-missing
+      - name: Verify PostgreSQL migration
+        env:
+          DATABASE_URL: postgresql+psycopg://relua:relua_test_password@localhost:5432/relua_test
+        run: |
+          alembic upgrade head
+          pytest tests/test_pg_trgm_migration.py
+          python -c "from app import models; from app.db import Base, engine; Base.metadata.drop_all(engine)"
+      - name: Test PostgreSQL relevance search
+        env:
+          DATABASE_URL: postgresql+psycopg://relua:relua_test_password@localhost:5432/relua_test
+        run: pytest tests/test_opportunities.py -k "relevance or trigram"
 
   frontend:
     name: Frontend Lint & Build

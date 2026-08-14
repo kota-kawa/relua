@@ -28,7 +28,7 @@ def list_opportunities(
     job_category: Annotated[list[str] | None, Query()] = None,
     graduation_year: Annotated[list[str] | None, Query()] = None,
     degree: Annotated[list[str] | None, Query()] = None,
-    sort: Literal["deadline", "updated", "created"] = "deadline",
+    sort: Literal["relevance", "deadline", "updated", "created"] | None = None,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, object]:

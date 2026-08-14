@@ -8,8 +8,9 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Integer, Select, and_, case, cast, func, literal, or_, select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models import (
     PUBLIC_CODE_LENGTH,
@@ -28,6 +29,7 @@ from app.models import (
     RecruitmentStatus,
     Sector,
     Tag,
+    opportunity_jobs,
     public_code_string,
 )
 from app.schemas import OpportunityInput
@@ -91,21 +93,32 @@ def _search_signature(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _encode_search_cursor(item: Opportunity, *, sort: str, signature: str, snapshot_at: datetime) -> str:
-    sort_value = getattr(item, "deadline" if sort == "deadline" else f"{sort}_at")
+def _encode_search_cursor(
+    item: Opportunity,
+    *,
+    sort: str,
+    signature: str,
+    snapshot_at: datetime,
+    relevance_score: int | None = None,
+) -> str:
+    sort_value = relevance_score if sort == "relevance" else getattr(
+        item, "deadline" if sort == "deadline" else f"{sort}_at"
+    )
     payload = {
         "v": 1,
         "sort": sort,
         "signature": signature,
         "snapshot_at": snapshot_at.isoformat(),
-        "value": sort_value.isoformat() if sort_value is not None else None,
+        "value": sort_value.isoformat() if isinstance(sort_value, (date, datetime)) else sort_value,
         "id": item.id,
     }
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _decode_search_cursor(cursor: str, *, sort: str, signature: str) -> tuple[datetime, date | datetime | None, str]:
+def _decode_search_cursor(
+    cursor: str, *, sort: str, signature: str
+) -> tuple[datetime, date | datetime | int | None, str]:
     try:
         padding = "=" * (-len(cursor) % 4)
         raw = base64.b64decode(cursor + padding, altchars=b"-_", validate=True)
@@ -122,7 +135,11 @@ def _decode_search_cursor(cursor: str, *, sort: str, signature: str) -> tuple[da
         if snapshot_at.tzinfo is None:
             raise ValueError
         raw_value = payload.get("value")
-        if sort == "deadline":
+        if sort == "relevance":
+            if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+                raise ValueError
+            value = raw_value
+        elif sort == "deadline":
             value = date.fromisoformat(raw_value) if raw_value is not None else None
         else:
             if not isinstance(raw_value, str):
@@ -133,6 +150,66 @@ def _decode_search_cursor(cursor: str, *, sort: str, signature: str) -> tuple[da
             "検索カーソルが無効です。最初のページからやり直し、同じ検索条件で返されたnext_cursorをそのまま渡してください。"
         ) from exc
     return snapshot_at, value, payload["id"]
+
+
+def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
+    """Return a deterministic weighted score suitable for ordering and cursors.
+
+    PostgreSQL uses pg_trgm's word similarity so a short query is measured against the most
+    relevant part of a long description. SQLite keeps an exact-substring approximation for local
+    development and the unit test suite; PostgreSQL integration tests cover the production path.
+    """
+    term = f"%{query}%"
+    is_postgresql = db.get_bind().dialect.name == "postgresql"
+
+    def field_score(column: ColumnElement[str], weight: int) -> ColumnElement[int]:
+        similarity = (
+            func.word_similarity(query.casefold(), func.lower(func.coalesce(column, "")))
+            if is_postgresql
+            else case((column.ilike(term), 1.0), else_=0.0)
+        )
+        contains_bonus = case((column.ilike(term), float(weight)), else_=0.0)
+        return cast((similarity * weight + contains_bonus) * 1000, Integer)
+
+    job_score = (
+        select(func.coalesce(func.max(field_score(JobCategory.name, 2)), 0))
+        .select_from(
+            opportunity_jobs.join(JobCategory, opportunity_jobs.c.job_category_id == JobCategory.id)
+        )
+        .where(opportunity_jobs.c.opportunity_id == Opportunity.id)
+        .correlate(Opportunity)
+        .scalar_subquery()
+    )
+    return cast(
+        field_score(Company.name, 4)
+        + field_score(Opportunity.event_name, 3)
+        + job_score
+        + field_score(Opportunity.description, 1)
+        + field_score(Opportunity.requirements, 1) / 2,
+        Integer,
+    )
+
+
+def _keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
+    term = f"%{query}%"
+    matches: list[ColumnElement[bool]] = [
+        Company.name.ilike(term),
+        Opportunity.event_name.ilike(term),
+        Opportunity.description.ilike(term),
+        Opportunity.requirements.ilike(term),
+        Opportunity.job_categories.any(JobCategory.name.ilike(term)),
+    ]
+    if db.get_bind().dialect.name == "postgresql" and len(query) >= 3:
+        # Similarity operators use pg_trgm indexes and recover common misspellings in concise,
+        # high-signal fields. Long free text remains substring matched to avoid noisy recall.
+        matches.extend(
+            [
+                Company.name.op("%")(literal(query)),
+                Opportunity.event_name.op("%")(literal(query)),
+                Opportunity.job_categories.any(JobCategory.name.op("%")(literal(query))),
+            ]
+        )
+    return or_(*matches)
 
 
 def opportunity_query(*, include_deleted: bool = False) -> Select[tuple[Opportunity]]:
@@ -201,14 +278,18 @@ def search_opportunities(
     graduation_year: list[str] | None = None,
     degree: list[str] | None = None,
     deadline_on_or_after: date | None = None,
-    sort: str = "deadline",
+    sort: str | None = None,
     page: int | None = 1,
     per_page: int = 20,
     cursor: str | None = None,
 ) -> SearchResult:
+    normalized_q = q.strip() if q and q.strip() else None
+    effective_sort = sort or ("relevance" if normalized_q else "deadline")
+    if effective_sort == "relevance" and normalized_q is None:
+        effective_sort = "deadline"
     cursor_mode = page is None or cursor is not None
     signature = _search_signature(
-        q=q,
+        q=normalized_q,
         status=status,
         industry=industry,
         sector=sector,
@@ -218,14 +299,14 @@ def search_opportunities(
         graduation_year=graduation_year,
         degree=degree,
         deadline_on_or_after=deadline_on_or_after,
-        sort=sort,
+        sort=effective_sort,
     )
     snapshot_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
-    cursor_value: date | datetime | None = None
+    cursor_value: date | datetime | int | None = None
     cursor_id: str | None = None
     if cursor_mode and cursor:
         snapshot_at, cursor_value, cursor_id = _decode_search_cursor(
-            cursor, sort=sort, signature=signature
+            cursor, sort=effective_sort, signature=signature
         )
 
     stmt = opportunity_query().join(Opportunity.company)
@@ -237,16 +318,9 @@ def search_opportunities(
     )
 
     filters = []
-    if q:
-        term = f"%{q.strip()}%"
-        filters.append(
-            or_(
-                Company.name.ilike(term),
-                Opportunity.event_name.ilike(term),
-                Opportunity.description.ilike(term),
-                Opportunity.requirements.ilike(term),
-            )
-        )
+    relevance_score = _search_relevance_score(db, normalized_q) if normalized_q else None
+    if normalized_q:
+        filters.append(_keyword_filter(db, normalized_q))
     mappings = [
         (status, Opportunity.status_id, RecruitmentStatus),
         (event_type, Opportunity.event_type_id, EventType),
@@ -312,7 +386,18 @@ def search_opportunities(
         stmt = stmt.where(*snapshot_filters)
         count_stmt = count_stmt.where(*snapshot_filters)
 
-    if sort == "updated":
+    if effective_sort == "relevance":
+        assert relevance_score is not None
+        stmt = stmt.order_by(relevance_score.desc(), Opportunity.id)
+        if cursor_id is not None:
+            assert isinstance(cursor_value, int)
+            stmt = stmt.where(
+                or_(
+                    relevance_score < cursor_value,
+                    and_(relevance_score == cursor_value, Opportunity.id > cursor_id),
+                )
+            )
+    elif effective_sort == "updated":
         stmt = stmt.order_by(Opportunity.updated_at.desc(), Opportunity.id)
         if cursor_id is not None:
             assert isinstance(cursor_value, datetime)
@@ -322,7 +407,7 @@ def search_opportunities(
                     and_(Opportunity.updated_at == cursor_value, Opportunity.id > cursor_id),
                 )
             )
-    elif sort == "created":
+    elif effective_sort == "created":
         stmt = stmt.order_by(Opportunity.created_at.desc(), Opportunity.id)
         if cursor_id is not None:
             assert isinstance(cursor_value, datetime)
@@ -356,11 +441,26 @@ def search_opportunities(
     items = list(db.scalars(stmt.limit(per_page + 1)).unique())
     has_more = len(items) > per_page
     items = items[:per_page]
-    next_cursor = (
-        _encode_search_cursor(items[-1], sort=sort, signature=signature, snapshot_at=snapshot_at)
-        if has_more and items
-        else None
-    )
+    last_relevance_score = None
+    if has_more and items and relevance_score is not None:
+        last_relevance_score = int(
+            db.scalar(
+                select(relevance_score)
+                .select_from(Opportunity)
+                .join(Opportunity.company)
+                .where(Opportunity.id == items[-1].id)
+            )
+            or 0
+        )
+    next_cursor = None
+    if has_more and items:
+        next_cursor = _encode_search_cursor(
+            items[-1],
+            sort=effective_sort,
+            signature=signature,
+            snapshot_at=snapshot_at,
+            relevance_score=last_relevance_score,
+        )
     return SearchResult(items=items, total=total, page=1, per_page=per_page, next_cursor=next_cursor)
 
 

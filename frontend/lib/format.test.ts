@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   currentGraduationYears,
   deadlineCompactLabel,
+  deadlineLabel,
+  daysUntil,
   filterHref,
   labelledSectors,
   actionableFilterItems,
@@ -11,6 +13,10 @@ import {
   searchableStatuses,
   withDefaultOpenStatus,
 } from "./format";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("filterHref", () => {
   it("preserves selected filters and resets pagination", () => {
@@ -37,15 +43,38 @@ describe("deadlineCompactLabel", () => {
   it("drops the year from a distant deadline so it fits the sticky bar", () => {
     vi.setSystemTime(new Date("2026-07-27T09:00:00+09:00"));
     expect(deadlineCompactLabel("2026-08-07")).toBe("8月7日(金)");
-    vi.useRealTimers();
   });
 
   it("keeps the relative phrase when the deadline is near", () => {
     vi.setSystemTime(new Date("2026-07-27T09:00:00+09:00"));
-    /* The deadline runs to the end of the 29th, so the 29th itself counts. */
-    expect(deadlineCompactLabel("2026-07-29")).toBe("あと3日");
+    expect(deadlineCompactLabel("2026-07-29")).toBe("あと2日");
     expect(deadlineCompactLabel(null)).toBe("締切未定");
-    vi.useRealTimers();
+  });
+});
+
+describe("deadlineLabel", () => {
+  it("uses Tokyo calendar dates instead of rounding partial days", () => {
+    vi.setSystemTime(new Date("2026-07-27T23:59:59+09:00"));
+    expect(daysUntil("2026-07-29")).toBe(2);
+    expect(deadlineLabel("2026-07-29")).toBe("あと2日");
+
+    vi.setSystemTime(new Date("2026-07-28T00:00:00+09:00"));
+    expect(daysUntil("2026-07-29")).toBe(1);
+    expect(deadlineLabel("2026-07-29")).toBe("明日締切");
+  });
+
+  it("becomes expired immediately after the deadline date ends in Tokyo", () => {
+    vi.setSystemTime(new Date("2026-07-27T23:59:59+09:00"));
+    expect(deadlineLabel("2026-07-27")).toBe("本日締切");
+
+    vi.setSystemTime(new Date("2026-07-28T00:00:00+09:00"));
+    expect(daysUntil("2026-07-27")).toBe(-1);
+    expect(deadlineLabel("2026-07-27")).toBe("受付終了");
+  });
+
+  it("uses the Tokyo date even when it differs from UTC", () => {
+    vi.setSystemTime(new Date("2026-07-27T15:00:00Z"));
+    expect(deadlineLabel("2026-07-28")).toBe("本日締切");
   });
 });
 

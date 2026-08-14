@@ -11,11 +11,26 @@ export function formatDate(value: string | null, fallback = "日程未定") {
   }).format(new Date(`${value}T00:00:00+09:00`));
 }
 
+const DAY_IN_MS = 86_400_000;
+const tokyoDateParts = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  timeZone: "Asia/Tokyo",
+});
+
+/** Converts an instant into the matching calendar day in Tokyo. */
+function tokyoDay(timestamp: number) {
+  const parts = tokyoDateParts.formatToParts(new Date(timestamp));
+  const valueOf = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value);
+  return Date.UTC(valueOf("year"), valueOf("month") - 1, valueOf("day"));
+}
+
 export function daysUntil(value: string | null) {
   if (!value) return null;
-  const deadline = new Date(`${value}T23:59:59+09:00`).getTime();
-  const now = Date.now();
-  return Math.ceil((deadline - now) / 86_400_000);
+  const deadlineDay = new Date(`${value}T00:00:00Z`).getTime();
+  return (deadlineDay - tokyoDay(Date.now())) / DAY_IN_MS;
 }
 
 export function deadlineLabel(value: string | null) {

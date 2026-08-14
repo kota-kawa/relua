@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.dates import today_in_tokyo
 from app.db import get_db
 from app.schemas import OpportunityListResponse, OpportunityResponse
 from app.services.opportunities import get_opportunity_by_public_ref, search_opportunities
@@ -38,6 +39,7 @@ def list_opportunities(
         job_category=job_category,
         graduation_year=graduation_year,
         degree=degree,
+        deadline_on_or_after=today_in_tokyo(),
         sort=sort,
         page=page,
         per_page=per_page,

@@ -71,6 +71,7 @@ def _search_signature(
     job_category: list[str] | None,
     graduation_year: list[str] | None,
     degree: list[str] | None,
+    deadline_on_or_after: date | None,
     sort: str,
 ) -> str:
     filters = {
@@ -83,6 +84,7 @@ def _search_signature(
         "job_category": sorted(job_category or []),
         "graduation_year": sorted(graduation_year or []),
         "degree": sorted(degree or []),
+        "deadline_on_or_after": deadline_on_or_after.isoformat() if deadline_on_or_after else None,
         "sort": sort,
     }
     encoded = json.dumps(filters, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -198,6 +200,7 @@ def search_opportunities(
     job_category: list[str] | None = None,
     graduation_year: list[str] | None = None,
     degree: list[str] | None = None,
+    deadline_on_or_after: date | None = None,
     sort: str = "deadline",
     page: int | None = 1,
     per_page: int = 20,
@@ -214,6 +217,7 @@ def search_opportunities(
         job_category=job_category,
         graduation_year=graduation_year,
         degree=degree,
+        deadline_on_or_after=deadline_on_or_after,
         sort=sort,
     )
     snapshot_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
@@ -287,6 +291,13 @@ def search_opportunities(
         )
     if degree:
         filters.append(Opportunity.degrees.any(or_(Degree.slug.in_(degree), Degree.name.in_(degree))))
+    if deadline_on_or_after:
+        filters.append(
+            or_(
+                Opportunity.deadline.is_(None),
+                Opportunity.deadline >= deadline_on_or_after,
+            )
+        )
     if filters:
         stmt = stmt.where(*filters)
         count_stmt = count_stmt.where(*filters)

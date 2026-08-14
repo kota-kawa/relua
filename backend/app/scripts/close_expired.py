@@ -1,7 +1,6 @@
-from datetime import date
-
 from sqlalchemy import select, update
 
+from app.dates import today_in_tokyo
 from app.db import SessionLocal
 from app.models import Opportunity, RecruitmentStatus
 
@@ -14,7 +13,7 @@ def run() -> int:
         result = db.execute(
             update(Opportunity)
             .where(
-                Opportunity.deadline < date.today(),
+                Opportunity.deadline < today_in_tokyo(),
                 Opportunity.status_id != closed_id,
                 Opportunity.deleted_at.is_(None),
             )

@@ -1,9 +1,10 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 
+from app.dates import today_in_tokyo
 from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, Opportunity
 from app.schemas import OpportunityInput
 from app.services.opportunities import (
@@ -39,6 +40,35 @@ def test_create_search_and_idempotent_replay(db):
     assert result.items[0].company.name == "株式会社テスト"
     assert search_opportunities(db, degree=["degree-01"]).total == 1
     assert search_opportunities(db, degree=["degree-06"]).total == 0
+
+
+def test_public_listing_cutoff_excludes_expired_deadlines_but_keeps_undated(db):
+    today = date(2026, 8, 14)
+    for index, deadline in enumerate((today - timedelta(days=1), today, None), start=1):
+        payload = valid_payload() | {
+            "company_name": f"株式会社締切テスト{index}",
+            "event_name": f"締切テスト{index}",
+            "deadline": deadline.isoformat() if deadline else None,
+            "source_url": f"https://example.com/deadline-{index}",
+        }
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(payload),
+            request_id=f"deadline-filter-{index:04d}",
+            client_name="pytest",
+        )
+
+    public_result = search_opportunities(db, deadline_on_or_after=today)
+    assert public_result.total == 2
+    assert {item.deadline for item in public_result.items} == {today, None}
+
+    # Operator searches still need to find expired records so their status can be maintained.
+    assert search_opportunities(db).total == 3
+
+
+def test_today_in_tokyo_changes_at_tokyo_midnight():
+    assert today_in_tokyo(datetime(2026, 8, 13, 14, 59, tzinfo=timezone.utc)) == date(2026, 8, 13)  # noqa: UP017
+    assert today_in_tokyo(datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc)) == date(2026, 8, 14)  # noqa: UP017
 
 
 def test_company_normalization_reuses_existing_company(db):

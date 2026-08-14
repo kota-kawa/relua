@@ -43,6 +43,153 @@ def test_create_search_and_idempotent_replay(db):
     assert search_opportunities(db, degree=["degree-06"]).total == 0
 
 
+def test_keyword_search_defaults_to_weighted_relevance(db):
+    query = "データサイエンティスト"
+    payloads = [
+        valid_payload()
+        | {
+            "company_name": f"株式会社{query}",
+            "event_name": "会社説明会",
+            "description": "事業内容を紹介します。",
+            "job_categories": ["営業"],
+            "source_url": "https://example.com/relevance-company",
+        },
+        valid_payload()
+        | {
+            "company_name": "株式会社イベント検索",
+            "event_name": f"{query}インターン",
+            "description": "仕事を体験します。",
+            "job_categories": ["営業"],
+            "source_url": "https://example.com/relevance-event",
+        },
+        valid_payload()
+        | {
+            "company_name": "株式会社職種検索",
+            "event_name": "専門職インターン",
+            "description": "実務を体験します。",
+            "job_categories": [query],
+            "source_url": "https://example.com/relevance-job",
+        },
+        valid_payload()
+        | {
+            "company_name": "株式会社説明検索",
+            "event_name": "技術系インターン",
+            "description": f"{query}の実務を体験します。",
+            "job_categories": ["営業"],
+            "source_url": "https://example.com/relevance-description",
+        },
+    ]
+    for index, payload in enumerate(payloads):
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(payload),
+            request_id=f"relevance-ranking-{index:04d}",
+            client_name="pytest",
+        )
+
+    result = search_opportunities(db, q=query)
+
+    assert [item.company.name for item in result.items] == [
+        f"株式会社{query}",
+        "株式会社イベント検索",
+        "株式会社職種検索",
+        "株式会社説明検索",
+    ]
+
+
+def test_explicit_deadline_sort_overrides_relevance(db):
+    query = "機械学習"
+    later, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": f"株式会社{query}",
+                "event_name": f"{query}エンジニア選考",
+                "description": f"{query}の仕事です。",
+                "deadline": (date.today() + timedelta(days=20)).isoformat(),
+                "source_url": "https://example.com/relevance-later",
+            }
+        ),
+        request_id="relevance-deadline-later",
+        client_name="pytest",
+    )
+    sooner, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社締切優先",
+                "event_name": f"{query}講座",
+                "deadline": (date.today() + timedelta(days=2)).isoformat(),
+                "source_url": "https://example.com/relevance-sooner",
+            }
+        ),
+        request_id="relevance-deadline-sooner",
+        client_name="pytest",
+    )
+
+    assert search_opportunities(db, q=query).items[0].id == later.id
+    assert search_opportunities(db, q=query, sort="deadline").items[0].id == sooner.id
+
+
+def test_relevance_cursor_does_not_skip_tied_scores(db):
+    query = "検索順位"
+    created = []
+    for index in range(3):
+        item, _ = write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "company_name": f"株式会社カーソル{index}",
+                    "event_name": f"{query}インターン",
+                    "description": "同じ内容です。",
+                    "job_categories": ["営業"],
+                    "source_url": f"https://example.com/relevance-cursor-{index}",
+                }
+            ),
+            request_id=f"relevance-cursor-{index:04d}",
+            client_name="pytest",
+        )
+        created.append(item.id)
+
+    seen = []
+    cursor = None
+    while True:
+        result = search_opportunities(db, q=query, page=None, per_page=1, cursor=cursor)
+        seen.extend(item.id for item in result.items)
+        cursor = result.next_cursor
+        if cursor is None:
+            break
+
+    assert len(seen) == 3
+    assert set(seen) == set(created)
+
+
+def test_postgresql_trigram_search_recovers_a_typo(db):
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("pg_trgm is PostgreSQL-specific")
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社類似検索",
+                "event_name": "ソフトウェアエンジニア選考",
+                "description": "開発職の募集です。",
+                "source_url": "https://example.com/relevance-typo",
+            }
+        ),
+        request_id="relevance-typo-0001",
+        client_name="pytest",
+    )
+
+    result = search_opportunities(db, q="ソフトウェアエンジニヤ")
+
+    assert [match.id for match in result.items] == [item.id]
+
+
 def test_public_listing_cutoff_excludes_expired_deadlines_but_keeps_undated(db):
     today = date(2026, 8, 14)
     for index, deadline in enumerate((today - timedelta(days=1), today, None), start=1):

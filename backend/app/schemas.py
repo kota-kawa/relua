@@ -97,7 +97,7 @@ JobCategoryValue = Literal[
 ]
 GraduationYearValue = Literal["26卒", "27卒", "28卒", "29卒", "30卒", "学年不問"]
 DegreeValue = Literal["学部", "修士", "博士", "高専", "専門", "不問"]
-SortValue = Literal["deadline", "updated", "created"]
+SortValue = Literal["relevance", "deadline", "updated", "created"]
 
 
 #: Reused by every optional free-text field so the JSON Schema states the "do not guess" rule once.

@@ -8,6 +8,7 @@ import { filterHref } from "@/lib/format";
 import type { SearchParams } from "@/lib/types";
 
 const OPTIONS = [
+  { value: "relevance", label: "関連度順" },
   { value: "deadline", label: "締切が近い順" },
   { value: "updated", label: "更新が新しい順" },
   { value: "created", label: "掲載が新しい順" },
@@ -19,7 +20,9 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
   const [isPending, startTransition] = useTransition();
   const rootRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
-  const current = OPTIONS.find((option) => option.value === value) ?? OPTIONS[0];
+  const hasQuery = Array.isArray(params.q) ? params.q.some(Boolean) : Boolean(params.q);
+  const availableOptions = hasQuery ? OPTIONS : OPTIONS.filter((option) => option.value !== "relevance");
+  const current = availableOptions.find((option) => option.value === value) ?? availableOptions[0];
 
   useEffect(() => {
     if (!open) return;
@@ -70,7 +73,7 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
       </button>
       {open && (
         <div className="sort-menu" id={menuId} role="listbox" aria-label="並び順">
-          {OPTIONS.map((option) => (
+          {availableOptions.map((option) => (
             <button
               key={option.value}
               type="button"
@@ -93,7 +96,7 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
             return list.map((item) => <input key={`${key}-${item}`} type="hidden" name={key} value={item} />);
           })}
           <label htmlFor="sort">並び替え</label>
-          <select id="sort" name="sort" defaultValue={value}>{OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+          <select id="sort" name="sort" defaultValue={current.value}>{availableOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
           <button type="submit">適用</button>
         </form>
       </noscript>

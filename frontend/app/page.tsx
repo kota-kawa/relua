@@ -48,7 +48,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
                 <span><strong>{result.total.toLocaleString("ja-JP")}</strong> 件</span>
               </h2>
               {/* The calendar groups by month, so it is always deadline-ordered. */}
-              {view !== "calendar" && <SortForm params={params} value={sort ?? "deadline"} />}
+              {view !== "calendar" && <SortForm params={params} value={sort ?? (query ? "relevance" : "deadline")} />}
             </div>
 
             {result.items.length ? (

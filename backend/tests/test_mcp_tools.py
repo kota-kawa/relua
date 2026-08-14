@@ -127,7 +127,8 @@ def test_search_filters_publish_their_allowed_values():
     listed = asyncio.run(mcp_server.mcp.list_tools())
     properties = {tool.name: tool.inputSchema["properties"] for tool in listed}["search_opportunity"]
 
-    assert properties["sort"]["enum"] == ["deadline", "updated", "created"]
+    assert properties["sort"]["enum"] == ["relevance", "deadline", "updated", "created"]
+    assert properties["sort"]["default"] == "relevance"
     assert "募集中" in properties["recruitment_status"]["anyOf"][0]["items"]["enum"]
     assert set(properties) == {
         "query",

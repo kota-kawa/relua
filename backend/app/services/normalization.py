@@ -31,6 +31,9 @@ def normalize_company_name(value: str) -> str:
     value = re.sub(r"\s+", "", value)
     value = re.sub(r"[（(](?:株)[）)]|㈱", "株式会社", value)
     without_legal = value.replace("株式会社", "").replace("有限会社", "")
+    # "・" separates loanword syllables ("ディー・エヌ・エー"), so it varies freely with the
+    # unseparated spelling ("ディーエヌエー") and must not distinguish otherwise-identical names.
+    without_legal = without_legal.replace("・", "")
     return without_legal.casefold()
 
 

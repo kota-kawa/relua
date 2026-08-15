@@ -113,6 +113,30 @@ class Company(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    aliases: Mapped[list["CompanyAlias"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class CompanyAlias(Base):
+    """A known alternate spelling of a company: an English name, abbreviation, or old trade name.
+
+    Normalization alone (NFKC, whitespace/legal-suffix/nakaguro stripping) only collapses formatting
+    variants of the same script, so it cannot bridge "DeNA" to "ディー・エヌ・エー". Aliases close that
+    gap explicitly, and are consulted anywhere a company name is matched: search, relevance scoring,
+    and duplicate detection.
+    """
+
+    __tablename__ = "company_aliases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    alias: Mapped[str] = mapped_column(String(200), nullable=False)
+    normalized_alias: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    company: Mapped[Company] = relationship(back_populates="aliases")
+
+    __table_args__ = (UniqueConstraint("company_id", "alias", name="uq_company_alias_company_alias"),)
 
 
 class CollectionTarget(Base):

@@ -27,9 +27,9 @@ from app.schemas import (
     CollectionTargetCreateRequest,
     CollectionTargetUpdateRequest,
 )
+from app.services.companies import company_keyword_filter, get_or_create_company
 from app.services.errors import master_error
 from app.services.masters import choices, resolve_one
-from app.services.normalization import normalize_company_name
 from app.services.opportunities import DomainValidationError
 from app.services.serialization import detail_url, master_dict
 
@@ -167,7 +167,7 @@ def list_collection_targets(
     count_stmt = select(func.count(CollectionTarget.id)).select_from(CollectionTarget).join(CollectionTarget.company)
     filters = []
     if query:
-        filters.append(Company.name.ilike(f"%{query.strip()}%"))
+        filters.append(company_keyword_filter(query.strip()))
     if industry:
         industry_ids = select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
         filters.append(CollectionTarget.industry_id.in_(industry_ids))
@@ -286,16 +286,6 @@ def _audit(
     )
 
 
-def _get_or_create_company(db: Session, name: str) -> Company:
-    normalized = normalize_company_name(name)
-    company = db.scalar(select(Company).where(Company.normalized_name == normalized))
-    if company is None:
-        company = Company(name=name, normalized_name=normalized)
-        db.add(company)
-        db.flush()
-    return company
-
-
 def _resolve_classification(
     db: Session, *, industry_value: str, sector_value: str | None
 ) -> tuple[Industry, Sector | None]:
@@ -328,7 +318,7 @@ def create_collection_target(db: Session, payload: CollectionTargetCreateRequest
         return target, True
 
     industry, sector = _resolve_classification(db, industry_value=payload.industry, sector_value=payload.sector)
-    company = _get_or_create_company(db, payload.company_name)
+    company = get_or_create_company(db, payload.company_name)
     existing = db.scalar(
         select(CollectionTarget).where(
             CollectionTarget.company_id == company.id,
@@ -405,7 +395,7 @@ def update_collection_target(
     if "company_name" in fields:
         if payload.company_name is None:
             raise DomainValidationError([{"field": "企業名", "received": None, "reason": "nullにはできません"}])
-        company = _get_or_create_company(db, payload.company_name)
+        company = get_or_create_company(db, payload.company_name)
     industry_value = payload.industry if "industry" in fields else target.industry.name
     if industry_value is None:
         raise DomainValidationError([{"field": "業界", "received": None, "reason": "nullにはできません"}])

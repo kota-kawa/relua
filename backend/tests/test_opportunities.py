@@ -5,8 +5,9 @@ from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 
 from app.dates import today_in_tokyo
-from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, Opportunity
+from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, CompanyAlias, Opportunity
 from app.schemas import OpportunityInput
+from app.services.normalization import normalize_company_name
 from app.services.opportunities import (
     DomainValidationError,
     find_similar_opportunities,
@@ -228,6 +229,53 @@ def test_company_normalization_reuses_existing_company(db):
     second_item, _ = write_opportunity(db, data=second, request_id="normalize-0002", client_name="pytest")
     assert first_item.company_id == second_item.company_id
     assert second_item.company.name == "株式会社テスト"
+
+
+def test_company_normalization_collapses_nakaguro_spelling(db):
+    """"ディー・エヌ・エー" and "ディーエヌエー" differ only by a syllable separator, so they must
+    resolve to one company - not the different script "DeNA", which needs an alias instead."""
+    first_payload = valid_payload() | {"company_name": "株式会社ディー・エヌ・エー"}
+    first = OpportunityInput.model_validate(first_payload)
+    first_item, _ = write_opportunity(db, data=first, request_id="nakaguro-0001", client_name="pytest")
+
+    second_payload = valid_payload() | {"company_name": "ディーエヌエー", "event_name": "別の募集"}
+    second = OpportunityInput.model_validate(second_payload)
+    second_item, _ = write_opportunity(db, data=second, request_id="nakaguro-0002", client_name="pytest")
+
+    assert first_item.company_id == second_item.company_id
+    assert search_opportunities(db, q="ディーエヌエー").total == 2
+    matches = find_similar_opportunities(db, company_name="ディーエヌエー")
+    assert {item.id for item in matches} == {first_item.id, second_item.id}
+
+
+def test_company_alias_resolves_search_relevance_and_duplicates(db):
+    dena_payload = valid_payload() | {"company_name": "株式会社ディー・エヌ・エー"}
+    dena = OpportunityInput.model_validate(dena_payload)
+    dena_item, _ = write_opportunity(db, data=dena, request_id="alias-0001", client_name="pytest")
+    db.add(
+        CompanyAlias(
+            company_id=dena_item.company_id, alias="DeNA", normalized_alias=normalize_company_name("DeNA")
+        )
+    )
+    db.flush()
+
+    result = search_opportunities(db, q="DeNA")
+    assert result.total == 1
+    assert result.items[0].company.name == "株式会社ディー・エヌ・エー"
+
+    matches = find_similar_opportunities(db, company_name="DeNA")
+    assert [item.id for item in matches] == [dena_item.id]
+
+    # Writing under the alias must reuse the existing company rather than creating a duplicate one,
+    # otherwise the same DeNA opening would silently end up split across two Company rows.
+    reused_payload = valid_payload() | {
+        "company_name": "DeNA",
+        "event_name": "別の募集",
+        "source_url": "https://example.com/alias-reuse",
+    }
+    reused = OpportunityInput.model_validate(reused_payload)
+    reused_item, _ = write_opportunity(db, data=reused, request_id="alias-0002", client_name="pytest")
+    assert reused_item.company_id == dena_item.company_id
 
 
 def test_same_company_suggestions_can_be_limited_to_current_openings(db):

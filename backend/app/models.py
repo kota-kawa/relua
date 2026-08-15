@@ -113,6 +113,30 @@ class Company(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    aliases: Mapped[list["CompanyAlias"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class CompanyAlias(Base):
+    """A known alternate spelling of a company: an English name, abbreviation, or old trade name.
+
+    Normalization alone (NFKC, whitespace/legal-suffix/nakaguro stripping) only collapses formatting
+    variants of the same script, so it cannot bridge "DeNA" to "ディー・エヌ・エー". Aliases close that
+    gap explicitly, and are consulted anywhere a company name is matched: search, relevance scoring,
+    and duplicate detection.
+    """
+
+    __tablename__ = "company_aliases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    alias: Mapped[str] = mapped_column(String(200), nullable=False)
+    normalized_alias: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    company: Mapped[Company] = relationship(back_populates="aliases")
+
+    __table_args__ = (UniqueConstraint("company_id", "alias", name="uq_company_alias_company_alias"),)
 
 
 class CollectionTarget(Base):
@@ -227,13 +251,19 @@ class Opportunity(Base):
     #: Soft-deleted postings disappear from every public/query surface but retain their identifiers,
     #: relationships, and audit history so an operator can restore an accidental deletion.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    #: Shown to users as 最終更新 beside the source link, so it must mean "when the source was last
-    #: read into this record". Deliberately no onupdate: a maintenance write such as the deadline
-    #: sweep would silently make an unverified record look freshly checked. Only the MCP write paths
-    #: in services.opportunities set this, which fails safe -- a missed bump reads as older, not newer.
+    #: Drives optimistic locking (expected_updated_at) on every write path, so it must bump exactly
+    #: when a write actually happens - never earlier, never on an unrelated event. Deliberately no
+    #: onupdate: a maintenance write such as the deadline sweep would silently make an unverified
+    #: record look freshly changed. Only the MCP write paths in services.opportunities set this.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    #: When the official source (source_url) was last confirmed accurate - shown to users as 公式情報確認,
+    #: and distinct from updated_at: a record_collection_check "found" against an unchanged posting
+    #: bumps this without touching updated_at, so confirming an entry never trips optimistic locking
+    #: for a caller mid-edit. Populated by every verification-carrying write path in
+    #: services.opportunities and services.collection_targets; null only for legacy rows predating it.
+    source_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     status: Mapped[RecruitmentStatus] = relationship()
     company: Mapped[Company] = relationship()

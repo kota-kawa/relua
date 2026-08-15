@@ -57,6 +57,7 @@ def opportunity_dict(item: Opportunity) -> dict[str, object]:
         "source_url": item.source_url,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
+        "source_checked_at": item.source_checked_at,
     }
 
 
@@ -87,4 +88,5 @@ def opportunity_summary(item: Opportunity) -> dict[str, object]:
         "entry_url": item.entry_url,
         "source_url": item.source_url,
         "updated_at": item.updated_at,
+        "source_checked_at": item.source_checked_at,
     }

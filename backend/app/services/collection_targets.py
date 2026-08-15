@@ -27,9 +27,9 @@ from app.schemas import (
     CollectionTargetCreateRequest,
     CollectionTargetUpdateRequest,
 )
+from app.services.companies import company_keyword_filter, get_or_create_company
 from app.services.errors import master_error
 from app.services.masters import choices, resolve_one
-from app.services.normalization import normalize_company_name
 from app.services.opportunities import DomainValidationError
 from app.services.serialization import detail_url, master_dict
 
@@ -167,7 +167,7 @@ def list_collection_targets(
     count_stmt = select(func.count(CollectionTarget.id)).select_from(CollectionTarget).join(CollectionTarget.company)
     filters = []
     if query:
-        filters.append(Company.name.ilike(f"%{query.strip()}%"))
+        filters.append(company_keyword_filter(query.strip()))
     if industry:
         industry_ids = select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
         filters.append(CollectionTarget.industry_id.in_(industry_ids))
@@ -286,14 +286,32 @@ def _audit(
     )
 
 
-def _get_or_create_company(db: Session, name: str) -> Company:
-    normalized = normalize_company_name(name)
-    company = db.scalar(select(Company).where(Company.normalized_name == normalized))
-    if company is None:
-        company = Company(name=name, normalized_name=normalized)
-        db.add(company)
-        db.flush()
-    return company
+#: Tier 1 is meant to order a short "check these first" list, not to describe most of the queue.
+#: A cap keeps it a priority signal instead of a headcount that only ever grows.
+PRIORITY_TIER_1_CAP = 200
+
+
+def _ensure_tier_one_capacity(db: Session) -> None:
+    count = int(
+        db.scalar(
+            select(func.count(CollectionTarget.id)).where(
+                CollectionTarget.priority_tier == 1, CollectionTarget.is_active.is_(True)
+            )
+        )
+        or 0
+    )
+    if count >= PRIORITY_TIER_1_CAP:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "priority_tier",
+                    "received": 1,
+                    "reason": f"tier1の収集対象が上限（{PRIORITY_TIER_1_CAP}社）に達しています",
+                    "expected": f"tier1は{PRIORITY_TIER_1_CAP}社以下",
+                    "alternative": "既存のtier1対象をtier2以下に見直してから追加するか、tier2以下で登録してください",
+                }
+            ]
+        )
 
 
 def _resolve_classification(
@@ -327,8 +345,11 @@ def create_collection_target(db: Session, payload: CollectionTargetCreateRequest
             raise RuntimeError("collection target idempotency target not found")
         return target, True
 
+    if payload.priority_tier == 1:
+        _ensure_tier_one_capacity(db)
+
     industry, sector = _resolve_classification(db, industry_value=payload.industry, sector_value=payload.sector)
-    company = _get_or_create_company(db, payload.company_name)
+    company = get_or_create_company(db, payload.company_name)
     existing = db.scalar(
         select(CollectionTarget).where(
             CollectionTarget.company_id == company.id,
@@ -405,7 +426,7 @@ def update_collection_target(
     if "company_name" in fields:
         if payload.company_name is None:
             raise DomainValidationError([{"field": "企業名", "received": None, "reason": "nullにはできません"}])
-        company = _get_or_create_company(db, payload.company_name)
+        company = get_or_create_company(db, payload.company_name)
     industry_value = payload.industry if "industry" in fields else target.industry.name
     if industry_value is None:
         raise DomainValidationError([{"field": "業界", "received": None, "reason": "nullにはできません"}])
@@ -428,6 +449,12 @@ def update_collection_target(
                 }
             ]
         )
+    final_priority_tier = payload.priority_tier if "priority_tier" in fields else target.priority_tier
+    final_is_active = payload.is_active if "is_active" in fields else target.is_active
+    already_active_tier_one = target.priority_tier == 1 and target.is_active
+    if final_priority_tier == 1 and final_is_active and not already_active_tier_one:
+        _ensure_tier_one_capacity(db)
+
     target.company = company
     target.industry = industry
     target.sector = sector
@@ -610,6 +637,11 @@ def record_collection_check(
     target.last_check_result = payload.result
     if payload.result == "found":
         target.last_found_at = now
+        if opportunity is not None:
+            # A "found, unchanged" confirmation never calls write_opportunity, so without this the
+            # posting's official-source-confirmed date would go stale even though someone just verified
+            # it. Deliberately not touching opportunity.updated_at, which drives optimistic locking.
+            opportunity.source_checked_at = now
     if payload.source_url:
         for source in target.sources:
             if source.url == payload.source_url:

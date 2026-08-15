@@ -51,6 +51,7 @@ const savedItem = {
   source_url: "https://example.com/source",
   created_at: "2026-07-01T00:00:00Z",
   updated_at: "2026-07-01T00:00:00Z",
+  source_checked_at: "2026-07-01T00:00:00Z",
 } satisfies Opportunity;
 
 describe("SavedDashboard", () => {

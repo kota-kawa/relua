@@ -359,6 +359,9 @@ class OpportunityResponse(BaseModel):
     source_url: str
     created_at: datetime
     updated_at: datetime
+    source_checked_at: datetime | None = Field(
+        default=None, description="公式情報（source_url）を最後に確認できた日時。未確認の古いレコードはnull。"
+    )
 
 
 class OpportunityListResponse(BaseModel):
@@ -658,6 +661,9 @@ class OpportunitySummary(BaseModel):
     entry_url: str | None
     source_url: str
     updated_at: datetime
+    source_checked_at: datetime | None = Field(
+        default=None, description="公式情報（source_url）を最後に確認できた日時。未確認の古いレコードはnull。"
+    )
 
 
 class MCPSearchResponse(BaseModel):
@@ -667,6 +673,10 @@ class MCPSearchResponse(BaseModel):
     next_cursor: str | None = Field(
         description="続きがある場合のカーソル。次のsearch_opportunityへ同じ検索条件とともにそのまま渡します。"
     )
+
+
+class MCPStaleOpportunityListResponse(BaseModel):
+    items: list[OpportunitySummary]
 
 
 class MCPWriteResponse(BaseModel):

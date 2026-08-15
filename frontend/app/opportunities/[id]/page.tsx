@@ -48,6 +48,7 @@ export default async function OpportunityDetail({ params }: Props) {
   }
 
   const entryHref = item.entry_url ?? item.homepage_url ?? item.source_url;
+  const sourceCheckedAt = item.source_checked_at ?? item.updated_at;
 
   return (
     <main className="detail-page">
@@ -134,7 +135,7 @@ export default async function OpportunityDetail({ params }: Props) {
                 {item.homepage_url && <a href={item.homepage_url} target="_blank" rel="noopener noreferrer">公式ページ <ExternalLink size={15} /></a>}
                 <a href={item.source_url} target="_blank" rel="noopener noreferrer">情報源を確認 <ExternalLink size={15} /></a>
               </div>
-              <p className="updated-note">最終更新：{formatDate(item.updated_at.slice(0, 10))}</p>
+              <p className="updated-note">公式情報確認：{formatDate(sourceCheckedAt.slice(0, 10))}</p>
               <a className="correction-link" href={CONTACT_FORM_URL} target="_blank" rel="noopener noreferrer">
                 <Flag size={13} /> 掲載内容の訂正・削除を依頼する
               </a>

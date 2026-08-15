@@ -5,13 +5,16 @@ from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 
 from app.dates import today_in_tokyo
-from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, Opportunity
+from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, CompanyAlias, Opportunity
 from app.schemas import OpportunityInput
+from app.services.normalization import normalize_company_name
 from app.services.opportunities import (
     DomainValidationError,
     find_similar_opportunities,
     get_opportunity_by_public_ref,
+    list_stale_opportunities,
     search_opportunities,
+    update_recruitment_status,
     write_opportunity,
 )
 from tests.test_validation import valid_payload
@@ -230,6 +233,53 @@ def test_company_normalization_reuses_existing_company(db):
     assert second_item.company.name == "株式会社テスト"
 
 
+def test_company_normalization_collapses_nakaguro_spelling(db):
+    """"ディー・エヌ・エー" and "ディーエヌエー" differ only by a syllable separator, so they must
+    resolve to one company - not the different script "DeNA", which needs an alias instead."""
+    first_payload = valid_payload() | {"company_name": "株式会社ディー・エヌ・エー"}
+    first = OpportunityInput.model_validate(first_payload)
+    first_item, _ = write_opportunity(db, data=first, request_id="nakaguro-0001", client_name="pytest")
+
+    second_payload = valid_payload() | {"company_name": "ディーエヌエー", "event_name": "別の募集"}
+    second = OpportunityInput.model_validate(second_payload)
+    second_item, _ = write_opportunity(db, data=second, request_id="nakaguro-0002", client_name="pytest")
+
+    assert first_item.company_id == second_item.company_id
+    assert search_opportunities(db, q="ディーエヌエー").total == 2
+    matches = find_similar_opportunities(db, company_name="ディーエヌエー")
+    assert {item.id for item in matches} == {first_item.id, second_item.id}
+
+
+def test_company_alias_resolves_search_relevance_and_duplicates(db):
+    dena_payload = valid_payload() | {"company_name": "株式会社ディー・エヌ・エー"}
+    dena = OpportunityInput.model_validate(dena_payload)
+    dena_item, _ = write_opportunity(db, data=dena, request_id="alias-0001", client_name="pytest")
+    db.add(
+        CompanyAlias(
+            company_id=dena_item.company_id, alias="DeNA", normalized_alias=normalize_company_name("DeNA")
+        )
+    )
+    db.flush()
+
+    result = search_opportunities(db, q="DeNA")
+    assert result.total == 1
+    assert result.items[0].company.name == "株式会社ディー・エヌ・エー"
+
+    matches = find_similar_opportunities(db, company_name="DeNA")
+    assert [item.id for item in matches] == [dena_item.id]
+
+    # Writing under the alias must reuse the existing company rather than creating a duplicate one,
+    # otherwise the same DeNA opening would silently end up split across two Company rows.
+    reused_payload = valid_payload() | {
+        "company_name": "DeNA",
+        "event_name": "別の募集",
+        "source_url": "https://example.com/alias-reuse",
+    }
+    reused = OpportunityInput.model_validate(reused_payload)
+    reused_item, _ = write_opportunity(db, data=reused, request_id="alias-0002", client_name="pytest")
+    assert reused_item.company_id == dena_item.company_id
+
+
 def test_same_company_suggestions_can_be_limited_to_current_openings(db):
     today = date.today()
     current, _ = write_opportunity(
@@ -384,3 +434,66 @@ def test_database_rejects_invalid_date_relationship(db):
                 source_url="https://example.com/source",
             )
         )
+
+
+def test_write_opportunity_records_when_the_official_source_was_confirmed(db):
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="checked-at-0001", client_name="pytest")
+
+    assert item.source_checked_at is not None
+    assert item.source_checked_at == item.updated_at
+
+
+def test_update_recruitment_status_also_refreshes_source_checked_at(db):
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="checked-at-status-0001", client_name="pytest")
+    first_checked_at = item.source_checked_at
+
+    updated, _ = update_recruitment_status(
+        db,
+        opportunity_id=item.id,
+        recruitment_status="締切",
+        request_id="checked-at-status-0002",
+        client_name="pytest",
+    )
+
+    assert updated.source_checked_at is not None
+    assert updated.source_checked_at >= first_checked_at
+    assert updated.source_checked_at == updated.updated_at
+
+
+def test_list_stale_opportunities_prioritizes_never_checked_then_oldest_first(db):
+    fresh, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "株式会社新しい確認", "source_url": "https://example.com/stale-fresh"}
+        ),
+        request_id="stale-fresh-0001",
+        client_name="pytest",
+    )
+    stale, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "株式会社古い確認", "source_url": "https://example.com/stale-old"}
+        ),
+        request_id="stale-old-0001",
+        client_name="pytest",
+    )
+    stale.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017 -- local Python is 3.10
+    never_checked, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "株式会社未確認", "source_url": "https://example.com/stale-never"}
+        ),
+        request_id="stale-never-0001",
+        client_name="pytest",
+    )
+    never_checked.source_checked_at = None
+    db.commit()
+
+    assert search_opportunities(db, q="株式会社新しい確認").total == 1  # sanity: fresh really was written
+    stale_results = list_stale_opportunities(db, days=7)
+    stale_ids = [item.id for item in stale_results]
+
+    assert fresh.id not in stale_ids
+    assert stale_ids.index(never_checked.id) < stale_ids.index(stale.id)

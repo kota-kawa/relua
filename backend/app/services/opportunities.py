@@ -18,6 +18,7 @@ from app.models import (
     CollectionCheck,
     CollectionTarget,
     Company,
+    CompanyAlias,
     Degree,
     EventFormat,
     EventType,
@@ -33,6 +34,7 @@ from app.models import (
     public_code_string,
 )
 from app.schemas import OpportunityInput
+from app.services.companies import company_name_filter, find_company, get_or_create_company
 from app.services.errors import FIELD_LABELS, master_error
 from app.services.masters import choices, resolve_many, resolve_one
 from app.services.normalization import normalize_common, normalize_company_name, normalize_source_url, normalize_tag
@@ -160,15 +162,22 @@ def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
     development and the unit test suite; PostgreSQL integration tests cover the production path.
     """
     term = f"%{query}%"
+    # normalize_company_name strips nakaguro ("・"), legal suffixes, and casing, so it lines up a
+    # query like "ディーエヌエー" with a stored name like "株式会社ディー・エヌ・エー" that the raw
+    # ilike/trigram comparisons below cannot: those compare literal text, not normalized text.
+    normalized_query = normalize_company_name(query)
+    normalized_term = f"%{normalized_query}%"
     is_postgresql = db.get_bind().dialect.name == "postgresql"
 
-    def field_score(column: ColumnElement[str], weight: int) -> ColumnElement[int]:
+    def field_score(
+        column: ColumnElement[str], weight: int, *, text: str = query, pattern: str = term
+    ) -> ColumnElement[int]:
         similarity = (
-            func.word_similarity(query.casefold(), func.lower(func.coalesce(column, "")))
+            func.word_similarity(text.casefold(), func.lower(func.coalesce(column, "")))
             if is_postgresql
-            else case((column.ilike(term), 1.0), else_=0.0)
+            else case((column.ilike(pattern), 1.0), else_=0.0)
         )
-        contains_bonus = case((column.ilike(term), float(weight)), else_=0.0)
+        contains_bonus = case((column.ilike(pattern), float(weight)), else_=0.0)
         return cast((similarity * weight + contains_bonus) * 1000, Integer)
 
     job_score = (
@@ -180,8 +189,28 @@ def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
         .correlate(Opportunity)
         .scalar_subquery()
     )
+    # A company can have several aliases (e.g. "DeNA" and "ディーエヌエー" for the same row), so the
+    # best-matching one - not an arbitrary one - contributes to the score, same as job categories above.
+    alias_score = (
+        select(
+            func.coalesce(
+                func.max(
+                    field_score(CompanyAlias.alias, 4)
+                    + field_score(
+                        CompanyAlias.normalized_alias, 4, text=normalized_query, pattern=normalized_term
+                    )
+                ),
+                0,
+            )
+        )
+        .where(CompanyAlias.company_id == Company.id)
+        .correlate(Company)
+        .scalar_subquery()
+    )
     return cast(
         field_score(Company.name, 4)
+        + field_score(Company.normalized_name, 4, text=normalized_query, pattern=normalized_term)
+        + alias_score
         + field_score(Opportunity.event_name, 3)
         + job_score
         + field_score(Opportunity.description, 1)
@@ -192,8 +221,12 @@ def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
 
 def _keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
     term = f"%{query}%"
+    normalized_term = f"%{normalize_company_name(query)}%"
     matches: list[ColumnElement[bool]] = [
         Company.name.ilike(term),
+        Company.normalized_name.ilike(normalized_term),
+        Company.aliases.any(CompanyAlias.alias.ilike(term)),
+        Company.aliases.any(CompanyAlias.normalized_alias.ilike(normalized_term)),
         Opportunity.event_name.ilike(term),
         Opportunity.description.ilike(term),
         Opportunity.requirements.ilike(term),
@@ -202,9 +235,12 @@ def _keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
     if db.get_bind().dialect.name == "postgresql" and len(query) >= 3:
         # Similarity operators use pg_trgm indexes and recover common misspellings in concise,
         # high-signal fields. Long free text remains substring matched to avoid noisy recall.
+        # This still cannot bridge a script change (DeNA vs. ディーエヌエー) - only the registered
+        # aliases above cover that.
         matches.extend(
             [
                 Company.name.op("%")(literal(query)),
+                Company.aliases.any(CompanyAlias.alias.op("%")(literal(query))),
                 Opportunity.event_name.op("%")(literal(query)),
                 Opportunity.job_categories.any(JobCategory.name.op("%")(literal(query))),
             ]
@@ -472,8 +508,7 @@ def _company_opportunities(
     recruitment_statuses: list[str] | None = None,
     deadline_on_or_after: date | None = None,
 ) -> list[Opportunity]:
-    normalized = normalize_company_name(company_name)
-    stmt = opportunity_query().join(Opportunity.company).where(Company.normalized_name == normalized)
+    stmt = opportunity_query().join(Opportunity.company).where(company_name_filter(company_name))
     if exclude_id:
         stmt = stmt.where(Opportunity.id != exclude_id)
     if recruitment_statuses:
@@ -535,6 +570,34 @@ def find_source_url_duplicates(
     if exclude_id:
         stmt = stmt.where(Opportunity.id != exclude_id)
     return list(db.scalars(stmt.order_by(Opportunity.updated_at.desc()).limit(limit)).unique())
+
+
+def list_stale_opportunities(
+    db: Session,
+    *,
+    days: int = 7,
+    deadline_on_or_after: date | None = None,
+    limit: int = 50,
+) -> list[Opportunity]:
+    """Live postings whose official source hasn't been reconfirmed in at least `days` days.
+
+    Ordered so an operator works through the worst gaps first: never-checked rows (source_checked_at
+    is null, e.g. records predating this column) before the oldest confirmed ones.
+    """
+    threshold = datetime.now(timezone.utc) - timedelta(days=days)  # noqa: UP017 -- tests also support Python 3.10
+    stmt = (
+        opportunity_query()
+        .join(Opportunity.company)
+        .where(or_(Opportunity.source_checked_at.is_(None), Opportunity.source_checked_at <= threshold))
+    )
+    if deadline_on_or_after:
+        stmt = stmt.where(or_(Opportunity.deadline.is_(None), Opportunity.deadline >= deadline_on_or_after))
+    stmt = stmt.order_by(
+        case((Opportunity.source_checked_at.is_(None), 0), else_=1),
+        Opportunity.source_checked_at.asc(),
+        Opportunity.id,
+    ).limit(limit)
+    return list(db.scalars(stmt).unique())
 
 
 def _reused_request_id_error(request_id: str) -> dict[str, Any]:
@@ -647,16 +710,6 @@ def validate_write(db: Session, *, data: OpportunityInput) -> list[dict[str, Any
     return errors
 
 
-def _company(db: Session, name: str) -> Company:
-    normalized = normalize_company_name(name)
-    company = db.scalar(select(Company).where(Company.normalized_name == normalized))
-    if company is None:
-        company = Company(name=name, normalized_name=normalized)
-        db.add(company)
-        db.flush()
-    return company
-
-
 def _tags(db: Session, names: list[str]) -> list[Tag]:
     result: list[Tag] = []
     for name in names:
@@ -761,6 +814,40 @@ def is_patch_replay(db: Session, *, request_id: str, opportunity_id: str) -> boo
     )
 
 
+def _auto_matched_collection_target(
+    db: Session, *, data: OpportunityInput, industry: Industry, request_id: str
+) -> CollectionTarget | None:
+    """Attribute a write to its collection target when the caller didn't pass collection_target_id.
+
+    (company_id, industry_id) is a unique pair on collection_targets, so once the company already
+    exists the match is exactly as unambiguous as an explicit collection_target_id would be - it is
+    just recovered from data the write already carries instead of a lookup step a caller can forget.
+    Without this, a queued company's last_checked_at stays null forever whenever a posting for it is
+    registered by a route that never learned the target's id, even though the posting is real.
+    """
+    company = find_company(db, data.company_name)
+    if company is None:
+        return None
+    target = db.scalar(
+        select(CollectionTarget)
+        .options(selectinload(CollectionTarget.company), selectinload(CollectionTarget.sources))
+        .where(
+            CollectionTarget.company_id == company.id,
+            CollectionTarget.industry_id == industry.id,
+            CollectionTarget.is_active.is_(True),
+        )
+        .with_for_update()
+    )
+    if target is None:
+        return None
+    existing_check = db.scalar(select(CollectionCheck).where(CollectionCheck.request_id == request_id))
+    if existing_check is not None:
+        # Only relevant if this request_id was already used for an unrelated collection check - too
+        # narrow an edge case to fail an otherwise-valid write over, unlike the explicit-id path below.
+        return None
+    return target
+
+
 def _collection_target_for_write(
     db: Session,
     *,
@@ -770,7 +857,7 @@ def _collection_target_for_write(
     request_id: str,
 ) -> CollectionTarget | None:
     if collection_target_id is None:
-        return None
+        return _auto_matched_collection_target(db, data=data, industry=industry, request_id=request_id)
     target = db.scalar(
         select(CollectionTarget)
         .options(
@@ -788,7 +875,8 @@ def _collection_target_for_write(
         raise DomainValidationError(
             [{"field": "情報収集対象ID", "received": collection_target_id, "reason": "収集対象が無効化されています"}]
         )
-    if target.company.normalized_name != normalize_company_name(data.company_name) or target.industry_id != industry.id:
+    matched_company = find_company(db, data.company_name)
+    if (matched_company is None or matched_company.id != target.company_id) or target.industry_id != industry.id:
         raise DomainValidationError(
             [
                 {
@@ -935,7 +1023,7 @@ def write_opportunity(
         setattr(item, field, getattr(data, field))
     item.normalized_source_url = normalize_source_url(data.source_url)
     item.status = resolved["recruitment_status"]
-    item.company = _company(db, data.company_name)
+    item.company = get_or_create_company(db, data.company_name)
     item.industry = resolved["industry"]
     item.sector = resolved["sector"]
     item.event_type = resolved["event_type"]
@@ -947,6 +1035,9 @@ def write_opportunity(
     # Every source-backed write advances the version used by optimistic locking. Python's
     # microsecond clock also keeps SQLite tests from collapsing two writes into one timestamp.
     item.updated_at = _next_version_timestamp(item)
+    # This write's data came from reading data.source_url just now, so it also counts as confirming
+    # the official source - independently of updated_at, which exists for optimistic locking.
+    item.source_checked_at = item.updated_at
     if is_new:
         db.add(item)
     db.flush()
@@ -1065,6 +1156,7 @@ def update_recruitment_status(
     item.deadline = new_deadline
     #: A status edit is still an agent reporting what the source says now, so it refreshes the stamp.
     item.updated_at = _next_version_timestamp(item)
+    item.source_checked_at = item.updated_at
     db.flush()
     json_response = jsonable_encoder(opportunity_dict(item))
 

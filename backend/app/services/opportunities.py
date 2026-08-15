@@ -786,6 +786,40 @@ def is_patch_replay(db: Session, *, request_id: str, opportunity_id: str) -> boo
     )
 
 
+def _auto_matched_collection_target(
+    db: Session, *, data: OpportunityInput, industry: Industry, request_id: str
+) -> CollectionTarget | None:
+    """Attribute a write to its collection target when the caller didn't pass collection_target_id.
+
+    (company_id, industry_id) is a unique pair on collection_targets, so once the company already
+    exists the match is exactly as unambiguous as an explicit collection_target_id would be - it is
+    just recovered from data the write already carries instead of a lookup step a caller can forget.
+    Without this, a queued company's last_checked_at stays null forever whenever a posting for it is
+    registered by a route that never learned the target's id, even though the posting is real.
+    """
+    company = find_company(db, data.company_name)
+    if company is None:
+        return None
+    target = db.scalar(
+        select(CollectionTarget)
+        .options(selectinload(CollectionTarget.company), selectinload(CollectionTarget.sources))
+        .where(
+            CollectionTarget.company_id == company.id,
+            CollectionTarget.industry_id == industry.id,
+            CollectionTarget.is_active.is_(True),
+        )
+        .with_for_update()
+    )
+    if target is None:
+        return None
+    existing_check = db.scalar(select(CollectionCheck).where(CollectionCheck.request_id == request_id))
+    if existing_check is not None:
+        # Only relevant if this request_id was already used for an unrelated collection check - too
+        # narrow an edge case to fail an otherwise-valid write over, unlike the explicit-id path below.
+        return None
+    return target
+
+
 def _collection_target_for_write(
     db: Session,
     *,
@@ -795,7 +829,7 @@ def _collection_target_for_write(
     request_id: str,
 ) -> CollectionTarget | None:
     if collection_target_id is None:
-        return None
+        return _auto_matched_collection_target(db, data=data, industry=industry, request_id=request_id)
     target = db.scalar(
         select(CollectionTarget)
         .options(

@@ -286,6 +286,34 @@ def _audit(
     )
 
 
+#: Tier 1 is meant to order a short "check these first" list, not to describe most of the queue.
+#: A cap keeps it a priority signal instead of a headcount that only ever grows.
+PRIORITY_TIER_1_CAP = 200
+
+
+def _ensure_tier_one_capacity(db: Session) -> None:
+    count = int(
+        db.scalar(
+            select(func.count(CollectionTarget.id)).where(
+                CollectionTarget.priority_tier == 1, CollectionTarget.is_active.is_(True)
+            )
+        )
+        or 0
+    )
+    if count >= PRIORITY_TIER_1_CAP:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "priority_tier",
+                    "received": 1,
+                    "reason": f"tier1の収集対象が上限（{PRIORITY_TIER_1_CAP}社）に達しています",
+                    "expected": f"tier1は{PRIORITY_TIER_1_CAP}社以下",
+                    "alternative": "既存のtier1対象をtier2以下に見直してから追加するか、tier2以下で登録してください",
+                }
+            ]
+        )
+
+
 def _resolve_classification(
     db: Session, *, industry_value: str, sector_value: str | None
 ) -> tuple[Industry, Sector | None]:
@@ -316,6 +344,9 @@ def create_collection_target(db: Session, payload: CollectionTargetCreateRequest
         if target is None:
             raise RuntimeError("collection target idempotency target not found")
         return target, True
+
+    if payload.priority_tier == 1:
+        _ensure_tier_one_capacity(db)
 
     industry, sector = _resolve_classification(db, industry_value=payload.industry, sector_value=payload.sector)
     company = get_or_create_company(db, payload.company_name)
@@ -418,6 +449,12 @@ def update_collection_target(
                 }
             ]
         )
+    final_priority_tier = payload.priority_tier if "priority_tier" in fields else target.priority_tier
+    final_is_active = payload.is_active if "is_active" in fields else target.is_active
+    already_active_tier_one = target.priority_tier == 1 and target.is_active
+    if final_priority_tier == 1 and final_is_active and not already_active_tier_one:
+        _ensure_tier_one_capacity(db)
+
     target.company = company
     target.industry = industry
     target.sector = sector

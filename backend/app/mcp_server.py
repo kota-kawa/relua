@@ -584,7 +584,10 @@ def add_opportunity(
         int | None,
         Field(
             ge=1,
-            description="get_collection_queueで取得した収集対象ID。指定すると募集登録と確認履歴を同時に記録します。",
+            description=(
+                "get_collection_queueで取得した収集対象ID。指定すると募集登録と確認履歴を同時に記録します。"
+                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けて確認履歴を記録します。"
+            ),
         ),
     ] = None,
 ) -> MCPWriteResponse:
@@ -629,7 +632,10 @@ def update_opportunity(
         int | None,
         Field(
             ge=1,
-            description="確認中の収集対象ID。指定すると募集更新と確認履歴を同じトランザクションで記録します。",
+            description=(
+                "確認中の収集対象ID。指定すると募集更新と確認履歴を同じトランザクションで記録します。"
+                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けて確認履歴を記録します。"
+            ),
         ),
     ] = None,
 ) -> MCPWriteResponse:
@@ -722,7 +728,13 @@ def patch_opportunity_tool(
     client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
     collection_target_id: Annotated[
         int | None,
-        Field(ge=1, description="指定すると更新成功と同時に収集確認結果foundを記録します。"),
+        Field(
+            ge=1,
+            description=(
+                "指定すると更新成功と同時に収集確認結果foundを記録します。"
+                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けます。"
+            ),
+        ),
     ] = None,
 ) -> MCPWriteResponse:
     try:
@@ -1099,7 +1111,9 @@ def list_collection_checks_tool(
     title="情報収集対象を追加",
     description=(
         "企業と業界の組み合わせを内部の収集キューへ追加します。企業公式ページを1件以上指定します。"
-        "priority_tierは企業評価ではなく確認順です。認証が必要です。"
+        "priority_tierは企業評価ではなく確認順です。tier1は最優先で毎回確認する少数のリストなので"
+        "上限（200社）に達している間はtier1で追加できません。tier2以下で登録するか、"
+        "既存のtier1対象を見直してから再試行してください。認証が必要です。"
     ),
     annotations=APPEND_ONLY,
 )

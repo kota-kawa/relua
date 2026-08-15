@@ -13,6 +13,8 @@ function urgencyClass(deadline: string | null) {
 }
 
 export function OpportunityCard({ item }: { item: Opportunity }) {
+  const sourceCheckedAt = item.source_checked_at ?? item.updated_at;
+
   return (
     <article className="opportunity-card">
       <div className="card-bookmark"><BookmarkButton id={item.id} compact /></div>
@@ -48,7 +50,7 @@ export function OpportunityCard({ item }: { item: Opportunity }) {
       </div>
 
       <div className="card-footer">
-        <span>更新 {formatDate(item.updated_at.slice(0, 10), "")}</span>
+        <span>公式確認 {formatDate(sourceCheckedAt.slice(0, 10), "")}</span>
         <span className="card-cta">詳細を見る <ArrowRight size={16} /></span>
       </div>
     </article>

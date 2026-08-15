@@ -50,6 +50,8 @@ export type Opportunity = {
   source_url: string;
   created_at: string;
   updated_at: string;
+  /** Last time the official source was confirmed to match this record. */
+  source_checked_at: string | null;
 };
 
 export type OpportunityList = {

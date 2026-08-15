@@ -637,6 +637,11 @@ def record_collection_check(
     target.last_check_result = payload.result
     if payload.result == "found":
         target.last_found_at = now
+        if opportunity is not None:
+            # A "found, unchanged" confirmation never calls write_opportunity, so without this the
+            # posting's official-source-confirmed date would go stale even though someone just verified
+            # it. Deliberately not touching opportunity.updated_at, which drives optimistic locking.
+            opportunity.source_checked_at = now
     if payload.source_url:
         for source in target.sources:
             if source.url == payload.source_url:

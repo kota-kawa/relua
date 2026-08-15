@@ -44,6 +44,7 @@ from app.schemas import (
     MCPRestoreResponse,
     MCPSearchResponse,
     MCPSectorsResponse,
+    MCPStaleOpportunityListResponse,
     MCPUpdateRequest,
     MCPValidationResponse,
     MCPWriteHistoryResponse,
@@ -88,6 +89,7 @@ from app.services.opportunities import (
     find_source_url_duplicates,
     get_opportunity_by_public_ref,
     is_patch_replay,
+    list_stale_opportunities,
     opportunity_input_dict,
     opportunity_patch_changes,
     preview_opportunity_deletion,
@@ -1271,6 +1273,31 @@ def list_recent_writes(
     with SessionLocal() as db:
         return MCPWriteHistoryResponse.model_validate(
             {"items": recent_write_logs(db, client_name=client_name, limit=limit)}
+        )
+
+
+@mcp.tool(
+    name="list_stale_opportunities",
+    title="公式情報の再確認が必要な募集を取得",
+    description=(
+        "公式ページを一定期間確認できていない募集情報を、確認日が古い順（未確認は最優先）に返します。"
+        "見つけた各募集はupdate_recruitment_status、patch_opportunity、"
+        "または収集対象があるならrecord_collection_checkで再確認結果を記録してください。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def list_stale_opportunities_tool(
+    days: Annotated[
+        int, Field(ge=1, le=365, description="この日数より公式情報の確認が経過している募集を対象にします。")
+    ] = 7,
+    limit: Annotated[int, Field(ge=1, le=100, description="取得件数（1〜100）。")] = 20,
+) -> MCPStaleOpportunityListResponse:
+    with SessionLocal() as db:
+        # No deadline filter: a posting whose deadline already passed without its status being
+        # updated is exactly the kind of gap this tool exists to surface, not one to hide.
+        items = list_stale_opportunities(db, days=days, limit=limit)
+        return MCPStaleOpportunityListResponse.model_validate(
+            {"items": [opportunity_summary(item) for item in items]}
         )
 
 

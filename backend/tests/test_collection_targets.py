@@ -1,11 +1,17 @@
 import pytest
 
-from app.schemas import CollectionTargetCreateRequest, CollectionTargetUpdateRequest, OpportunityInput
+from app.schemas import (
+    CollectionCheckRequest,
+    CollectionTargetCreateRequest,
+    CollectionTargetUpdateRequest,
+    OpportunityInput,
+)
 from app.services import collection_targets as collection_targets_module
 from app.services.collection_targets import (
     create_collection_target,
     get_collection_target,
     list_collection_checks,
+    record_collection_check,
     update_collection_target,
 )
 from app.services.opportunities import DomainValidationError, write_opportunity
@@ -126,3 +132,39 @@ def test_opportunity_write_auto_links_a_matching_collection_target_without_an_id
     assert refreshed.last_check_result == "found"
     checks = list_collection_checks(db, target_id=target.id)
     assert checks[0].opportunity_id == item.id
+
+
+def test_confirm_only_check_refreshes_source_checked_at_without_touching_updated_at(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社確認のみ",
+            sources=[{"source_type": "recruit", "url": "https://example.com/confirm-only"}],
+            request_id="confirm-only-target-0001",
+        ),
+    )
+    data = OpportunityInput.model_validate(
+        valid_payload() | {"company_name": "株式会社確認のみ", "source_url": "https://example.com/confirm-only-posting"}
+    )
+    item, _ = write_opportunity(db, data=data, request_id="confirm-only-write-0001", client_name="pytest")
+    original_updated_at = item.updated_at
+    original_checked_at = item.source_checked_at
+
+    # No fields changed - the agent just reconfirmed the same posting is still up, which is exactly
+    # the case write_opportunity never sees and previously left source_checked_at stale forever.
+    record_collection_check(
+        db,
+        target_id=target.id,
+        payload=CollectionCheckRequest.model_validate(
+            {
+                "result": "found",
+                "opportunity_id": item.id,
+                "request_id": "confirm-only-check-0001",
+                "client_name": "pytest",
+            }
+        ),
+    )
+
+    assert item.source_checked_at is not None
+    assert item.source_checked_at > original_checked_at
+    assert item.updated_at == original_updated_at

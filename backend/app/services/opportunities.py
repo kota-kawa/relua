@@ -572,6 +572,34 @@ def find_source_url_duplicates(
     return list(db.scalars(stmt.order_by(Opportunity.updated_at.desc()).limit(limit)).unique())
 
 
+def list_stale_opportunities(
+    db: Session,
+    *,
+    days: int = 7,
+    deadline_on_or_after: date | None = None,
+    limit: int = 50,
+) -> list[Opportunity]:
+    """Live postings whose official source hasn't been reconfirmed in at least `days` days.
+
+    Ordered so an operator works through the worst gaps first: never-checked rows (source_checked_at
+    is null, e.g. records predating this column) before the oldest confirmed ones.
+    """
+    threshold = datetime.now(timezone.utc) - timedelta(days=days)  # noqa: UP017 -- tests also support Python 3.10
+    stmt = (
+        opportunity_query()
+        .join(Opportunity.company)
+        .where(or_(Opportunity.source_checked_at.is_(None), Opportunity.source_checked_at <= threshold))
+    )
+    if deadline_on_or_after:
+        stmt = stmt.where(or_(Opportunity.deadline.is_(None), Opportunity.deadline >= deadline_on_or_after))
+    stmt = stmt.order_by(
+        case((Opportunity.source_checked_at.is_(None), 0), else_=1),
+        Opportunity.source_checked_at.asc(),
+        Opportunity.id,
+    ).limit(limit)
+    return list(db.scalars(stmt).unique())
+
+
 def _reused_request_id_error(request_id: str) -> dict[str, Any]:
     return {
         "field": "request_id",
@@ -1007,6 +1035,9 @@ def write_opportunity(
     # Every source-backed write advances the version used by optimistic locking. Python's
     # microsecond clock also keeps SQLite tests from collapsing two writes into one timestamp.
     item.updated_at = _next_version_timestamp(item)
+    # This write's data came from reading data.source_url just now, so it also counts as confirming
+    # the official source - independently of updated_at, which exists for optimistic locking.
+    item.source_checked_at = item.updated_at
     if is_new:
         db.add(item)
     db.flush()
@@ -1125,6 +1156,7 @@ def update_recruitment_status(
     item.deadline = new_deadline
     #: A status edit is still an agent reporting what the source says now, so it refreshes the stamp.
     item.updated_at = _next_version_timestamp(item)
+    item.source_checked_at = item.updated_at
     db.flush()
     json_response = jsonable_encoder(opportunity_dict(item))
 

@@ -12,7 +12,9 @@ from app.services.opportunities import (
     DomainValidationError,
     find_similar_opportunities,
     get_opportunity_by_public_ref,
+    list_stale_opportunities,
     search_opportunities,
+    update_recruitment_status,
     write_opportunity,
 )
 from tests.test_validation import valid_payload
@@ -432,3 +434,66 @@ def test_database_rejects_invalid_date_relationship(db):
                 source_url="https://example.com/source",
             )
         )
+
+
+def test_write_opportunity_records_when_the_official_source_was_confirmed(db):
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="checked-at-0001", client_name="pytest")
+
+    assert item.source_checked_at is not None
+    assert item.source_checked_at == item.updated_at
+
+
+def test_update_recruitment_status_also_refreshes_source_checked_at(db):
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="checked-at-status-0001", client_name="pytest")
+    first_checked_at = item.source_checked_at
+
+    updated, _ = update_recruitment_status(
+        db,
+        opportunity_id=item.id,
+        recruitment_status="締切",
+        request_id="checked-at-status-0002",
+        client_name="pytest",
+    )
+
+    assert updated.source_checked_at is not None
+    assert updated.source_checked_at >= first_checked_at
+    assert updated.source_checked_at == updated.updated_at
+
+
+def test_list_stale_opportunities_prioritizes_never_checked_then_oldest_first(db):
+    fresh, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "株式会社新しい確認", "source_url": "https://example.com/stale-fresh"}
+        ),
+        request_id="stale-fresh-0001",
+        client_name="pytest",
+    )
+    stale, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "株式会社古い確認", "source_url": "https://example.com/stale-old"}
+        ),
+        request_id="stale-old-0001",
+        client_name="pytest",
+    )
+    stale.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017 -- local Python is 3.10
+    never_checked, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "株式会社未確認", "source_url": "https://example.com/stale-never"}
+        ),
+        request_id="stale-never-0001",
+        client_name="pytest",
+    )
+    never_checked.source_checked_at = None
+    db.commit()
+
+    assert search_opportunities(db, q="株式会社新しい確認").total == 1  # sanity: fresh really was written
+    stale_results = list_stale_opportunities(db, days=7)
+    stale_ids = [item.id for item in stale_results]
+
+    assert fresh.id not in stale_ids
+    assert stale_ids.index(never_checked.id) < stale_ids.index(stale.id)

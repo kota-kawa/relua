@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -87,6 +87,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "delete_opportunity",
         "restore_opportunity",
         "list_recent_writes",
+        "list_stale_opportunities",
         "list_collection_targets",
         "get_collection_target",
         "get_collection_queue",
@@ -121,6 +122,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["patch_opportunity"]["annotations"]["destructiveHint"] is False
     assert tools["preview_opportunity_patch"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["find_opportunities_by_source_url"]["securitySchemes"] == [{"type": "noauth"}]
+    assert tools["list_stale_opportunities"]["annotations"]["readOnlyHint"] is True
+    assert tools["list_stale_opportunities"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
 
 
 def test_search_filters_publish_their_allowed_values():
@@ -616,6 +619,25 @@ def test_list_recent_writes_reports_successes_and_failures(tools, db):
     assert history[0]["errors"][0]["field"] == "業種"
     assert history[1]["url"].endswith("/opportunities/" + call("search_opportunity", {})["items"][0]["public_code"])
     assert call("list_recent_writes", {"client_name": "nobody"})["items"] == []
+
+
+def test_list_stale_opportunities_flags_records_not_recently_confirmed(tools, db):
+    fresh = seed(db, company_name="株式会社新着", source_url="https://example.com/stale-tool-fresh")
+    stale = seed(
+        db,
+        company_name="株式会社古参",
+        event_name="長期インターン",
+        source_url="https://example.com/stale-tool-old",
+    )
+    stale.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017 -- tests also support Python 3.10
+    db.commit()
+
+    result = call("list_stale_opportunities", {"days": 7})
+
+    ids = [item["id"] for item in result["items"]]
+    assert stale.id in ids
+    assert fresh.id not in ids
+    assert result["items"][0]["id"] == stale.id
 
 
 def collection_target_args(**overrides) -> dict:

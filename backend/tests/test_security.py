@@ -22,7 +22,11 @@ def test_mcp_token_requires_bearer_scheme_and_exact_match():
 
 def test_production_rejects_local_development_tokens():
     with pytest.raises(ValidationError):
-        Settings(environment="production")
+        Settings(
+            environment="production",
+            api_internal_token="local-development-internal-token",
+            mcp_api_token="local-development-mcp-token",
+        )
 
 
 def test_production_accepts_unique_tokens():

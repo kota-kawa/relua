@@ -251,13 +251,19 @@ class Opportunity(Base):
     #: Soft-deleted postings disappear from every public/query surface but retain their identifiers,
     #: relationships, and audit history so an operator can restore an accidental deletion.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    #: Shown to users as 最終更新 beside the source link, so it must mean "when the source was last
-    #: read into this record". Deliberately no onupdate: a maintenance write such as the deadline
-    #: sweep would silently make an unverified record look freshly checked. Only the MCP write paths
-    #: in services.opportunities set this, which fails safe -- a missed bump reads as older, not newer.
+    #: Drives optimistic locking (expected_updated_at) on every write path, so it must bump exactly
+    #: when a write actually happens - never earlier, never on an unrelated event. Deliberately no
+    #: onupdate: a maintenance write such as the deadline sweep would silently make an unverified
+    #: record look freshly changed. Only the MCP write paths in services.opportunities set this.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    #: When the official source (source_url) was last confirmed accurate - shown to users as 公式情報確認,
+    #: and distinct from updated_at: a record_collection_check "found" against an unchanged posting
+    #: bumps this without touching updated_at, so confirming an entry never trips optimistic locking
+    #: for a caller mid-edit. Populated by every verification-carrying write path in
+    #: services.opportunities and services.collection_targets; null only for legacy rows predating it.
+    source_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     status: Mapped[RecruitmentStatus] = relationship()
     company: Mapped[Company] = relationship()

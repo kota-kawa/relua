@@ -391,6 +391,9 @@ ClientName = Annotated[
 
 CollectionSourceType = Literal["recruit", "internship", "event", "news", "other"]
 CollectionCheckResult = Literal["found", "no_opening", "unreachable", "needs_review"]
+CollectionTargetCheckStatus = Literal[
+    "unreviewed", "found", "no_active_opportunity", "source_unavailable", "needs_review"
+]
 
 
 class CollectionSourceInput(BaseModel):
@@ -684,6 +687,14 @@ class MCPWriteResponse(BaseModel):
     idempotent_replay: bool
     message: str
     opportunity: OpportunityResponse
+    warnings: list[ErrorItem] = []
+
+
+class MCPUpsertResponse(BaseModel):
+    result: Literal["created", "existing"]
+    message: str
+    opportunity: OpportunityResponse
+    warnings: list[ErrorItem] = []
 
 
 class OpportunityDeletionSummary(BaseModel):
@@ -798,11 +809,14 @@ class CollectionTargetResponse(BaseModel):
     last_checked_at: datetime | None
     next_check_at: datetime | None
     last_check_result: CollectionCheckResult | None
+    check_status: CollectionTargetCheckStatus
     last_found_at: datetime | None
     is_active: bool
     selection_reason: str | None
     sources: list[CollectionSourceResponse]
     opportunities: list[CollectionOpportunityReference]
+    target_linked_opportunity_count: int
+    company_opportunity_count: int
     created_at: datetime
     updated_at: datetime
 

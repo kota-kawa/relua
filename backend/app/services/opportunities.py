@@ -36,7 +36,7 @@ from app.models import (
 from app.schemas import OpportunityInput
 from app.services.companies import company_name_filter, find_company, get_or_create_company
 from app.services.errors import FIELD_LABELS, master_error
-from app.services.masters import choices, resolve_many, resolve_one
+from app.services.masters import choices, resolve_many, resolve_one, resolve_sector, sectors_for_industry
 from app.services.normalization import normalize_common, normalize_company_name, normalize_source_url, normalize_tag
 from app.services.serialization import detail_url, opportunity_dict, public_detail_url
 
@@ -669,7 +669,6 @@ def _resolve_relations(db: Session, data: OpportunityInput) -> tuple[dict[str, A
     singles = [
         ("recruitment_status", RecruitmentStatus, data.recruitment_status),
         ("industry", Industry, data.industry),
-        ("sector", Sector, data.sector),
         ("event_type", EventType, data.event_type),
         ("event_format", EventFormat, data.event_format),
     ]
@@ -679,6 +678,22 @@ def _resolve_relations(db: Session, data: OpportunityInput) -> tuple[dict[str, A
             errors.append(master_error(field, value, choices(db, model)))
         else:
             resolved[field] = item
+
+    # Sector names repeat across industries (every industry seeds its own "その他"), so resolution
+    # must be scoped to the already-resolved industry - see resolve_sector's docstring.
+    industry = resolved.get("industry")
+    sector = resolve_sector(db, industry_id=industry.id if industry else None, value=data.sector)
+    if sector is None:
+        available = sectors_for_industry(db, data.industry)[1] if industry is not None else None
+        errors.append(
+            master_error(
+                "sector",
+                data.sector,
+                [item.name for item in available] if available is not None else choices(db, Sector),
+            )
+        )
+    else:
+        resolved["sector"] = sector
 
     multiples = [
         ("job_categories", JobCategory, data.job_categories),
@@ -692,15 +707,6 @@ def _resolve_relations(db: Session, data: OpportunityInput) -> tuple[dict[str, A
         else:
             resolved[field] = items
 
-    if resolved.get("industry") and resolved.get("sector"):
-        if resolved["sector"].industry_id != resolved["industry"].id:
-            available = [
-                item.name
-                for item in db.scalars(
-                    select(Sector).where(Sector.industry_id == resolved["industry"].id, Sector.is_active.is_(True))
-                )
-            ]
-            errors.append(master_error("sector", data.sector, available))
     return resolved, errors
 
 
@@ -876,14 +882,30 @@ def _collection_target_for_write(
             [{"field": "情報収集対象ID", "received": collection_target_id, "reason": "収集対象が無効化されています"}]
         )
     matched_company = find_company(db, data.company_name)
-    if (matched_company is None or matched_company.id != target.company_id) or target.industry_id != industry.id:
+    if matched_company is None or matched_company.id != target.company_id:
         raise DomainValidationError(
             [
                 {
                     "field": "情報収集対象ID",
                     "received": collection_target_id,
-                    "reason": "収集対象の企業・業界と募集情報が一致しません",
-                    "expected": f"{target.company.name} / {target.industry.name}",
+                    "reason": f"収集対象の企業は「{target.company.name}」ですが、募集情報の企業名は「{data.company_name}」です",
+                    "expected": target.company.name,
+                    "alternative": (
+                        "表記揺れが同じ企業を指している場合、現時点では別名（CompanyAlias）を登録するMCPツールが"
+                        "ないため自動では吸収できません。正しいcollection_target_idを再確認するか、"
+                        "collection_target_idを指定せずに登録してください"
+                    ),
+                }
+            ]
+        )
+    if target.industry_id != industry.id:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "情報収集対象ID",
+                    "received": collection_target_id,
+                    "reason": f"収集対象の業界は「{target.industry.name}」ですが、募集情報の業界は「{industry.name}」です",
+                    "expected": target.industry.name,
                 }
             ]
         )
@@ -970,6 +992,13 @@ def write_opportunity(
             raise DomainValidationError([_reused_request_id_error(request_id)])
         return _active_idempotency_target(db, previous.opportunity_id), True
 
+    # Resolved (and row-locked) before the duplicate check below, not after it, so two concurrent
+    # writes for the same company serialize here instead of both passing find_exact_duplicates
+    # before either commits - the same .with_for_update() idiom used on CollectionTarget further
+    # down in this function. Other companies are unaffected: this is a row lock, not a table lock.
+    company = get_or_create_company(db, data.company_name)
+    db.scalar(select(Company.id).where(Company.id == company.id).with_for_update())
+
     if opportunity_id is None and not allow_duplicate:
         # Idempotency only catches a replay of the same request_id. A client that re-reads the same
         # source page next week sends a new request_id, so the same posting would land twice.
@@ -1023,7 +1052,7 @@ def write_opportunity(
         setattr(item, field, getattr(data, field))
     item.normalized_source_url = normalize_source_url(data.source_url)
     item.status = resolved["recruitment_status"]
-    item.company = get_or_create_company(db, data.company_name)
+    item.company = company
     item.industry = resolved["industry"]
     item.sector = resolved["sector"]
     item.event_type = resolved["event_type"]

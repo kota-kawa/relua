@@ -29,7 +29,7 @@ from app.schemas import (
 )
 from app.services.companies import company_keyword_filter, get_or_create_company
 from app.services.errors import master_error
-from app.services.masters import choices, resolve_one
+from app.services.masters import choices, resolve_one, resolve_sector
 from app.services.opportunities import DomainValidationError
 from app.services.serialization import detail_url, master_dict
 
@@ -100,7 +100,36 @@ def collection_source_dict(source: CollectionSource) -> dict[str, Any]:
     }
 
 
+#: Maps the existing last_check_result values onto a friendlier, self-explanatory vocabulary,
+#: combined with last_checked_at IS NULL below - no schema change, purely a derived view.
+_CHECK_STATUS_BY_RESULT = {
+    "found": "found",
+    "no_opening": "no_active_opportunity",
+    "unreachable": "source_unavailable",
+    "needs_review": "needs_review",
+}
+
+
+def _check_status(target: CollectionTarget) -> str:
+    if target.last_checked_at is None:
+        return "unreviewed"
+    return _CHECK_STATUS_BY_RESULT.get(target.last_check_result, "needs_review")
+
+
+def _company_opportunity_count(db: Session, target: CollectionTarget) -> int:
+    return int(
+        db.scalar(
+            select(func.count(Opportunity.id)).where(
+                Opportunity.company_id == target.company_id,
+                Opportunity.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+
+
 def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, Any]:
+    opportunities = _opportunity_references(db, target)
     return {
         "id": target.id,
         "company": {"id": target.company.id, "name": target.company.name},
@@ -111,6 +140,7 @@ def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, A
         "last_checked_at": target.last_checked_at,
         "next_check_at": target.next_check_at,
         "last_check_result": target.last_check_result,
+        "check_status": _check_status(target),
         "last_found_at": target.last_found_at,
         "is_active": target.is_active,
         "selection_reason": target.selection_reason,
@@ -118,7 +148,14 @@ def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, A
             collection_source_dict(source)
             for source in sorted(target.sources, key=lambda value: (not value.is_active, value.id))
         ],
-        "opportunities": _opportunity_references(db, target),
+        "opportunities": opportunities,
+        #: Scoped to this target's own (company, industry) pair - same count as len(opportunities)
+        #: above, surfaced as its own field so callers don't have to infer it from list length.
+        "target_linked_opportunity_count": len(opportunities),
+        #: Every opportunity for this company across ALL industries. When this differs from
+        #: target_linked_opportunity_count, the company has postings that simply never linked to
+        #: *this* target (wrong industry, no collection_target_id passed, etc.) rather than none at all.
+        "company_opportunity_count": _company_opportunity_count(db, target),
         "created_at": target.created_at,
         "updated_at": target.updated_at,
     }
@@ -210,6 +247,32 @@ def collection_queue(db: Session, *, industry: str | None = None, limit: int = 2
         page=1,
         per_page=limit,
     ).items
+
+
+def undercovered_collection_targets(
+    db: Session, *, industry: str | None = None, limit: int = 50
+) -> list[CollectionTarget]:
+    """Active targets ordered by how few opportunities are linked to them, fewest first.
+
+    Lets an operator fetch "companies we're missing postings for" directly, instead of paging
+    through the whole queue client-side and filtering on opportunities == [].
+    """
+    linked_count = (
+        select(func.count(Opportunity.id))
+        .where(
+            Opportunity.company_id == CollectionTarget.company_id,
+            Opportunity.industry_id == CollectionTarget.industry_id,
+            Opportunity.deleted_at.is_(None),
+        )
+        .correlate(CollectionTarget)
+        .scalar_subquery()
+    )
+    stmt = collection_target_query().join(CollectionTarget.company).where(CollectionTarget.is_active.is_(True))
+    if industry:
+        industry_ids = select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
+        stmt = stmt.where(CollectionTarget.industry_id.in_(industry_ids))
+    stmt = stmt.order_by(linked_count.asc(), Company.name).limit(limit)
+    return list(db.scalars(stmt).unique())
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
@@ -322,15 +385,15 @@ def _resolve_classification(
         raise DomainValidationError([master_error("industry", industry_value, choices(db, Industry))])
     sector = None
     if sector_value is not None:
-        sector = resolve_one(db, Sector, sector_value)
-        available = list(
-            db.scalars(
-                select(Sector.name)
-                .where(Sector.industry_id == industry.id, Sector.is_active.is_(True))
-                .order_by(Sector.sort_order, Sector.id)
+        sector = resolve_sector(db, industry_id=industry.id, value=sector_value)
+        if sector is None:
+            available = list(
+                db.scalars(
+                    select(Sector.name)
+                    .where(Sector.industry_id == industry.id, Sector.is_active.is_(True))
+                    .order_by(Sector.sort_order, Sector.id)
+                )
             )
-        )
-        if sector is None or sector.industry_id != industry.id:
             raise DomainValidationError([master_error("sector", sector_value, available)])
     return industry, sector
 

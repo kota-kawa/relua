@@ -68,6 +68,19 @@ def resolve_one(db: Session, model: type[MasterT], value: str) -> MasterT | None
     return db.scalar(select(model).where(model.is_active.is_(True), (model.name == value) | (model.slug == value)))
 
 
+def resolve_sector(db: Session, *, industry_id: int | None, value: str) -> Sector | None:
+    """Sector names repeat across industries (every industry seeds its own "その他"), so a bare
+    name/slug match is ambiguous - resolve_one would silently return whichever industry's row the
+    database happens to return first. Scope to the caller's industry once it is known. Falls back to
+    an unscoped match only when industry_id is None (the industry itself failed to resolve), purely
+    so *an* error can still be produced instead of crashing - the industry error dominates that case.
+    """
+    stmt = select(Sector).where(Sector.is_active.is_(True), (Sector.name == value) | (Sector.slug == value))
+    if industry_id is not None:
+        stmt = stmt.where(Sector.industry_id == industry_id)
+    return db.scalar(stmt)
+
+
 def resolve_many(db: Session, model: type[MasterT], values: list[str]) -> tuple[list[MasterT], list[str]]:
     result = list(db.scalars(select(model).where(model.is_active.is_(True), (model.name.in_(values)) | (model.slug.in_(values)))))
     matched = {item.name for item in result} | {item.slug for item in result}

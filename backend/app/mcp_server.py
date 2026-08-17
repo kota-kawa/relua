@@ -46,6 +46,7 @@ from app.schemas import (
     MCPSectorsResponse,
     MCPStaleOpportunityListResponse,
     MCPUpdateRequest,
+    MCPUpsertResponse,
     MCPValidationResponse,
     MCPWriteHistoryResponse,
     MCPWriteRequest,
@@ -70,6 +71,7 @@ from app.services.collection_targets import (
     list_collection_checks,
     list_collection_targets,
     record_collection_check,
+    undercovered_collection_targets,
     update_collection_source,
     update_collection_target,
 )
@@ -278,6 +280,17 @@ def _collection_domain_error(request: Any, action: str, exc: DomainValidationErr
 
 def _write_input(request: MCPWriteRequest | MCPUpdateRequest) -> OpportunityInput:
     return OpportunityInput.model_validate(request.model_dump(exclude={"request_id", "client_name"}))
+
+
+def _source_url_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str) -> list[dict[str, Any]]:
+    """Non-blocking source_url collision warnings for a just-completed create.
+
+    Already used on the validate/patch-preview paths via find_source_url_duplicates /
+    source_duplicate_warning; surfaced here too so add_opportunity/upsert_opportunity don't require a
+    separate find_opportunities_by_source_url round trip just to learn about it.
+    """
+    matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
+    return [source_duplicate_warning(matches, data.source_url)] if matches else []
 
 
 def _prepare_opportunity_patch(
@@ -611,10 +624,74 @@ def add_opportunity(
                     "idempotent_replay": replayed,
                     "message": "募集情報を登録しました",
                     "opportunity": opportunity_dict(item),
+                    "warnings": _source_url_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
         raise _domain_error(request, "create", exc) from exc
+
+
+@mcp.tool(
+    name="upsert_opportunity",
+    title="募集情報を検索なしで登録（重複時は既存を返す）",
+    description=(
+        "同じ企業の同名イベントが既にある場合はエラーにせず既存の登録をそのまま返し、なければ新規登録します。"
+        "find_similar_opportunitiesとadd_opportunityを毎回2回呼ぶ手間を1回にまとめたツールです。"
+        "別日程・別コースを意図的に分けて登録したい場合は、代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def upsert_opportunity(
+    payload: WritePayload,
+    collection_target_id: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "get_collection_queueで取得した収集対象ID。指定すると新規登録時に募集登録と確認履歴を同時に記録します。"
+                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けます。"
+            ),
+        ),
+    ] = None,
+) -> MCPUpsertResponse:
+    request = _parse_payload(payload, MCPWriteRequest)
+    data = _write_input(request)
+    try:
+        with SessionLocal() as db:
+            item, replayed = write_opportunity(
+                db,
+                data=data,
+                request_id=request.request_id,
+                client_name=request.client_name,
+                allow_duplicate=False,
+                collection_target_id=collection_target_id,
+            )
+            return MCPUpsertResponse.model_validate(
+                {
+                    "result": "created",
+                    "message": "募集情報を登録しました",
+                    "opportunity": opportunity_dict(item),
+                    "warnings": _source_url_warnings(db, data=data, opportunity_id=item.id),
+                }
+            )
+    except DomainValidationError as exc:
+        # _duplicate_error() is the only error builder on this path that sets "existing" - an
+        # unambiguous discriminator between "same posting already registered" (return it) and any
+        # other validation failure (bad master value, etc., which still propagates as usual).
+        duplicate = next((error for error in exc.errors if error.get("existing")), None)
+        if duplicate is None:
+            raise _domain_error(request, "create", exc) from exc
+        with SessionLocal() as db:
+            existing_item = get_opportunity_record(db, duplicate["existing"][0]["id"])
+            if existing_item is None:
+                raise _domain_error(request, "create", exc) from exc
+            return MCPUpsertResponse.model_validate(
+                {
+                    "result": "existing",
+                    "message": "同じ企業の同名イベントが既に登録されているため、既存の登録を返しました",
+                    "opportunity": opportunity_dict(existing_item),
+                }
+            )
 
 
 @mcp.tool(
@@ -1083,6 +1160,27 @@ def get_collection_queue_tool(
 ) -> MCPCollectionQueueResponse:
     with SessionLocal() as db:
         items = collection_queue(db, industry=industry, limit=limit)
+        return MCPCollectionQueueResponse.model_validate(
+            {"items": [collection_target_dict(db, item) for item in items]}
+        )
+
+
+@mcp.tool(
+    name="list_undercovered_companies",
+    title="紐付く募集が少ない収集対象を取得",
+    description=(
+        "有効な収集対象を、その企業・業界に紐づく募集情報が少ない順（0件を優先）に返します。"
+        "「情報の少ない企業を優先して確認したい」場合に、get_collection_queueの結果をopportunitiesが"
+        "空かどうかで絞り込む代わりに使います。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def list_undercovered_companies_tool(
+    industry: Annotated[IndustryValue | None, Field(description="対象業界。省略すると全業界。")] = None,
+    limit: Annotated[int, Field(ge=1, le=50, description="取得件数。")] = 20,
+) -> MCPCollectionQueueResponse:
+    with SessionLocal() as db:
+        items = undercovered_collection_targets(db, industry=industry, limit=limit)
         return MCPCollectionQueueResponse.model_validate(
             {"items": [collection_target_dict(db, item) for item in items]}
         )

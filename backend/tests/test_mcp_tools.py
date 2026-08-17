@@ -79,6 +79,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "find_opportunities_by_source_url",
         "validate_opportunity",
         "add_opportunity",
+        "upsert_opportunity",
         "update_opportunity",
         "preview_opportunity_patch",
         "patch_opportunity",
@@ -91,6 +92,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "list_collection_targets",
         "get_collection_target",
         "get_collection_queue",
+        "list_undercovered_companies",
         "list_collection_checks",
         "add_collection_target",
         "update_collection_target",
@@ -318,6 +320,50 @@ def test_a_deliberate_second_entry_still_goes_through(tools, db):
 
     assert result["success"] is True
     assert result["opportunity"]["event_name"] == "開発インターン"
+
+
+def test_upsert_creates_then_returns_the_existing_entry_on_a_repeat(tools, db):
+    created = call("upsert_opportunity", write_args(request_id="upsert-0001"))
+    assert created["result"] == "created"
+
+    again = call(
+        "upsert_opportunity",
+        write_args(request_id="upsert-0002", source_url="https://example.com/source-again"),
+    )
+    assert again["result"] == "existing"
+    assert again["opportunity"]["id"] == created["opportunity"]["id"]
+
+
+def test_upsert_still_raises_on_a_non_duplicate_validation_error(tools, db):
+    error = tool_error("upsert_opportunity", write_args(sector="銀行"))
+    assert error["errors"][0]["field"] == "業種"
+
+
+def test_add_and_upsert_warn_on_a_colliding_source_url_without_blocking_the_write(tools, db):
+    seed(db, event_name="既存イベント", source_url="https://example.com/shared-source")
+
+    added = call(
+        "add_opportunity",
+        write_args(
+            request_id="warn-add-0001",
+            event_name="新しいイベント",
+            source_url="https://example.com/shared-source",
+        ),
+    )
+    assert added["success"] is True
+    assert added["warnings"][0]["existing"][0]["event_name"] == "既存イベント"
+
+    upserted = call(
+        "upsert_opportunity",
+        write_args(
+            request_id="warn-upsert-0001",
+            event_name="別の新しいイベント",
+            source_url="https://example.com/shared-source",
+        ),
+    )
+    assert upserted["result"] == "created"
+    warned_event_names = {item["event_name"] for item in upserted["warnings"][0]["existing"]}
+    assert "既存イベント" in warned_event_names
 
 
 def test_add_reports_a_bad_field_in_the_structured_error_shape(tools, db):
@@ -721,6 +767,28 @@ def test_opportunity_write_can_complete_collection_target_atomically(tools, db):
     )
     restored_target = call("get_collection_target", {"target_id": target["id"]})
     assert restored_target["opportunities"][0]["id"] == written["opportunity"]["id"]
+
+
+def test_list_undercovered_companies_orders_by_fewest_linked_opportunities(tools, db):
+    uncovered = call("add_collection_target", collection_target_args())["target"]
+    covered = call(
+        "add_collection_target",
+        collection_target_args(company_name="株式会社充足済み", request_id="collection-create-0002"),
+    )["target"]
+    call(
+        "add_opportunity",
+        write_args(
+            company_name="株式会社充足済み",
+            source_url="https://example.com/undercovered-mcp-posting",
+            request_id="undercovered-mcp-write-0001",
+        ),
+    )
+
+    items = call("list_undercovered_companies", {"industry": "IT・通信"})["items"]
+    ids = [item["id"] for item in items]
+    assert ids.index(uncovered["id"]) < ids.index(covered["id"])
+    assert next(item for item in items if item["id"] == uncovered["id"])["target_linked_opportunity_count"] == 0
+    assert next(item for item in items if item["id"] == covered["id"])["target_linked_opportunity_count"] == 1
 
 
 def test_collection_target_schema_is_actionable_for_mcp_clients():

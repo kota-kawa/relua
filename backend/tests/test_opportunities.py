@@ -350,6 +350,35 @@ def test_ai_sector_can_be_used_under_it_industry(db):
     assert item.sector.slug == "sector-1-71"
 
 
+@pytest.mark.parametrize("industry", ["メーカー", "商社"])
+def test_sonota_sector_resolves_to_its_own_industrys_row(db, industry):
+    """Regression test: every industry seeds its own "その他" sector row with the same name.
+
+    Resolution must be scoped by industry, or a caller can be told by get_sectors that "その他" is a
+    valid choice for their industry, then have add_opportunity reject that exact pair because sector
+    resolution silently picked a different industry's "その他" row of the same name.
+    """
+    from app.services.masters import sectors_for_industry
+
+    _, sectors = sectors_for_industry(db, industry)
+    expected_sector = next(item for item in sectors if item.name == "その他")
+
+    payload = valid_payload() | {
+        "industry": industry,
+        "sector": "その他",
+        "event_name": f"{industry}その他インターン",
+        "source_url": f"https://example.com/{industry}-sonota",
+    }
+    data = OpportunityInput.model_validate(payload)
+    item, replayed = write_opportunity(db, data=data, request_id=f"sonota-{industry}-0001", client_name="pytest")
+
+    assert replayed is False
+    assert item.industry.name == industry
+    assert item.sector.name == "その他"
+    assert item.sector.id == expected_sector.id
+    assert item.sector.industry_id == item.industry.id
+
+
 def test_child_sector_refines_only_its_selected_parent(db):
     ai_payload = valid_payload() | {"sector": "AI", "event_name": "AI開発インターン"}
     write_opportunity(
@@ -442,6 +471,29 @@ def test_write_opportunity_records_when_the_official_source_was_confirmed(db):
 
     assert item.source_checked_at is not None
     assert item.source_checked_at == item.updated_at
+
+
+def test_write_opportunity_locks_company_before_checking_duplicates(db):
+    """write_opportunity now resolves+row-locks the Company before find_exact_duplicates runs
+    (previously the duplicate check ran first, so two concurrent writers for the same company could
+    both pass it before either committed). This asserts the reordering didn't change the outcome for
+    a single writer: the second write for the same company+event is still rejected as a duplicate.
+
+    A true concurrent-race assertion needs two live DB connections (e.g. Postgres, two threads/
+    sessions), which this in-process SQLite fixture cannot exercise - out of scope here.
+    """
+    data = OpportunityInput.model_validate(valid_payload())
+    write_opportunity(db, data=data, request_id="lock-order-0001", client_name="pytest")
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(valid_payload() | {"source_url": "https://example.com/source-2"}),
+            request_id="lock-order-0002",
+            client_name="pytest",
+        )
+    assert exc_info.value.errors[0]["field"] == "イベント名"
+    assert exc_info.value.errors[0]["existing"]
 
 
 def test_update_recruitment_status_also_refreshes_source_checked_at(db):

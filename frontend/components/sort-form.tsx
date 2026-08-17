@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import { Check, ChevronDown, SlidersHorizontal } from "@/components/icons";
-import { filterHref } from "@/lib/format";
+import { filterHref, publicValuesOf } from "@/lib/format";
 import type { SearchParams } from "@/lib/types";
 
 const OPTIONS = [
@@ -34,9 +34,9 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
   }, [open]);
 
   function sortHref(sort: string) {
-    const entries = Object.entries(params).flatMap(([key, entry]) => {
+    const entries = Object.keys(params).flatMap((key) => {
       if (key === "sort" || key === "page") return [];
-      const list = Array.isArray(entry) ? entry : entry ? [entry] : [];
+      const list = publicValuesOf(params, key);
       return list.map((item) => [key, item] as [string, string]);
     });
     entries.push(["sort", sort]);
@@ -90,9 +90,9 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
       )}
       <noscript>
         <form action="/" method="get">
-          {Object.entries(params).flatMap(([key, entry]) => {
+          {Object.keys(params).flatMap((key) => {
             if (key === "sort" || key === "page") return [];
-            const list = Array.isArray(entry) ? entry : entry ? [entry] : [];
+            const list = publicValuesOf(params, key);
             return list.map((item) => <input key={`${key}-${item}`} type="hidden" name={key} value={item} />);
           })}
           <label htmlFor="sort">並び替え</label>

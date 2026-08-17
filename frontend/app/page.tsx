@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+
 import { DeadlineCalendar } from "@/components/deadline-calendar";
 import { DiscoveryNav, type ViewMode } from "@/components/discovery-nav";
 import { EmptyState } from "@/components/empty-state";
@@ -11,11 +13,16 @@ import { QuickFilters } from "@/components/quick-filters";
 import { SortForm } from "@/components/sort-form";
 import { getMasters, getOpportunities } from "@/lib/api";
 import { withDefaultOpenStatus } from "@/lib/format";
+import { listingMetadata } from "@/lib/seo";
 import type { SearchParams } from "@/lib/types";
 
 function first(params: SearchParams, key: string) {
   const value = params[key];
   return Array.isArray(value) ? value[0] : value;
+}
+
+export async function generateMetadata({ searchParams }: { searchParams: Promise<SearchParams> }): Promise<Metadata> {
+  return listingMetadata(await searchParams);
 }
 
 export default async function Home({ searchParams }: { searchParams: Promise<SearchParams> }) {

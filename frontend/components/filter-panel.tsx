@@ -12,6 +12,7 @@ import {
   ALL_STATUS_SCOPE,
   currentGraduationYears,
   filterHref,
+  publicValuesOf,
   valuesOf,
   withoutAllFilters,
 } from "@/lib/format";
@@ -154,7 +155,7 @@ function Fields({ masters, params }: { masters: Masters; params: SearchParams })
           remain removable from the applied-filter chips, but do not crowd the
           primary discovery controls. */}
       {(["status", "job_category", "degree", "event_format"] as const).flatMap((name) => (
-        valuesOf(params, name).map((value) => <input key={`${name}-${value}`} type="hidden" name={name} value={value} />)
+        publicValuesOf(params, name).map((value) => <input key={`${name}-${value}`} type="hidden" name={name} value={value} />)
       ))}
       <CheckboxGroup
         title="卒業年度"

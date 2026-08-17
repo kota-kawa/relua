@@ -85,7 +85,9 @@ export function withQuery(
   changes: Record<string, string | undefined>,
 ) {
   const next = new URLSearchParams();
+  const omitDefaultStatus = hasDefaultOpenStatus(params);
   Object.entries(params).forEach(([key, value]) => {
+    if (omitDefaultStatus && key === "status") return;
     if (Array.isArray(value)) value.forEach((entry) => next.append(key, entry));
     else if (value) next.set(key, value);
   });
@@ -98,9 +100,12 @@ export function withQuery(
 
 /** Builds a listing URL from the current filter form and always resets pagination. */
 export function filterHref(entries: Iterable<[string, string]>, includeListingAnchor = true) {
+  const source = Array.from(entries);
+  const statusValues = source.filter(([key]) => key === "status").map(([, value]) => value);
+  const omitDefaultStatus = statusValues.length === 1 && statusValues[0] === OPEN_STATUS_SLUG;
   const next = new URLSearchParams();
-  for (const [key, value] of entries) {
-    if (key === "page" || !value) continue;
+  for (const [key, value] of source) {
+    if (key === "page" || !value || (omitDefaultStatus && key === "status")) continue;
     next.append(key, value);
   }
   const query = next.toString();
@@ -146,6 +151,14 @@ export function hasDefaultOpenStatus(params: Record<string, string | string[] | 
     && !valuesOf(params, "status_scope").includes(ALL_STATUS_SCOPE);
 }
 
+/** Values suitable for public links. The default open-status scope is applied
+ * server-side, so keeping its synthetic query parameter only creates duplicate
+ * listing URLs. Explicit multi-status selections remain intact. */
+export function publicValuesOf(params: Record<string, string | string[] | undefined>, key: string) {
+  if (key === "status" && hasDefaultOpenStatus(params)) return [];
+  return valuesOf(params, key);
+}
+
 export function activeFilterCount(params: Record<string, string | string[] | undefined>) {
   const total = FILTER_KEYS.reduce((count, key) => count + valuesOf(params, key).length, 0);
   return total - (hasDefaultOpenStatus(params) ? 1 : 0);
@@ -158,8 +171,10 @@ export function withFilter(
   value: string,
 ) {
   const next = new URLSearchParams();
+  const omitDefaultStatus = hasDefaultOpenStatus(params);
   Object.entries(params).forEach(([entryKey, entryValue]) => {
     if (entryKey === "page") return;
+    if (omitDefaultStatus && entryKey === "status") return;
     const list = Array.isArray(entryValue) ? entryValue : entryValue ? [entryValue] : [];
     list.forEach((entry) => next.append(entryKey, entry));
   });
@@ -174,8 +189,10 @@ export function withoutFilter(
   value: string,
 ) {
   const next = new URLSearchParams();
+  const omitDefaultStatus = hasDefaultOpenStatus(params);
   Object.entries(params).forEach(([entryKey, entryValue]) => {
     if (entryKey === "page") return;
+    if (omitDefaultStatus && entryKey === "status") return;
     const list = Array.isArray(entryValue) ? entryValue : entryValue ? [entryValue] : [];
     list.forEach((entry) => {
       if (entryKey === key && entry === value) return;

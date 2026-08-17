@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+
 import { DeadlineCalendar } from "@/components/deadline-calendar";
 import { DiscoveryNav, type ViewMode } from "@/components/discovery-nav";
 import { EmptyState } from "@/components/empty-state";
@@ -11,11 +13,33 @@ import { QuickFilters } from "@/components/quick-filters";
 import { SortForm } from "@/components/sort-form";
 import { getMasters, getOpportunities } from "@/lib/api";
 import { withDefaultOpenStatus } from "@/lib/format";
+import { getListingSeo, getSeoFacetCatalog, listingMetadata } from "@/lib/seo";
 import type { SearchParams } from "@/lib/types";
 
 function first(params: SearchParams, key: string) {
   const value = params[key];
   return Array.isArray(value) ? value[0] : value;
+}
+
+export async function generateMetadata({ searchParams }: { searchParams: Promise<SearchParams> }): Promise<Metadata> {
+  const params = await searchParams;
+  const initial = listingMetadata(params);
+  if (!getListingSeo(params).facet) return initial;
+
+  try {
+    const [masters, result] = await Promise.all([
+      getMasters(),
+      getOpportunities(withDefaultOpenStatus(params)),
+    ]);
+    return listingMetadata(params, {
+      catalog: getSeoFacetCatalog(masters),
+      resultTotal: result.total,
+    });
+  } catch {
+    // Do not leave an unverified category URL indexable if the catalog or
+    // result count cannot be checked during metadata generation.
+    return { robots: { index: false, follow: true } };
+  }
 }
 
 export default async function Home({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -29,12 +53,20 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
     return <ErrorState />;
   }
   const [masters, result] = data;
+  const listingSeo = getListingSeo(params, {
+    catalog: getSeoFacetCatalog(masters),
+    resultTotal: result.total,
+  });
+  const categoryLabel = listingSeo.facet?.label;
+  const categoryHeading = categoryLabel
+    ? `${categoryLabel}${listingSeo.facet?.key === "graduation_year" ? "向け" : "の"}募集情報`
+    : undefined;
   const query = first(params, "q");
   const sort = first(params, "sort");
 
   return (
     <main>
-      <Hero defaultQuery={query}>
+      <Hero defaultQuery={query} heading={categoryHeading}>
         <QuickFilters masters={masters} params={params} />
       </Hero>
       <DiscoveryNav masters={masters} params={params} view={view} total={result.total} />
@@ -44,7 +76,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
           <div className="results-main">
             <div className="results-toolbar">
               <h2>
-                {query ? `「${query}」の検索結果` : view === "calendar" ? "締切が近い順" : "募集一覧"}
+                {query ? `「${query}」の検索結果` : categoryHeading ?? (view === "calendar" ? "締切が近い順" : "募集一覧")}
                 <span><strong>{result.total.toLocaleString("ja-JP")}</strong> 件</span>
               </h2>
               {/* The calendar groups by month, so it is always deadline-ordered. */}

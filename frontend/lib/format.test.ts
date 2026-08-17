@@ -11,7 +11,9 @@ import {
   activeFilterCount,
   hasDefaultOpenStatus,
   searchableStatuses,
+  withFilter,
   withDefaultOpenStatus,
+  withQuery,
 } from "./format";
 
 afterEach(() => {
@@ -36,6 +38,19 @@ describe("filterHref", () => {
   it("can update an in-page filter without triggering anchor scrolling", () => {
     expect(filterHref([["industry", "industry-01"]], false)).toBe("/?industry=industry-01");
     expect(filterHref([], false)).toBe("/");
+  });
+
+  it("omits the synthetic default open-status parameter", () => {
+    expect(filterHref([["status", "status-02"], ["industry", "industry-01"]], false))
+      .toBe("/?industry=industry-01");
+  });
+});
+
+describe("public listing links", () => {
+  it("does not propagate the synthetic default open-status parameter", () => {
+    const params = { status: "status-02" };
+    expect(withFilter(params, "industry", "industry-01")).toBe("/?industry=industry-01#listings");
+    expect(withQuery(params, { page: "2" })).toBe("/?page=2");
   });
 });
 

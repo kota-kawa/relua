@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { ActiveFilters } from "@/components/active-filters";
 import { CalendarRange, Grid2X2, List } from "@/components/icons";
+import { publicValuesOf } from "@/lib/format";
 import type { Masters, SearchParams } from "@/lib/types";
 
 export type ViewMode = "cards" | "list" | "calendar";
@@ -12,9 +13,9 @@ export type ViewMode = "cards" | "list" | "calendar";
  */
 function viewHref(params: SearchParams, view: ViewMode) {
   const next = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => {
+  Object.entries(params).forEach(([key]) => {
     if (key === "view" || key === "page") return;
-    const list = Array.isArray(value) ? value : value ? [value] : [];
+    const list = publicValuesOf(params, key);
     list.forEach((entry) => next.append(key, entry));
   });
   if (view !== "cards") next.set("view", view);

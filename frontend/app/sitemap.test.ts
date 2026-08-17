@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const getAllOpportunities = vi.hoisted(() => vi.fn());
+const getMasters = vi.hoisted(() => vi.fn());
+const getOpportunities = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/api", () => ({ getAllOpportunities }));
+vi.mock("@/lib/api", () => ({ getAllOpportunities, getMasters, getOpportunities }));
 
 import sitemap from "@/app/sitemap";
 
@@ -48,5 +50,27 @@ describe("sitemap", () => {
       { url: "https://relua.example/terms", changeFrequency: "yearly", priority: 0.3 },
       { url: "https://relua.example/policy", changeFrequency: "yearly", priority: 0.3 },
     ]);
+  });
+
+  it("includes only sufficiently populated high-intent category pages", async () => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
+    getAllOpportunities.mockResolvedValue([]);
+    getMasters.mockResolvedValue({
+      industries: [{ id: 1, slug: "industry-01", name: "IT・通信" }],
+      event_types: [{ id: 2, slug: "type-01", name: "インターン" }],
+      graduation_years: [{ id: 3, slug: "grad-02", name: "27卒" }],
+      sectors: [],
+      event_formats: [],
+      job_categories: [],
+      degrees: [],
+      recruitment_statuses: [],
+    });
+    getOpportunities.mockResolvedValue({ total: 10 });
+
+    await expect(sitemap()).resolves.toEqual(expect.arrayContaining([
+      { url: "https://relua.example/?industry=industry-01", changeFrequency: "daily", priority: 0.7 },
+      { url: "https://relua.example/?event_type=type-01", changeFrequency: "daily", priority: 0.7 },
+      { url: "https://relua.example/?graduation_year=grad-02", changeFrequency: "daily", priority: 0.7 },
+    ]));
   });
 });

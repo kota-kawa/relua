@@ -261,7 +261,7 @@ def list_collection_targets(
     count_stmt = select(func.count(CollectionTarget.id)).select_from(CollectionTarget).join(CollectionTarget.company)
     filters = []
     if query:
-        filters.append(company_keyword_filter(query.strip()))
+        filters.append(company_keyword_filter(db, query.strip()))
     if industry:
         filters.append(_classified_as_clause(industry=industry))
     if sector:

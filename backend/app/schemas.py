@@ -783,6 +783,43 @@ class MCPValidationResponse(BaseModel):
     duplicates: list[OpportunitySummary]
 
 
+class CompanyAliasResponse(BaseModel):
+    id: int
+    alias: str
+    normalized_alias: str
+
+
+class CompanyIdentityResponse(BaseModel):
+    id: int
+    canonical_name: str
+    normalized_name: str
+    aliases: list[CompanyAliasResponse]
+
+
+class CompanyCandidateResponse(BaseModel):
+    company: CompanyIdentityResponse
+    match_type: Literal["canonical_exact", "alias_exact", "partial", "fuzzy"]
+    matched_name: str
+    score: float = Field(ge=0, le=1)
+
+
+class MCPCompanyResolutionResponse(BaseModel):
+    query: str
+    normalized_query: str
+    match_type: Literal["canonical_exact", "alias_exact", "partial", "fuzzy", "none"]
+    requires_confirmation: bool
+    message: str
+    candidates: list[CompanyCandidateResponse]
+
+
+class MCPCompanyAliasWriteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    changed: bool
+    message: str
+    company: CompanyIdentityResponse
+
+
 class OpportunityFieldChange(BaseModel):
     field: str
     before: Any = None

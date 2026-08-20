@@ -113,6 +113,9 @@ https://<公開ホスト名>/mcp
 | `get_sectors` | 不要 | 指定した業界に属する業種だけを返す |
 | `find_similar_opportunities` | 不要 | 同じ企業の登録済み募集を探し、二重登録を防ぐ |
 | `find_opportunities_by_source_url` | 不要 | 計測パラメータ等を除いた一次情報URLで既存募集を探す |
+| `resolve_company` | 必要 | 正式名・別名の完全一致を優先し、部分一致・タイプミスの企業候補を確認用に返す |
+| `add_company_alias` | 必要 | 公式情報で同一企業と確認した略称・英語名・旧社名を登録する |
+| `delete_company_alias` | 必要 | 誤登録された企業別名を削除する |
 | `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
 | `add_opportunity` | 必要 | 募集情報を1件追加する |
 | `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
@@ -144,10 +147,16 @@ https://<公開ホスト名>/mcp
 推奨操作順は次のとおりです。
 
 1. `get_master_values` で選択可能な固定値を取得し、業種は `get_sectors` で業界配下に絞る
-2. `find_similar_opportunities` と `find_opportunities_by_source_url` で同じ募集が登録済みでないか確認する
-3. 内容に自信がない場合は `validate_opportunity` で先に検証する
-4. `add_opportunity` または `update_opportunity` を呼ぶ
-5. 検証エラーでは、返された項目をすべて修正し、同じ `request_id` で再試行する
+2. 企業名が略称・英語名・誤記の可能性がある場合は `resolve_company` で候補を取得する
+3. 部分一致・曖昧一致の候補を公式情報で同一企業と確認できた場合だけ `add_company_alias` で別名を登録する
+4. `find_similar_opportunities` と `find_opportunities_by_source_url` で同じ募集が登録済みでないか確認する
+5. 内容に自信がない場合は `validate_opportunity` で先に検証する
+6. `add_opportunity` または `update_opportunity` を呼ぶ
+7. 検証エラーでは、返された項目をすべて修正し、同じ `request_id` で再試行する
+
+企業の自動的な同一視に使うのは、正規化した正式名または登録済み別名の完全一致だけです。部分一致と
+PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ、MCPが勝手に企業を統合することはありません。
+別名の追加・削除は監査ログへ記録され、`request_id` により安全に再試行できます。
 
 `add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合は `update_recruitment_status` を使います。
 

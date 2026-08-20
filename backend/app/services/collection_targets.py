@@ -116,6 +116,23 @@ def _check_status(target: CollectionTarget) -> str:
     return _CHECK_STATUS_BY_RESULT.get(target.last_check_result, "needs_review")
 
 
+#: The source types that actually carry openings. A target monitoring only the corporate top page
+#: (source_type='other') technically has a source, but nothing that a new posting would appear on,
+#: so it silently produces no_opening forever. These two decide has_primary_source below.
+PRIMARY_SOURCE_TYPES = ("recruit", "internship")
+#: Reported as missing_source_types so an operator can see which official pages are still unknown.
+#: 'other' is excluded on purpose - it is the catch-all, never something to go hunt for.
+TRACKED_SOURCE_TYPES = ("recruit", "internship", "event", "news")
+
+
+def _source_coverage(target: CollectionTarget) -> tuple[bool, list[str]]:
+    present = {source.source_type for source in target.sources if source.is_active}
+    return (
+        any(source_type in present for source_type in PRIMARY_SOURCE_TYPES),
+        [source_type for source_type in TRACKED_SOURCE_TYPES if source_type not in present],
+    )
+
+
 def _company_opportunity_count(db: Session, target: CollectionTarget) -> int:
     return int(
         db.scalar(
@@ -130,6 +147,7 @@ def _company_opportunity_count(db: Session, target: CollectionTarget) -> int:
 
 def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, Any]:
     opportunities = _opportunity_references(db, target)
+    has_primary_source, missing_source_types = _source_coverage(target)
     return {
         "id": target.id,
         "company": {"id": target.company.id, "name": target.company.name},
@@ -148,6 +166,11 @@ def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, A
             collection_source_dict(source)
             for source in sorted(target.sources, key=lambda value: (not value.is_active, value.id))
         ],
+        #: False when every active source is a corporate top page or similar catch-all. Such a target
+        #: is monitored but structurally unable to surface a new opening, so it needs an operator to
+        #: find the real recruit/internship page - see list_collection_targets(source_gap=True).
+        "has_primary_source": has_primary_source,
+        "missing_source_types": missing_source_types,
         "opportunities": opportunities,
         #: Scoped to this target's own (company, industry) pair - same count as len(opportunities)
         #: above, surfaced as its own field so callers don't have to infer it from list length.
@@ -188,6 +211,21 @@ def list_collection_checks(db: Session, *, target_id: int, limit: int = 20) -> l
     )
 
 
+def _has_primary_source_clause():
+    """SQL twin of _source_coverage's first element, for filtering without loading every source."""
+
+    return (
+        select(CollectionSource.id)
+        .where(
+            CollectionSource.collection_target_id == CollectionTarget.id,
+            CollectionSource.is_active.is_(True),
+            CollectionSource.source_type.in_(PRIMARY_SOURCE_TYPES),
+        )
+        .correlate(CollectionTarget)
+        .exists()
+    )
+
+
 def list_collection_targets(
     db: Session,
     *,
@@ -196,6 +234,7 @@ def list_collection_targets(
     sector: str | None = None,
     priority_tier: int | None = None,
     due_only: bool = False,
+    source_gap: bool = False,
     include_inactive: bool = False,
     page: int = 1,
     per_page: int = 20,
@@ -213,6 +252,8 @@ def list_collection_targets(
         filters.append(CollectionTarget.sector_id.in_(sector_ids))
     if priority_tier:
         filters.append(CollectionTarget.priority_tier == priority_tier)
+    if source_gap:
+        filters.append(~_has_primary_source_clause())
     if not include_inactive:
         filters.append(CollectionTarget.is_active.is_(True))
     if due_only:
@@ -710,8 +751,22 @@ def record_collection_check(
             if source.url == payload.source_url:
                 source.last_checked_at = now
                 break
+    # Closes the loop for targets that only knew the corporate top page: whoever just read that page
+    # can register the recruit/internship pages it linked to, in the same call as the check result,
+    # instead of remembering to follow up with add_collection_source afterwards.
+    known_urls = {source.url for source in target.sources}
+    added_sources = []
+    for discovered in payload.discovered_sources:
+        if discovered.url in known_urls:
+            continue
+        known_urls.add(discovered.url)
+        source = CollectionSource(source_type=discovered.source_type, url=discovered.url)
+        target.sources.append(source)
+        added_sources.append(source)
     db.flush()
     check_after = collection_check_dict(check)
+    if added_sources:
+        check_after["discovered_sources"] = [collection_source_dict(source) for source in added_sources]
     _audit(
         db,
         action="collection_check_create",

@@ -527,8 +527,25 @@ class CollectionCheckRequest(BaseModel):
     source_url: str | None = None
     opportunity_id: str | None = None
     note: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
+    discovered_sources: Annotated[
+        list[CollectionSourceInput],
+        Field(
+            max_length=20,
+            description=(
+                "確認中に見つけた企業公式ページ。企業トップページしか登録されていない対象で採用ページや"
+                "インターンページを見つけたら、ここへ渡すとそのまま情報源として追加されます。登録済みURLは無視します。"
+            ),
+        ),
+    ] = []
     request_id: RequestId
     client_name: ClientName = "mcp-client"
+
+    @field_validator("discovered_sources")
+    @classmethod
+    def unique_discovered_sources(cls, sources: list[CollectionSourceInput]) -> list[CollectionSourceInput]:
+        if len({source.url for source in sources}) != len(sources):
+            raise ValueError("同じURLを重複して指定できません")
+        return sources
 
     @field_validator("source_url")
     @classmethod
@@ -814,6 +831,8 @@ class CollectionTargetResponse(BaseModel):
     is_active: bool
     selection_reason: str | None
     sources: list[CollectionSourceResponse]
+    has_primary_source: bool
+    missing_source_types: list[CollectionSourceType]
     opportunities: list[CollectionOpportunityReference]
     target_linked_opportunity_count: int
     company_opportunity_count: int

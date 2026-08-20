@@ -1089,7 +1089,7 @@ def restore_opportunity_tool(
 
 @mcp.tool(
     name="list_collection_targets",
-    title="業界別の情報収集対象を一覧",
+    title="情報収集対象の企業を一覧",
     description=(
         "運営者用の情報収集対象を企業名、業界、業種、優先度、確認期限で絞り込みます。"
         "source_gap=trueで、採用・インターンページが未登録の対象だけを取り出せます。"
@@ -1099,7 +1099,10 @@ def restore_opportunity_tool(
 )
 def list_collection_targets_tool(
     query: Annotated[str | None, Field(description="企業名の部分一致キーワード。", max_length=200)] = None,
-    industry: Annotated[IndustryValue | None, Field(description="業界。省略すると全業界。")] = None,
+    industry: Annotated[
+        IndustryValue | None,
+        Field(description="業界。企業が複数業界に属する場合、そのいずれかに一致すれば該当します。省略すると全業界。"),
+    ] = None,
     sector: Annotated[str | None, Field(description="業種名。")] = None,
     priority_tier: Annotated[int | None, Field(ge=1, le=3, description="内部収集優先度。1が最優先。")] = None,
     due_only: Annotated[bool, Field(description="未確認または次回確認期限を過ぎた対象だけを返します。")] = False,
@@ -1143,7 +1146,7 @@ def list_collection_targets_tool(
 @mcp.tool(
     name="get_collection_target",
     title="情報収集対象を1件取得",
-    description="収集対象、公式ページ、同じ企業・業界の登録済み募集をIDで取得します。認証が必要です。",
+    description="収集対象、所属業界、公式ページ、その企業の登録済み募集をIDで取得します。認証が必要です。",
     annotations=READ_ONLY,
 )
 def get_collection_target_tool(
@@ -1180,7 +1183,7 @@ def get_collection_queue_tool(
     name="list_undercovered_companies",
     title="紐付く募集が少ない収集対象を取得",
     description=(
-        "有効な収集対象を、その企業・業界に紐づく募集情報が少ない順（0件を優先）に返します。"
+        "有効な収集対象を、その企業に紐づく募集情報が少ない順（0件を優先）に返します。"
         "「情報の少ない企業を優先して確認したい」場合に、get_collection_queueの結果をopportunitiesが"
         "空かどうかで絞り込む代わりに使います。認証が必要です。"
     ),

@@ -123,11 +123,11 @@ https://<公開ホスト名>/mcp
 | `delete_opportunity` | 必要 | 楽観ロック付きで募集情報を公開データから論理削除する |
 | `restore_opportunity` | 必要 | 論理削除した募集を同じID・公開コードのまま復元する |
 | `list_recent_writes` | 必要 | 直近の登録・更新・削除・復元の記録を返す |
-| `list_collection_targets` | 必要 | 業界別の情報収集対象を検索・一覧する |
+| `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧する（採用ページ未登録の対象だけの抽出を含む） |
 | `get_collection_target` | 必要 | 収集対象、公式ページ、登録済み募集を1件取得する |
 | `get_collection_queue` | 必要 | 未確認または再確認期限を過ぎた企業を優先度順に返す |
 | `list_collection_checks` | 必要 | 企業ごとの情報収集・確認履歴を新しい順に返す |
-| `add_collection_target` | 必要 | 企業・業界・優先度・確認間隔・公式ページを収集対象へ追加する |
+| `add_collection_target` | 必要 | 企業・所属業界・優先度・確認間隔・公式ページを収集対象へ追加する |
 | `update_collection_target` | 必要 | 収集対象を部分更新または無効化する |
 | `add_collection_source` | 必要 | 収集対象へ企業公式ページを追加する |
 | `update_collection_source` | 必要 | 公式ページのURL・種類・有効状態を部分更新する |
@@ -163,19 +163,23 @@ https://<公開ホスト名>/mcp
 
 一次情報URLは、ホスト名の大文字小文字、末尾スラッシュ、フラグメント、既知の計測パラメータを除いて照合します。同じ公式ページに複数募集が掲載される場合があるため、URL一致は一律の登録拒否ではなく、既存募集を確認するための警告として扱います。
 
-### 業界別の情報収集キュー
+### 企業単位の情報収集キュー
 
-運営者用MCPでは、募集がまだ登録されていない企業も業界別の収集対象として管理できます。収集優先度は企業の評価や公開ランキングではなく、公式ページを確認する内部の作業順です。収集対象の読み取りを含め、これらのツールはすべて認証を必要とします。
+運営者用MCPでは、募集がまだ登録されていない企業も収集対象として管理できます。収集優先度は企業の評価や公開ランキングではなく、公式ページを確認する内部の作業順です。収集対象の読み取りを含め、これらのツールはすべて認証を必要とします。
+
+収集対象は**1企業につき1件**です。事業が複数業界にまたがる企業は、収集対象を分けるのではなく `industries` に複数の業界・業種を指定します（例: Ubie株式会社は IT・通信/AI と 医療・製薬/ヘルスケア）。先頭が代表の業界として扱われ、`industry` での絞り込みはそのいずれかに一致すれば該当します。収集対象の件数がそのまま企業数になり、同じ採用ページを二重に巡回することもありません。募集情報を登録すると、その募集の業界・業種も企業の分類へ自動的に加わります。
 
 推奨操作順は次のとおりです。
 
-1. `add_collection_target` で企業、業界、優先度、確認間隔、1件以上の企業公式ページを登録する
+1. `add_collection_target` で企業、所属業界、優先度、確認間隔、1件以上の企業公式ページを登録する
 2. `get_collection_queue` で未確認または次回確認期限を過ぎた企業を取得する
 3. 公式ページを確認し、`find_similar_opportunities` と `find_opportunities_by_source_url` を経て募集を追加または更新する
 4. 募集を追加・更新する場合は `collection_target_id` を渡し、募集と確認結果 `found` を同じトランザクションで記録する
 5. 募集がない場合は `record_collection_check` で `no_opening`、`unreachable`、`needs_review` のいずれかを記録する
 
-収集対象の更新は部分更新です。省略した項目は維持され、`sector` と `selection_reason` は明示的に `null` を指定すると解除されます。収集を止める場合はデータを削除せず、`update_collection_target` で `is_active` を `false` にします。公式ページも同様に `update_collection_source` で無効化できます。すべての書き込みは `request_id` で冪等化され、監査ログに記録されます。
+収集対象の更新は部分更新です。省略した項目は維持され、`selection_reason` は明示的に `null` を指定すると解除されます。`industries` だけは例外で、指定した内容で分類を全置換します（業界を追加する場合は既存の業界も併せて送ります）。収集を止める場合はデータを削除せず、`update_collection_target` で `is_active` を `false` にします。公式ページも同様に `update_collection_source` で無効化できます。すべての書き込みは `request_id` で冪等化され、監査ログに記録されます。
+
+企業トップページしか登録されていない収集対象は、巡回しても新しい募集が現れないため `has_primary_source: false` として報告されます。`list_collection_targets` に `source_gap=true` を渡すとその対象だけを取り出せ、`missing_source_types` が未登録の公式ページ種別（`recruit`、`internship`、`event`、`news`）を示します。確認中に採用ページを見つけた場合は、`record_collection_check` の `discovered_sources` へ渡すと確認結果の記録と同時に情報源として追加されます。
 
 ## 内部REST API
 

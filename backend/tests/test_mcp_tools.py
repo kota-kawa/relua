@@ -687,10 +687,11 @@ def test_list_stale_opportunities_flags_records_not_recently_confirmed(tools, db
 
 
 def collection_target_args(**overrides) -> dict:
+    industry = overrides.pop("industry", "IT・通信")
+    sector = overrides.pop("sector", "Webサービス")
     payload = {
         "company_name": "株式会社収集テスト",
-        "industry": "IT・通信",
-        "sector": "Webサービス",
+        "industries": [{"industry": industry, "sector": sector}],
         "priority_tier": 1,
         "check_interval_days": 14,
         "selection_reason": "業界内の掲載範囲を確認するため",
@@ -787,8 +788,8 @@ def test_list_undercovered_companies_orders_by_fewest_linked_opportunities(tools
     items = call("list_undercovered_companies", {"industry": "IT・通信"})["items"]
     ids = [item["id"] for item in items]
     assert ids.index(uncovered["id"]) < ids.index(covered["id"])
-    assert next(item for item in items if item["id"] == uncovered["id"])["target_linked_opportunity_count"] == 0
-    assert next(item for item in items if item["id"] == covered["id"])["target_linked_opportunity_count"] == 1
+    assert next(item for item in items if item["id"] == uncovered["id"])["company_opportunity_count"] == 0
+    assert next(item for item in items if item["id"] == covered["id"])["company_opportunity_count"] == 1
 
 
 def test_collection_target_schema_is_actionable_for_mcp_clients():
@@ -796,7 +797,10 @@ def test_collection_target_schema_is_actionable_for_mcp_clients():
     schemas = {tool.name: tool.inputSchema for tool in listed}
     payload = schemas["add_collection_target"]["properties"]["payload"]
 
-    assert payload["properties"]["industry"]["enum"][0] == "IT・通信"
+    industries = payload["properties"]["industries"]
+    assert industries["items"]["properties"]["industry"]["enum"][0] == "IT・通信"
+    assert industries["minItems"] == 1
+    assert "複数指定" in industries["description"]
     assert payload["properties"]["priority_tier"]["minimum"] == 1
     assert payload["properties"]["sources"]["items"]["properties"]["url"]["description"]
     assert schemas["record_collection_check"]["properties"]["payload"]["properties"]["result"]["enum"] == [

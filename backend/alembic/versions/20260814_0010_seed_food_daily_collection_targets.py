@@ -85,6 +85,50 @@ def _scalar(bind: sa.Connection, sql: str, **params: object) -> object | None:
     return bind.execute(sa.text(sql), params).scalar_one_or_none()
 
 
+def _classification_on_targets(bind: sa.Connection) -> bool:
+    """Whether collection_targets still carries the classification itself.
+
+    Revision 0001 builds fresh databases from the live metadata, so on a fresh install this seed
+    already runs against the post-20260820_0012 schema - one target per company, classification in
+    company_industries - while an upgraded database reaches it with the old columns still present.
+    """
+    return "industry_id" in {column["name"] for column in sa.inspect(bind).get_columns("collection_targets")}
+
+
+def _classify(bind: sa.Connection, *, company_id: int, industry_id: int, sector_id: int) -> None:
+    existing = _scalar(
+        bind,
+        "SELECT id FROM company_industries WHERE company_id=:company_id AND industry_id=:industry_id",
+        company_id=company_id,
+        industry_id=industry_id,
+    )
+    if existing is not None:
+        bind.execute(
+            sa.text("UPDATE company_industries SET sector_id=:sector_id WHERE id=:id"),
+            {"sector_id": sector_id, "id": int(existing)},
+        )
+        return
+    has_primary = _scalar(
+        bind,
+        "SELECT id FROM company_industries WHERE company_id=:company_id AND is_primary",
+        company_id=company_id,
+    )
+    bind.execute(
+        sa.text(
+            """
+            INSERT INTO company_industries (company_id, industry_id, sector_id, is_primary)
+            VALUES (:company_id, :industry_id, :sector_id, :is_primary)
+            """
+        ),
+        {
+            "company_id": company_id,
+            "industry_id": industry_id,
+            "sector_id": sector_id,
+            "is_primary": has_primary is None,
+        },
+    )
+
+
 def _record(
     bind: sa.Connection,
     *,
@@ -135,6 +179,7 @@ def _record(
 
 def upgrade() -> None:
     bind = op.get_bind()
+    legacy = _classification_on_targets(bind)
     industry_id = _scalar(bind, "SELECT id FROM industries WHERE name='メーカー'")
     if industry_id is None:
         raise RuntimeError("メーカー industry master is missing")
@@ -183,6 +228,14 @@ def upgrade() -> None:
             sa.text(
                 "SELECT id, sector_id FROM collection_targets "
                 "WHERE company_id=:company_id AND industry_id=:industry_id"
+                if legacy
+                else """
+                SELECT ct.id AS id, ci.sector_id AS sector_id
+                FROM collection_targets ct
+                LEFT JOIN company_industries ci
+                  ON ci.company_id = ct.company_id AND ci.industry_id = :industry_id
+                WHERE ct.company_id = :company_id
+                """
             ),
             {"company_id": company_id, "industry_id": industry_id},
         ).mappings().one_or_none()
@@ -203,6 +256,12 @@ def upgrade() -> None:
                     VALUES
                         (:company_id, :industry_id, :sector_id, :priority, :interval, true, :reason)
                     """
+                    if legacy
+                    else """
+                    INSERT INTO collection_targets
+                        (company_id, priority_tier, check_interval_days, is_active, selection_reason)
+                    VALUES (:company_id, :priority, :interval, true, :reason)
+                    """
                 ),
                 {
                     "company_id": company_id,
@@ -211,13 +270,24 @@ def upgrade() -> None:
                     "priority": priority,
                     "interval": interval,
                     "reason": REASONS[sector_name],
+                }
+                if legacy
+                else {
+                    "company_id": company_id,
+                    "priority": priority,
+                    "interval": interval,
+                    "reason": REASONS[sector_name],
                 },
             )
+            if not legacy:
+                _classify(bind, company_id=company_id, industry_id=industry_id, sector_id=desired_sector)
             target_id = _scalar(
                 bind,
-                "SELECT id FROM collection_targets WHERE company_id=:company_id AND industry_id=:industry_id",
+                "SELECT id FROM collection_targets WHERE company_id=:company_id AND industry_id=:industry_id"
+                if legacy
+                else "SELECT id FROM collection_targets WHERE company_id=:company_id",
                 company_id=company_id,
-                industry_id=industry_id,
+                **({"industry_id": industry_id} if legacy else {}),
             )
             if target_id is None:
                 raise RuntimeError(f"failed to create target: {company_name}")
@@ -236,13 +306,16 @@ def upgrade() -> None:
         else:
             target_id = int(target["id"])
             if target["sector_id"] != desired_sector:
-                bind.execute(
-                    sa.text(
-                        "UPDATE collection_targets "
-                        "SET sector_id=:sector_id, updated_at=CURRENT_TIMESTAMP WHERE id=:id"
-                    ),
-                    {"sector_id": desired_sector, "id": target_id},
-                )
+                if legacy:
+                    bind.execute(
+                        sa.text(
+                            "UPDATE collection_targets "
+                            "SET sector_id=:sector_id, updated_at=CURRENT_TIMESTAMP WHERE id=:id"
+                        ),
+                        {"sector_id": desired_sector, "id": target_id},
+                    )
+                else:
+                    _classify(bind, company_id=company_id, industry_id=industry_id, sector_id=desired_sector)
                 reclassified += 1
                 request_id = f"migration-food-daily-20260814-update-{index:03d}"
                 _record(

@@ -35,6 +35,7 @@ from app.models import (
 )
 from app.schemas import OpportunityInput
 from app.services.companies import company_name_filter, find_company, get_or_create_company
+from app.services.company_industries import ensure_company_industry
 from app.services.errors import FIELD_LABELS, master_error
 from app.services.masters import choices, resolve_many, resolve_one, resolve_sector, sectors_for_industry
 from app.services.normalization import normalize_common, normalize_company_name, normalize_source_url, normalize_tag
@@ -821,15 +822,15 @@ def is_patch_replay(db: Session, *, request_id: str, opportunity_id: str) -> boo
 
 
 def _auto_matched_collection_target(
-    db: Session, *, data: OpportunityInput, industry: Industry, request_id: str
+    db: Session, *, data: OpportunityInput, request_id: str
 ) -> CollectionTarget | None:
     """Attribute a write to its collection target when the caller didn't pass collection_target_id.
 
-    (company_id, industry_id) is a unique pair on collection_targets, so once the company already
-    exists the match is exactly as unambiguous as an explicit collection_target_id would be - it is
-    just recovered from data the write already carries instead of a lookup step a caller can forget.
-    Without this, a queued company's last_checked_at stays null forever whenever a posting for it is
-    registered by a route that never learned the target's id, even though the posting is real.
+    company_id is unique on collection_targets, so once the company already exists the match is
+    exactly as unambiguous as an explicit collection_target_id would be - it is just recovered from
+    data the write already carries instead of a lookup step a caller can forget. Without this, a
+    queued company's last_checked_at stays null forever whenever a posting for it is registered by a
+    route that never learned the target's id, even though the posting is real.
     """
     company = find_company(db, data.company_name)
     if company is None:
@@ -839,7 +840,6 @@ def _auto_matched_collection_target(
         .options(selectinload(CollectionTarget.company), selectinload(CollectionTarget.sources))
         .where(
             CollectionTarget.company_id == company.id,
-            CollectionTarget.industry_id == industry.id,
             CollectionTarget.is_active.is_(True),
         )
         .with_for_update()
@@ -859,11 +859,10 @@ def _collection_target_for_write(
     *,
     collection_target_id: int | None,
     data: OpportunityInput,
-    industry: Industry,
     request_id: str,
 ) -> CollectionTarget | None:
     if collection_target_id is None:
-        return _auto_matched_collection_target(db, data=data, industry=industry, request_id=request_id)
+        return _auto_matched_collection_target(db, data=data, request_id=request_id)
     target = db.scalar(
         select(CollectionTarget)
         .options(
@@ -898,17 +897,9 @@ def _collection_target_for_write(
                 }
             ]
         )
-    if target.industry_id != industry.id:
-        raise DomainValidationError(
-            [
-                {
-                    "field": "情報収集対象ID",
-                    "received": collection_target_id,
-                    "reason": f"収集対象の業界は「{target.industry.name}」ですが、募集情報の業界は「{industry.name}」です",
-                    "expected": target.industry.name,
-                }
-            ]
-        )
+    # No industry check: a target covers a whole company, and a company legitimately posts under
+    # several industries. The posting's own industry is recorded against the company instead, by
+    # ensure_company_industry in write_opportunity.
     existing_check = db.scalar(select(CollectionCheck).where(CollectionCheck.request_id == request_id))
     if existing_check is not None:
         raise DomainValidationError([_reused_request_id_error(request_id)])
@@ -1014,7 +1005,6 @@ def write_opportunity(
         db,
         collection_target_id=collection_target_id,
         data=data,
-        industry=resolved["industry"],
         request_id=request_id,
     )
 
@@ -1055,6 +1045,10 @@ def write_opportunity(
     item.company = company
     item.industry = resolved["industry"]
     item.sector = resolved["sector"]
+    # The posting states which industry and sector this company operates in, so record it. This is
+    # how classification stays complete without anyone maintaining it: a company registered only as
+    # IT・通信 learns 医療・製薬 the first time it posts under it.
+    ensure_company_industry(db, company=company, industry=resolved["industry"], sector=resolved["sector"])
     item.event_type = resolved["event_type"]
     item.event_format = resolved["event_format"]
     item.job_categories = resolved["job_categories"]

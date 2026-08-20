@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -116,6 +117,49 @@ class Company(Base):
     aliases: Mapped[list["CompanyAlias"]] = relationship(
         back_populates="company", cascade="all, delete-orphan", lazy="selectin"
     )
+    industries: Mapped[list["CompanyIndustry"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", lazy="selectin", order_by="CompanyIndustry.id"
+    )
+
+
+class CompanyIndustry(Base):
+    """One industry (and optionally its sector) a company belongs to.
+
+    A company genuinely spans several industries - Ubie is both IT・通信/AI and 医療・製薬/ヘルスケア,
+    パナソニック ホールディングス is several more - so classification cannot live on a single column.
+    It used to live on collection_targets, which forced one collection row per industry and made the
+    same company countable twice, checked twice, and reported as uncovered for whichever industry its
+    postings did not happen to be filed under. Collection is now one row per company, and this table
+    carries the classification.
+    """
+
+    __tablename__ = "company_industries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    industry_id: Mapped[int] = mapped_column(ForeignKey("industries.id", ondelete="RESTRICT"), nullable=False)
+    sector_id: Mapped[int | None] = mapped_column(ForeignKey("sectors.id", ondelete="RESTRICT"))
+    #: Exactly one row per company carries this: the classification shown when a company has to be
+    #: presented under a single industry. The partial unique index below enforces "at most one".
+    is_primary: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    company: Mapped[Company] = relationship(back_populates="industries")
+    industry: Mapped[Industry] = relationship()
+    sector: Mapped[Sector | None] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "industry_id", name="uq_company_industry"),
+        Index(
+            "uq_company_industry_primary",
+            "company_id",
+            unique=True,
+            postgresql_where=text("is_primary"),
+            sqlite_where=text("is_primary"),
+        ),
+        Index("ix_company_industries_industry", "industry_id"),
+        Index("ix_company_industries_sector", "sector_id"),
+    )
 
 
 class CompanyAlias(Base):
@@ -140,14 +184,18 @@ class CompanyAlias(Base):
 
 
 class CollectionTarget(Base):
-    """An internal company/industry pair the operator intends to monitor."""
+    """A company the operator intends to monitor, and the schedule for monitoring it.
+
+    One row per company: what industries the company belongs to is CompanyIndustry's job. Keeping
+    classification out of here is what makes "how many companies do we cover" a plain row count.
+    """
 
     __tablename__ = "collection_targets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False)
-    industry_id: Mapped[int] = mapped_column(ForeignKey("industries.id", ondelete="RESTRICT"), nullable=False)
-    sector_id: Mapped[int | None] = mapped_column(ForeignKey("sectors.id", ondelete="RESTRICT"))
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
     #: This is an internal collection order, not a rating of the company. 1 is checked first.
     priority_tier: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     check_interval_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
@@ -163,15 +211,12 @@ class CollectionTarget(Base):
     )
 
     company: Mapped[Company] = relationship()
-    industry: Mapped[Industry] = relationship()
-    sector: Mapped[Sector | None] = relationship()
     sources: Mapped[list["CollectionSource"]] = relationship(
         back_populates="target", cascade="all, delete-orphan", lazy="selectin"
     )
     checks: Mapped[list["CollectionCheck"]] = relationship(back_populates="target", cascade="all, delete-orphan")
 
     __table_args__ = (
-        UniqueConstraint("company_id", "industry_id", name="uq_collection_target_company_industry"),
         CheckConstraint("priority_tier BETWEEN 1 AND 3", name="ck_collection_target_priority"),
         CheckConstraint("check_interval_days BETWEEN 1 AND 365", name="ck_collection_target_interval"),
         CheckConstraint(

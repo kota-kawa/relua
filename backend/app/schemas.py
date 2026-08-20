@@ -414,16 +414,36 @@ class CollectionSourceInput(BaseModel):
         return validate_source_host(validate_https_url(value) or value)
 
 
-class CollectionTargetCreateRequest(BaseModel):
+class CompanyIndustryInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    company_name: Annotated[str, StringConstraints(min_length=1, max_length=200)]
-    industry: Annotated[IndustryValue, Field(description="収集対象として分類する業界。")]
+    industry: Annotated[IndustryValue, Field(description="企業が属する業界。")]
     sector: Annotated[
         str | None,
         StringConstraints(strip_whitespace=True, min_length=1),
         Field(description="業界配下の業種。まだ判断できない場合はnull。"),
     ] = None
+
+
+#: Kept as its own annotated type because create and update describe the same list identically.
+CompanyIndustries = Annotated[
+    list[CompanyIndustryInput],
+    Field(
+        min_length=1,
+        max_length=5,
+        description=(
+            "企業が属する業界と業種。事業が複数業界にまたがる企業は複数指定します"
+            "（例: Ubieは IT・通信/AI と 医療・製薬/ヘルスケア）。先頭が代表の業界として扱われます。"
+        ),
+    ),
+]
+
+
+class CollectionTargetCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    company_name: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    industries: CompanyIndustries
     priority_tier: Annotated[int, Field(ge=1, le=3, description="内部の収集優先度。1が最優先、3が低優先。")]
     check_interval_days: Annotated[int, Field(ge=1, le=365, description="公式ページを再確認する間隔。")]
     selection_reason: Annotated[
@@ -452,13 +472,17 @@ class CollectionTargetCreateRequest(BaseModel):
 
 
 class CollectionTargetUpdateRequest(BaseModel):
-    """A real patch: omitted values stay unchanged, while sector=null clears the sector."""
+    """A real patch: omitted values stay unchanged.
+
+    `industries` is the exception - it replaces the company's classifications wholesale, so adding
+    an industry means sending the existing ones alongside it. Anything else would make "remove a
+    misclassification" impossible to express.
+    """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     company_name: Annotated[str | None, StringConstraints(min_length=1, max_length=200)] = None
-    industry: IndustryValue | None = None
-    sector: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=1)] = None
+    industries: CompanyIndustries | None = None
     priority_tier: Annotated[int | None, Field(ge=1, le=3)] = None
     check_interval_days: Annotated[int | None, Field(ge=1, le=365)] = None
     selection_reason: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
@@ -475,8 +499,7 @@ class CollectionTargetUpdateRequest(BaseModel):
     def has_change(self) -> "CollectionTargetUpdateRequest":
         editable = {
             "company_name",
-            "industry",
-            "sector",
+            "industries",
             "priority_tier",
             "check_interval_days",
             "selection_reason",
@@ -527,8 +550,25 @@ class CollectionCheckRequest(BaseModel):
     source_url: str | None = None
     opportunity_id: str | None = None
     note: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
+    discovered_sources: Annotated[
+        list[CollectionSourceInput],
+        Field(
+            max_length=20,
+            description=(
+                "確認中に見つけた企業公式ページ。企業トップページしか登録されていない対象で採用ページや"
+                "インターンページを見つけたら、ここへ渡すとそのまま情報源として追加されます。登録済みURLは無視します。"
+            ),
+        ),
+    ] = []
     request_id: RequestId
     client_name: ClientName = "mcp-client"
+
+    @field_validator("discovered_sources")
+    @classmethod
+    def unique_discovered_sources(cls, sources: list[CollectionSourceInput]) -> list[CollectionSourceInput]:
+        if len({source.url for source in sources}) != len(sources):
+            raise ValueError("同じURLを重複して指定できません")
+        return sources
 
     @field_validator("source_url")
     @classmethod
@@ -565,12 +605,12 @@ def _inline_model_schema(model: type[BaseModel]) -> dict[str, Any]:
 CollectionTargetCreatePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(_inline_model_schema(CollectionTargetCreateRequest)),
-    Field(description="追加する業界別収集対象、公式情報源、冪等化情報。"),
+    Field(description="追加する収集対象の企業、所属業界、公式情報源、冪等化情報。"),
 ]
 CollectionTargetUpdatePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(_inline_model_schema(CollectionTargetUpdateRequest)),
-    Field(description="変更する収集対象の項目だけを含む部分更新。sector=nullで業種を解除できます。"),
+    Field(description="変更する収集対象の項目だけを含む部分更新。industriesは指定した内容で全置換します。"),
 ]
 CollectionSourceCreatePayload = Annotated[
     dict[str, Any],
@@ -799,11 +839,18 @@ class CollectionOpportunityReference(BaseModel):
     updated_at: datetime
 
 
+class CompanyIndustryItem(BaseModel):
+    industry: MasterItem
+    sector: MasterItem | None
+    is_primary: bool
+
+
 class CollectionTargetResponse(BaseModel):
     id: int
     company: CompanyItem
-    industry: MasterItem
-    sector: MasterItem | None
+    industries: list[CompanyIndustryItem]
+    primary_industry: MasterItem | None
+    primary_sector: MasterItem | None
     priority_tier: int
     check_interval_days: int
     last_checked_at: datetime | None
@@ -814,8 +861,9 @@ class CollectionTargetResponse(BaseModel):
     is_active: bool
     selection_reason: str | None
     sources: list[CollectionSourceResponse]
+    has_primary_source: bool
+    missing_source_types: list[CollectionSourceType]
     opportunities: list[CollectionOpportunityReference]
-    target_linked_opportunity_count: int
     company_opportunity_count: int
     created_at: datetime
     updated_at: datetime

@@ -1089,19 +1089,32 @@ def restore_opportunity_tool(
 
 @mcp.tool(
     name="list_collection_targets",
-    title="業界別の情報収集対象を一覧",
+    title="情報収集対象の企業を一覧",
     description=(
         "運営者用の情報収集対象を企業名、業界、業種、優先度、確認期限で絞り込みます。"
+        "source_gap=trueで、採用・インターンページが未登録の対象だけを取り出せます。"
         "無効化済みの対象はinclude_inactive=trueの場合だけ返します。認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
 def list_collection_targets_tool(
     query: Annotated[str | None, Field(description="企業名の部分一致キーワード。", max_length=200)] = None,
-    industry: Annotated[IndustryValue | None, Field(description="業界。省略すると全業界。")] = None,
+    industry: Annotated[
+        IndustryValue | None,
+        Field(description="業界。企業が複数業界に属する場合、そのいずれかに一致すれば該当します。省略すると全業界。"),
+    ] = None,
     sector: Annotated[str | None, Field(description="業種名。")] = None,
     priority_tier: Annotated[int | None, Field(ge=1, le=3, description="内部収集優先度。1が最優先。")] = None,
     due_only: Annotated[bool, Field(description="未確認または次回確認期限を過ぎた対象だけを返します。")] = False,
+    source_gap: Annotated[
+        bool,
+        Field(
+            description=(
+                "採用ページ・インターンページがまだ登録されておらず、企業トップページなどしか"
+                "監視できていない対象だけを返します。公式ページを調べ直して追加する棚卸しに使います。"
+            )
+        ),
+    ] = False,
     include_inactive: Annotated[bool, Field(description="無効化済みの対象も含めます。")] = False,
     page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
     per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数。")] = 20,
@@ -1114,6 +1127,7 @@ def list_collection_targets_tool(
             sector=sector,
             priority_tier=priority_tier,
             due_only=due_only,
+            source_gap=source_gap,
             include_inactive=include_inactive,
             page=page,
             per_page=per_page,
@@ -1132,7 +1146,7 @@ def list_collection_targets_tool(
 @mcp.tool(
     name="get_collection_target",
     title="情報収集対象を1件取得",
-    description="収集対象、公式ページ、同じ企業・業界の登録済み募集をIDで取得します。認証が必要です。",
+    description="収集対象、所属業界、公式ページ、その企業の登録済み募集をIDで取得します。認証が必要です。",
     annotations=READ_ONLY,
 )
 def get_collection_target_tool(
@@ -1169,7 +1183,7 @@ def get_collection_queue_tool(
     name="list_undercovered_companies",
     title="紐付く募集が少ない収集対象を取得",
     description=(
-        "有効な収集対象を、その企業・業界に紐づく募集情報が少ない順（0件を優先）に返します。"
+        "有効な収集対象を、その企業に紐づく募集情報が少ない順（0件を優先）に返します。"
         "「情報の少ない企業を優先して確認したい」場合に、get_collection_queueの結果をopportunitiesが"
         "空かどうかで絞り込む代わりに使います。認証が必要です。"
     ),
@@ -1326,7 +1340,8 @@ def update_collection_source_tool(
     title="企業公式ページの確認結果を記録",
     description=(
         "募集を発見した場合だけでなく、募集中なし、ページ確認不能、人の確認が必要な場合も履歴へ記録し、"
-        "次回確認日を更新します。認証が必要です。"
+        "次回確認日を更新します。確認中に採用ページなどを新しく見つけた場合はdiscovered_sourcesへ渡すと"
+        "同時に情報源として追加します。認証が必要です。"
     ),
     annotations=APPEND_ONLY,
 )

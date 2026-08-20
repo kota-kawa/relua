@@ -16,6 +16,7 @@ from app.models import (
     CollectionSource,
     CollectionTarget,
     Company,
+    CompanyIndustry,
     Industry,
     Opportunity,
     Sector,
@@ -26,8 +27,15 @@ from app.schemas import (
     CollectionSourceUpdateRequest,
     CollectionTargetCreateRequest,
     CollectionTargetUpdateRequest,
+    CompanyIndustryInput,
 )
 from app.services.companies import company_keyword_filter, get_or_create_company
+from app.services.company_industries import (
+    company_industries,
+    company_industry_dict,
+    primary_company_industry,
+    set_company_industries,
+)
 from app.services.errors import master_error
 from app.services.masters import choices, resolve_one, resolve_sector
 from app.services.opportunities import DomainValidationError
@@ -48,9 +56,7 @@ class CollectionTargetList:
 
 def collection_target_query():
     return select(CollectionTarget).options(
-        selectinload(CollectionTarget.company),
-        selectinload(CollectionTarget.industry),
-        selectinload(CollectionTarget.sector),
+        selectinload(CollectionTarget.company).selectinload(Company.industries),
         selectinload(CollectionTarget.sources),
     )
 
@@ -69,7 +75,6 @@ def _opportunity_references(db: Session, target: CollectionTarget) -> list[dict[
         .options(selectinload(Opportunity.status))
         .where(
             Opportunity.company_id == target.company_id,
-            Opportunity.industry_id == target.industry_id,
             Opportunity.deleted_at.is_(None),
         )
         .order_by(Opportunity.updated_at.desc(), Opportunity.id)
@@ -116,25 +121,37 @@ def _check_status(target: CollectionTarget) -> str:
     return _CHECK_STATUS_BY_RESULT.get(target.last_check_result, "needs_review")
 
 
-def _company_opportunity_count(db: Session, target: CollectionTarget) -> int:
-    return int(
-        db.scalar(
-            select(func.count(Opportunity.id)).where(
-                Opportunity.company_id == target.company_id,
-                Opportunity.deleted_at.is_(None),
-            )
-        )
-        or 0
+#: The source types that actually carry openings. A target monitoring only the corporate top page
+#: (source_type='other') technically has a source, but nothing that a new posting would appear on,
+#: so it silently produces no_opening forever. These two decide has_primary_source below.
+PRIMARY_SOURCE_TYPES = ("recruit", "internship")
+#: Reported as missing_source_types so an operator can see which official pages are still unknown.
+#: 'other' is excluded on purpose - it is the catch-all, never something to go hunt for.
+TRACKED_SOURCE_TYPES = ("recruit", "internship", "event", "news")
+
+
+def _source_coverage(target: CollectionTarget) -> tuple[bool, list[str]]:
+    present = {source.source_type for source in target.sources if source.is_active}
+    return (
+        any(source_type in present for source_type in PRIMARY_SOURCE_TYPES),
+        [source_type for source_type in TRACKED_SOURCE_TYPES if source_type not in present],
     )
 
 
 def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, Any]:
     opportunities = _opportunity_references(db, target)
+    has_primary_source, missing_source_types = _source_coverage(target)
+    classifications = company_industries(db, target.company_id)
+    primary = primary_company_industry(classifications)
     return {
         "id": target.id,
         "company": {"id": target.company.id, "name": target.company.name},
-        "industry": master_dict(target.industry),
-        "sector": master_dict(target.sector) if target.sector else None,
+        #: Every industry this company belongs to. A company spanning two industries is one target
+        #: with two entries here, never two targets.
+        "industries": [company_industry_dict(row) for row in classifications],
+        #: The single industry to show where only one fits, derived from `industries` above.
+        "primary_industry": master_dict(primary.industry) if primary else None,
+        "primary_sector": master_dict(primary.sector) if primary and primary.sector else None,
         "priority_tier": target.priority_tier,
         "check_interval_days": target.check_interval_days,
         "last_checked_at": target.last_checked_at,
@@ -148,14 +165,15 @@ def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, A
             collection_source_dict(source)
             for source in sorted(target.sources, key=lambda value: (not value.is_active, value.id))
         ],
+        #: False when every active source is a corporate top page or similar catch-all. Such a target
+        #: is monitored but structurally unable to surface a new opening, so it needs an operator to
+        #: find the real recruit/internship page - see list_collection_targets(source_gap=True).
+        "has_primary_source": has_primary_source,
+        "missing_source_types": missing_source_types,
         "opportunities": opportunities,
-        #: Scoped to this target's own (company, industry) pair - same count as len(opportunities)
-        #: above, surfaced as its own field so callers don't have to infer it from list length.
-        "target_linked_opportunity_count": len(opportunities),
-        #: Every opportunity for this company across ALL industries. When this differs from
-        #: target_linked_opportunity_count, the company has postings that simply never linked to
-        #: *this* target (wrong industry, no collection_target_id passed, etc.) rather than none at all.
-        "company_opportunity_count": _company_opportunity_count(db, target),
+        #: Every live posting for this company. A target covers the whole company, so there is no
+        #: longer a second, industry-scoped count that could disagree with this one.
+        "company_opportunity_count": len(opportunities),
         "created_at": target.created_at,
         "updated_at": target.updated_at,
     }
@@ -188,6 +206,44 @@ def list_collection_checks(db: Session, *, target_id: int, limit: int = 20) -> l
     )
 
 
+def _classified_as_clause(*, industry: str | None = None, sector: str | None = None):
+    """Match targets whose company carries the given industry or sector classification.
+
+    Classification is company-level and many-to-many, so an industry filter is an EXISTS over
+    company_industries rather than a column comparison: Ubie appears under both IT・通信 and
+    医療・製薬 while remaining a single target.
+    """
+    conditions = [CompanyIndustry.company_id == CollectionTarget.company_id]
+    if industry is not None:
+        conditions.append(
+            CompanyIndustry.industry_id.in_(
+                select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
+            )
+        )
+    if sector is not None:
+        conditions.append(
+            CompanyIndustry.sector_id.in_(
+                select(Sector.id).where(or_(Sector.name == sector, Sector.slug == sector))
+            )
+        )
+    return select(CompanyIndustry.id).where(*conditions).correlate(CollectionTarget).exists()
+
+
+def _has_primary_source_clause():
+    """SQL twin of _source_coverage's first element, for filtering without loading every source."""
+
+    return (
+        select(CollectionSource.id)
+        .where(
+            CollectionSource.collection_target_id == CollectionTarget.id,
+            CollectionSource.is_active.is_(True),
+            CollectionSource.source_type.in_(PRIMARY_SOURCE_TYPES),
+        )
+        .correlate(CollectionTarget)
+        .exists()
+    )
+
+
 def list_collection_targets(
     db: Session,
     *,
@@ -196,6 +252,7 @@ def list_collection_targets(
     sector: str | None = None,
     priority_tier: int | None = None,
     due_only: bool = False,
+    source_gap: bool = False,
     include_inactive: bool = False,
     page: int = 1,
     per_page: int = 20,
@@ -206,13 +263,13 @@ def list_collection_targets(
     if query:
         filters.append(company_keyword_filter(query.strip()))
     if industry:
-        industry_ids = select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
-        filters.append(CollectionTarget.industry_id.in_(industry_ids))
+        filters.append(_classified_as_clause(industry=industry))
     if sector:
-        sector_ids = select(Sector.id).where(or_(Sector.name == sector, Sector.slug == sector))
-        filters.append(CollectionTarget.sector_id.in_(sector_ids))
+        filters.append(_classified_as_clause(sector=sector))
     if priority_tier:
         filters.append(CollectionTarget.priority_tier == priority_tier)
+    if source_gap:
+        filters.append(~_has_primary_source_clause())
     if not include_inactive:
         filters.append(CollectionTarget.is_active.is_(True))
     if due_only:
@@ -252,16 +309,17 @@ def collection_queue(db: Session, *, industry: str | None = None, limit: int = 2
 def undercovered_collection_targets(
     db: Session, *, industry: str | None = None, limit: int = 50
 ) -> list[CollectionTarget]:
-    """Active targets ordered by how few opportunities are linked to them, fewest first.
+    """Active targets ordered by how few live postings their company has, fewest first.
 
     Lets an operator fetch "companies we're missing postings for" directly, instead of paging
-    through the whole queue client-side and filtering on opportunities == [].
+    through the whole queue client-side and filtering on opportunities == []. Counted per company
+    rather than per company-and-industry, so a company whose postings are filed under one of its
+    several industries no longer reports as uncovered under the others.
     """
     linked_count = (
         select(func.count(Opportunity.id))
         .where(
             Opportunity.company_id == CollectionTarget.company_id,
-            Opportunity.industry_id == CollectionTarget.industry_id,
             Opportunity.deleted_at.is_(None),
         )
         .correlate(CollectionTarget)
@@ -269,8 +327,7 @@ def undercovered_collection_targets(
     )
     stmt = collection_target_query().join(CollectionTarget.company).where(CollectionTarget.is_active.is_(True))
     if industry:
-        industry_ids = select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
-        stmt = stmt.where(CollectionTarget.industry_id.in_(industry_ids))
+        stmt = stmt.where(_classified_as_clause(industry=industry))
     stmt = stmt.order_by(linked_count.asc(), Company.name).limit(limit)
     return list(db.scalars(stmt).unique())
 
@@ -398,6 +455,29 @@ def _resolve_classification(
     return industry, sector
 
 
+def _resolve_classifications(
+    db: Session, entries: list[CompanyIndustryInput]
+) -> list[tuple[Industry, Sector | None]]:
+    resolved = []
+    seen: set[int] = set()
+    for entry in entries:
+        industry, sector = _resolve_classification(db, industry_value=entry.industry, sector_value=entry.sector)
+        if industry.id in seen:
+            raise DomainValidationError(
+                [
+                    {
+                        "field": "業界",
+                        "received": entry.industry,
+                        "reason": "同じ業界を重複して指定できません",
+                        "expected": "業界ごとに1件",
+                    }
+                ]
+            )
+        seen.add(industry.id)
+        resolved.append((industry, sector))
+    return resolved
+
+
 def create_collection_target(db: Session, payload: CollectionTargetCreateRequest) -> tuple[CollectionTarget, bool]:
     operation = "collection_target_create"
     request_hash = _request_hash(payload)
@@ -411,38 +491,35 @@ def create_collection_target(db: Session, payload: CollectionTargetCreateRequest
     if payload.priority_tier == 1:
         _ensure_tier_one_capacity(db)
 
-    industry, sector = _resolve_classification(db, industry_value=payload.industry, sector_value=payload.sector)
+    classifications = _resolve_classifications(db, payload.industries)
     company = get_or_create_company(db, payload.company_name)
-    existing = db.scalar(
-        select(CollectionTarget).where(
-            CollectionTarget.company_id == company.id,
-            CollectionTarget.industry_id == industry.id,
-        )
-    )
+    existing = db.scalar(select(CollectionTarget).where(CollectionTarget.company_id == company.id))
     if existing is not None:
         raise DomainValidationError(
             [
                 {
-                    "field": "企業名・業界",
-                    "received": f"{company.name} / {industry.name}",
-                    "reason": "同じ企業と業界の収集対象が既に存在します",
-                    "expected": "未登録の企業と業界の組み合わせ",
+                    "field": "企業名",
+                    "received": company.name,
+                    "reason": "この企業の収集対象が既に存在します",
+                    "expected": "未登録の企業",
                     "example": None,
-                    "alternative": f"target_id={existing.id}をupdate_collection_targetで更新してください",
+                    "alternative": (
+                        f"業界を追加したい場合もtarget_id={existing.id}をupdate_collection_targetのindustriesで"
+                        "更新してください。1つの企業につき収集対象は1件です"
+                    ),
                 }
             ]
         )
 
     target = CollectionTarget(
         company=company,
-        industry=industry,
-        sector=sector,
         priority_tier=payload.priority_tier,
         check_interval_days=payload.check_interval_days,
         selection_reason=payload.selection_reason,
     )
     target.sources = [CollectionSource(source_type=source.source_type, url=source.url) for source in payload.sources]
     db.add(target)
+    set_company_industries(db, company=company, classifications=classifications)
     db.flush()
     after = collection_target_dict(db, target)
     _audit(
@@ -490,15 +567,14 @@ def update_collection_target(
         if payload.company_name is None:
             raise DomainValidationError([{"field": "企業名", "received": None, "reason": "nullにはできません"}])
         company = get_or_create_company(db, payload.company_name)
-    industry_value = payload.industry if "industry" in fields else target.industry.name
-    if industry_value is None:
-        raise DomainValidationError([{"field": "業界", "received": None, "reason": "nullにはできません"}])
-    sector_value = payload.sector if "sector" in fields else (target.sector.name if target.sector else None)
-    industry, sector = _resolve_classification(db, industry_value=industry_value, sector_value=sector_value)
+    classifications = None
+    if "industries" in fields:
+        if not payload.industries:
+            raise DomainValidationError([{"field": "業界", "received": None, "reason": "1件以上指定してください"}])
+        classifications = _resolve_classifications(db, payload.industries)
     collision = db.scalar(
         select(CollectionTarget).where(
             CollectionTarget.company_id == company.id,
-            CollectionTarget.industry_id == industry.id,
             CollectionTarget.id != target.id,
         )
     )
@@ -506,9 +582,10 @@ def update_collection_target(
         raise DomainValidationError(
             [
                 {
-                    "field": "企業名・業界",
-                    "received": f"{company.name} / {industry.name}",
-                    "reason": "同じ収集対象が既に存在します",
+                    "field": "企業名",
+                    "received": company.name,
+                    "reason": "この企業の収集対象が既に存在します",
+                    "alternative": f"target_id={collision.id}へ統合してください",
                 }
             ]
         )
@@ -519,8 +596,8 @@ def update_collection_target(
         _ensure_tier_one_capacity(db)
 
     target.company = company
-    target.industry = industry
-    target.sector = sector
+    if classifications is not None:
+        set_company_industries(db, company=company, classifications=classifications)
     for name in ("priority_tier", "check_interval_days", "selection_reason", "is_active"):
         if name in fields:
             value = getattr(payload, name)
@@ -673,13 +750,13 @@ def record_collection_check(
             raise DomainValidationError(
                 [{"field": "opportunity_id", "received": payload.opportunity_id, "reason": "募集情報が見つかりません"}]
             )
-        if opportunity.company_id != target.company_id or opportunity.industry_id != target.industry_id:
+        if opportunity.company_id != target.company_id:
             raise DomainValidationError(
                 [
                     {
                         "field": "opportunity_id",
                         "received": payload.opportunity_id,
-                        "reason": "収集対象の企業・業界と一致しません",
+                        "reason": "収集対象の企業と一致しません",
                     }
                 ]
             )
@@ -710,8 +787,22 @@ def record_collection_check(
             if source.url == payload.source_url:
                 source.last_checked_at = now
                 break
+    # Closes the loop for targets that only knew the corporate top page: whoever just read that page
+    # can register the recruit/internship pages it linked to, in the same call as the check result,
+    # instead of remembering to follow up with add_collection_source afterwards.
+    known_urls = {source.url for source in target.sources}
+    added_sources = []
+    for discovered in payload.discovered_sources:
+        if discovered.url in known_urls:
+            continue
+        known_urls.add(discovered.url)
+        source = CollectionSource(source_type=discovered.source_type, url=discovered.url)
+        target.sources.append(source)
+        added_sources.append(source)
     db.flush()
     check_after = collection_check_dict(check)
+    if added_sources:
+        check_after["discovered_sources"] = [collection_source_dict(source) for source in added_sources]
     _audit(
         db,
         action="collection_check_create",

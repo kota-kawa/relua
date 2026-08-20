@@ -2,6 +2,7 @@ import pytest
 
 from app.schemas import (
     CollectionCheckRequest,
+    CollectionSourceUpdateRequest,
     CollectionTargetCreateRequest,
     CollectionTargetUpdateRequest,
     OpportunityInput,
@@ -12,19 +13,25 @@ from app.services.collection_targets import (
     create_collection_target,
     get_collection_target,
     list_collection_checks,
+    list_collection_targets,
     record_collection_check,
     undercovered_collection_targets,
+    update_collection_source,
     update_collection_target,
 )
+from app.services.company_industries import company_industries
 from app.services.opportunities import DomainValidationError, write_opportunity
 from tests.test_validation import valid_payload
 
 
 def target_payload(**overrides) -> CollectionTargetCreateRequest:
+    """Build a create request, letting a test say industry="メーカー" instead of spelling out the list."""
+
+    industry = overrides.pop("industry", "IT・通信")
+    sector = overrides.pop("sector", "Webサービス")
     payload = {
         "company_name": "株式会社収集キューテスト",
-        "industry": "IT・通信",
-        "sector": "Webサービス",
+        "industries": [{"industry": industry, "sector": sector}],
         "priority_tier": 1,
         "check_interval_days": 14,
         "selection_reason": "確認対象",
@@ -183,12 +190,13 @@ def test_collection_target_sonota_sector_resolves_to_its_own_industrys_row(db):
             request_id="maker-sonota-target-0001",
         ),
     )
-    assert target.industry.name == "メーカー"
-    assert target.sector.name == "その他"
-    assert target.sector.industry_id == target.industry.id
+    classification = company_industries(db, target.company_id)[0]
+    assert classification.industry.name == "メーカー"
+    assert classification.sector.name == "その他"
+    assert classification.sector.industry_id == classification.industry_id
 
 
-def test_collection_target_id_mismatch_reports_company_and_industry_separately(db):
+def test_collection_target_id_rejects_a_different_company_but_accepts_a_different_industry(db):
     target, _ = create_collection_target(
         db,
         target_payload(
@@ -213,28 +221,106 @@ def test_collection_target_id_mismatch_reports_company_and_industry_separately(d
     assert "株式会社紐付け照合" in reason
     assert "株式会社別の企業" in reason
 
-    with pytest.raises(DomainValidationError) as industry_exc:
-        write_opportunity(
+    # A target covers the whole company, so a posting under one of the company's other industries is
+    # a normal write - and it teaches the company that industry instead of being rejected.
+    write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社紐付け照合",
+                "industry": "メーカー",
+                "sector": "電機・精密",
+                "source_url": "https://example.com/link-check-industry",
+            }
+        ),
+        request_id="link-check-industry-0001",
+        client_name="pytest",
+        collection_target_id=target.id,
+    )
+    snapshot = collection_target_dict(db, get_collection_target(db, target.id))
+    assert [
+        (entry["industry"]["name"], entry["sector"]["name"], entry["is_primary"])
+        for entry in snapshot["industries"]
+    ] == [("IT・通信", "Webサービス", True), ("メーカー", "電機・精密", False)]
+    assert snapshot["primary_industry"]["name"] == "IT・通信"
+
+
+def test_one_company_spanning_two_industries_is_a_single_target(db):
+    """The Ubie case: one company, two industries, and exactly one row to check and to count."""
+
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="Ubie株式会社",
+            industries=[
+                {"industry": "IT・通信", "sector": "AI"},
+                {"industry": "医療・製薬", "sector": "ヘルスケア"},
+            ],
+            sources=[{"source_type": "recruit", "url": "https://ubie.example.com/recruit"}],
+            request_id="multi-industry-target-0001",
+        ),
+    )
+
+    snapshot = collection_target_dict(db, get_collection_target(db, target.id))
+    assert [entry["industry"]["name"] for entry in snapshot["industries"]] == ["IT・通信", "医療・製薬"]
+    assert snapshot["primary_industry"]["name"] == "IT・通信"
+
+    # Reachable from either industry, still one row - the count of targets is the count of companies.
+    for industry in ("IT・通信", "医療・製薬"):
+        result = list_collection_targets(db, industry=industry, query="Ubie")
+        assert [item.id for item in result.items] == [target.id]
+        assert result.total == 1
+
+    with pytest.raises(DomainValidationError) as exc:
+        create_collection_target(
             db,
-            data=OpportunityInput.model_validate(
-                valid_payload()
-                | {
-                    "company_name": "株式会社紐付け照合",
-                    "industry": "メーカー",
-                    "sector": "電機・精密",
-                    "source_url": "https://example.com/link-check-industry",
-                }
+            target_payload(
+                company_name="Ubie株式会社",
+                industry="医療・製薬",
+                sector="ヘルスケア",
+                sources=[{"source_type": "recruit", "url": "https://ubie.example.com/recruit-2"}],
+                request_id="multi-industry-target-0002",
             ),
-            request_id="link-check-industry-0001",
-            client_name="pytest",
-            collection_target_id=target.id,
         )
-    reason = industry_exc.value.errors[0]["reason"]
-    assert "IT・通信" in reason
-    assert "メーカー" in reason
+    assert exc.value.errors[0]["reason"] == "この企業の収集対象が既に存在します"
+    assert f"target_id={target.id}" in exc.value.errors[0]["alternative"]
 
 
-def test_collection_target_dict_distinguishes_company_wide_from_target_linked_counts(db):
+def test_updating_industries_replaces_the_whole_classification(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社分類差し替え",
+            industries=[
+                {"industry": "IT・通信", "sector": "Webサービス"},
+                {"industry": "メーカー", "sector": "電機・精密"},
+            ],
+            request_id="reclassify-target-0001",
+        ),
+    )
+
+    update_collection_target(
+        db,
+        target_id=target.id,
+        payload=CollectionTargetUpdateRequest.model_validate(
+            {
+                "industries": [{"industry": "メーカー", "sector": "機械"}],
+                "request_id": "reclassify-target-0002",
+                "client_name": "pytest",
+            }
+        ),
+    )
+
+    snapshot = collection_target_dict(db, get_collection_target(db, target.id))
+    assert [
+        (entry["industry"]["name"], entry["sector"]["name"], entry["is_primary"])
+        for entry in snapshot["industries"]
+    ] == [("メーカー", "機械", True)]
+    assert list_collection_targets(db, industry="IT・通信", query="分類差し替え").total == 0
+
+
+def test_company_wide_postings_all_count_toward_one_target(db):
     target, _ = create_collection_target(
         db,
         target_payload(
@@ -245,8 +331,8 @@ def test_collection_target_dict_distinguishes_company_wide_from_target_linked_co
         ),
     )
 
-    # A posting for the same company under a DIFFERENT industry: counts company-wide, but does not
-    # auto-link to this target (which is scoped to IT・通信).
+    # A posting for the same company under a different industry. It used to belong to a second
+    # target and left this one reading as uncovered; now it counts here and adds a classification.
     write_opportunity(
         db,
         data=OpportunityInput.model_validate(
@@ -263,9 +349,8 @@ def test_collection_target_dict_distinguishes_company_wide_from_target_linked_co
     )
     snapshot = collection_target_dict(db, get_collection_target(db, target.id))
     assert snapshot["company_opportunity_count"] == 1
-    assert snapshot["target_linked_opportunity_count"] == 0
+    assert [entry["industry"]["name"] for entry in snapshot["industries"]] == ["IT・通信", "メーカー"]
 
-    # A posting under the target's own industry links to it.
     write_opportunity(
         db,
         data=OpportunityInput.model_validate(
@@ -281,7 +366,6 @@ def test_collection_target_dict_distinguishes_company_wide_from_target_linked_co
     )
     snapshot = collection_target_dict(db, get_collection_target(db, target.id))
     assert snapshot["company_opportunity_count"] == 2
-    assert snapshot["target_linked_opportunity_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -348,3 +432,99 @@ def test_undercovered_collection_targets_orders_by_ascending_linked_opportunitie
     ordered = undercovered_collection_targets(db, industry="IT・通信", limit=10)
     ordered_ids = [item.id for item in ordered]
     assert ordered_ids.index(targets[0].id) < ordered_ids.index(targets[1].id) < ordered_ids.index(targets[2].id)
+
+
+def test_top_page_only_target_is_reported_and_filterable_as_a_source_gap(db):
+    top_page_only, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社トップページのみ",
+            sources=[{"source_type": "other", "url": "https://top-page-only.example.com/"}],
+            request_id="collection-source-gap-0001",
+        ),
+    )
+    covered, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社採用ページあり",
+            sources=[{"source_type": "recruit", "url": "https://covered.example.com/recruit"}],
+            request_id="collection-source-gap-0002",
+        ),
+    )
+
+    gap_view = collection_target_dict(db, top_page_only)
+    assert gap_view["has_primary_source"] is False
+    assert gap_view["missing_source_types"] == ["recruit", "internship", "event", "news"]
+
+    covered_view = collection_target_dict(db, covered)
+    assert covered_view["has_primary_source"] is True
+    assert covered_view["missing_source_types"] == ["internship", "event", "news"]
+
+    result = list_collection_targets(db, source_gap=True)
+    assert [item.id for item in result.items] == [top_page_only.id]
+    assert result.total == 1
+
+
+def test_deactivated_recruit_page_reopens_the_source_gap(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社採用ページ停止",
+            sources=[
+                {"source_type": "recruit", "url": "https://retired.example.com/recruit"},
+                {"source_type": "other", "url": "https://retired.example.com/"},
+            ],
+            request_id="collection-source-gap-0003",
+        ),
+    )
+    recruit = next(source for source in target.sources if source.source_type == "recruit")
+    update_collection_source(
+        db,
+        source_id=recruit.id,
+        payload=CollectionSourceUpdateRequest.model_validate(
+            {"is_active": False, "request_id": "collection-source-gap-0004", "client_name": "pytest"}
+        ),
+    )
+    db.refresh(target)
+
+    assert collection_target_dict(db, target)["has_primary_source"] is False
+    assert [item.id for item in list_collection_targets(db, source_gap=True).items] == [target.id]
+
+
+def test_check_can_register_the_recruit_page_it_just_discovered(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社採用ページ発見",
+            sources=[{"source_type": "other", "url": "https://discovery.example.com/"}],
+            request_id="collection-discovery-0001",
+        ),
+    )
+
+    _, updated, _ = record_collection_check(
+        db,
+        target_id=target.id,
+        payload=CollectionCheckRequest.model_validate(
+            {
+                "result": "no_opening",
+                "source_url": "https://discovery.example.com/",
+                "discovered_sources": [
+                    {"source_type": "recruit", "url": "https://discovery.example.com/recruit"},
+                    {"source_type": "internship", "url": "https://discovery.example.com/internship"},
+                    # Already registered: recorded as checked, never added a second time.
+                    {"source_type": "other", "url": "https://discovery.example.com/"},
+                ],
+                "request_id": "collection-discovery-0002",
+                "client_name": "pytest",
+            }
+        ),
+    )
+
+    view = collection_target_dict(db, updated)
+    assert [(source["source_type"], source["url"]) for source in view["sources"]] == [
+        ("other", "https://discovery.example.com/"),
+        ("recruit", "https://discovery.example.com/recruit"),
+        ("internship", "https://discovery.example.com/internship"),
+    ]
+    assert view["has_primary_source"] is True
+    assert view["missing_source_types"] == ["event", "news"]

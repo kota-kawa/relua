@@ -222,7 +222,8 @@ def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
 
 def _keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
     term = f"%{query}%"
-    normalized_term = f"%{normalize_company_name(query)}%"
+    normalized_query = normalize_company_name(query)
+    normalized_term = f"%{normalized_query}%"
     matches: list[ColumnElement[bool]] = [
         Company.name.ilike(term),
         Company.normalized_name.ilike(normalized_term),
@@ -241,7 +242,9 @@ def _keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
         matches.extend(
             [
                 Company.name.op("%")(literal(query)),
+                Company.normalized_name.op("%")(literal(normalized_query)),
                 Company.aliases.any(CompanyAlias.alias.op("%")(literal(query))),
+                Company.aliases.any(CompanyAlias.normalized_alias.op("%")(literal(normalized_query))),
                 Opportunity.event_name.op("%")(literal(query)),
                 Opportunity.job_categories.any(JobCategory.name.op("%")(literal(query))),
             ]

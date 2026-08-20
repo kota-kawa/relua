@@ -13,6 +13,7 @@ from pydantic import Field, ValidationError
 from app.config import get_settings
 from app.db import SessionLocal
 from app.schemas import (
+    ClientName,
     CollectionCheckPayload,
     CollectionCheckRequest,
     CollectionSourceCreatePayload,
@@ -37,6 +38,8 @@ from app.schemas import (
     MCPCollectionSourceWriteResponse,
     MCPCollectionTargetListResponse,
     MCPCollectionWriteResponse,
+    MCPCompanyAliasWriteResponse,
+    MCPCompanyResolutionResponse,
     MCPDeletePreviewResponse,
     MCPDeleteResponse,
     MCPDuplicateResponse,
@@ -55,6 +58,7 @@ from app.schemas import (
     OpportunityPatchPayload,
     OpportunityResponse,
     RecruitmentStatusValue,
+    RequestId,
     SortValue,
     UpdatePayload,
     WritePayload,
@@ -78,9 +82,17 @@ from app.services.collection_targets import (
 from app.services.collection_targets import (
     get_collection_target as get_collection_target_record,
 )
+from app.services.companies import (
+    CompanyIdentityValidationError,
+    add_company_alias,
+    company_identity_dict,
+    delete_company_alias,
+    resolve_company_candidates,
+)
 from app.services.errors import pydantic_errors
 from app.services.master_cache import master_payload
 from app.services.masters import sectors_for_industry
+from app.services.normalization import normalize_company_name
 from app.services.opportunities import (
     DomainValidationError,
     InvalidSearchCursor,
@@ -139,6 +151,8 @@ mcp = FastMCP(
         "追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
         "同じ募集が登録済みでないかfind_similar_opportunitiesで確かめてください。"
         "情報源URLが既存募集と重ならないかfind_opportunities_by_source_urlでも確認してください。"
+        "企業名が略称・英語名・誤記かもしれない場合はresolve_companyで候補を確認し、"
+        "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "その他の一部項目だけを直す場合はpreview_opportunity_patchで差分を確認してからpatch_opportunityを使ってください。"
@@ -278,6 +292,22 @@ def _collection_domain_error(request: Any, action: str, exc: DomainValidationErr
     return _validation_error(request.client_name, request.request_id, exc.errors)
 
 
+def _company_domain_error(
+    *, client_name: str, request_id: str | None, action: str, exc: CompanyIdentityValidationError
+) -> ToolError:
+    with SessionLocal() as db:
+        record_failed_attempt(
+            db,
+            action=action,
+            request_id=request_id,
+            client_name=client_name,
+            source_url=None,
+            errors=exc.errors,
+            entity_type="company",
+        )
+    return _validation_error(client_name, request_id, exc.errors)
+
+
 def _write_input(request: MCPWriteRequest | MCPUpdateRequest) -> OpportunityInput:
     return OpportunityInput.model_validate(request.model_dump(exclude={"request_id", "client_name"}))
 
@@ -349,7 +379,7 @@ def _prepare_opportunity_patch(
 def search_opportunity(
     query: Annotated[
         str | None,
-        Field(description="企業名・イベント名・職種・内容・募集要件に対するキーワード。表記揺れも検索できます。"),
+        Field(description="企業名・イベント名・職種・内容・募集要件に対するキーワード。表記揺れや軽微なタイプミスも検索できます。"),
     ] = None,
     recruitment_status: Annotated[list[RecruitmentStatusValue] | None, Field(description="募集状況で絞り込みます。")] = None,
     industry: Annotated[list[IndustryValue] | None, Field(description="業界で絞り込みます。")] = None,
@@ -468,6 +498,145 @@ def get_sectors(
         return MCPSectorsResponse.model_validate(
             {"industry": master_dict(item), "sectors": [master_dict(sector) for sector in sectors]}
         )
+
+
+@mcp.tool(
+    name="resolve_company",
+    title="企業名から既存企業候補を解決",
+    description=(
+        "正式名・登録済み別名の完全一致を優先し、見つからない場合は部分一致とタイプミスを含む候補を返します。"
+        "partial／fuzzyは候補でしかなく、自動的に同一企業とは扱いません。公式サイト等で同一企業と確認した場合だけ"
+        "add_company_aliasを呼んでください。収集対象企業も検索対象に含むため認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def resolve_company_tool(
+    company_name: Annotated[
+        str,
+        Field(min_length=1, max_length=200, description="正式名、略称、英語名、または誤記の可能性がある企業名。"),
+    ],
+    limit: Annotated[int, Field(ge=1, le=10, description="返す候補数（1〜10）。")] = 5,
+) -> MCPCompanyResolutionResponse:
+    with SessionLocal() as db:
+        try:
+            candidates = resolve_company_candidates(db, company_name, limit=limit)
+        except CompanyIdentityValidationError as exc:
+            raise _company_domain_error(
+                client_name="mcp-client", request_id=None, action="company_resolve", exc=exc
+            ) from exc
+        match_type = candidates[0].match_type if candidates else "none"
+        exact = match_type in {"canonical_exact", "alias_exact"}
+        return MCPCompanyResolutionResponse.model_validate(
+            {
+                "query": company_name,
+                "normalized_query": normalize_company_name(company_name),
+                "match_type": match_type,
+                "requires_confirmation": not exact,
+                "message": (
+                    "登録済みの企業と完全一致しました。"
+                    if exact
+                    else (
+                        "類似する企業候補があります。同一企業か公式情報で確認してください。"
+                        if candidates
+                        else "既存企業の候補は見つかりませんでした。正式名称で新規登録してください。"
+                    )
+                ),
+                "candidates": [
+                    {
+                        "company": company_identity_dict(candidate.company),
+                        "match_type": candidate.match_type,
+                        "matched_name": candidate.matched_name,
+                        "score": candidate.score,
+                    }
+                    for candidate in candidates
+                ],
+            }
+        )
+
+
+@mcp.tool(
+    name="add_company_alias",
+    title="確認済みの企業別名を追加",
+    description=(
+        "resolve_companyが返した候補を公式情報で同一企業と確認した後、その企業へ略称・英語名・旧社名などを追加します。"
+        "曖昧一致だけを根拠に登録してはいけません。追加後は募集登録・重複判定・検索の全経路で別名が使われます。"
+        "認証が必要です。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def add_company_alias_tool(
+    company_id: Annotated[int, Field(ge=1, description="resolve_companyが返した企業ID。")],
+    alias: Annotated[str, Field(min_length=1, max_length=200, description="確認済みの略称・英語名・旧社名。")],
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時は同じ値を使用します。")],
+    client_name: ClientName = "mcp-client",
+) -> MCPCompanyAliasWriteResponse:
+    try:
+        with SessionLocal() as db:
+            company, changed, replayed = add_company_alias(
+                db,
+                company_id=company_id,
+                alias=alias,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPCompanyAliasWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "changed": changed,
+                    "message": (
+                        "同じ別名追加操作は処理済みです"
+                        if replayed
+                        else ("企業別名を追加しました" if changed else "同じ企業名または別名が既に登録済みです")
+                    ),
+                    "company": company_identity_dict(company),
+                }
+            )
+    except CompanyIdentityValidationError as exc:
+        raise _company_domain_error(
+            client_name=client_name, request_id=request_id, action="company_alias_add", exc=exc
+        ) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="delete_company_alias",
+    title="誤った企業別名を削除",
+    description=(
+        "resolve_companyが返すaliases内のIDを指定し、誤登録された別名を削除します。"
+        "削除後、その表記は企業の自動解決・重複判定・検索に使われなくなります。認証が必要です。"
+    ),
+    annotations=DELETING,
+)
+def delete_company_alias_tool(
+    alias_id: Annotated[int, Field(ge=1, description="削除する企業別名ID。")],
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時は同じ値を使用します。")],
+    client_name: ClientName = "mcp-client",
+) -> MCPCompanyAliasWriteResponse:
+    try:
+        with SessionLocal() as db:
+            company, replayed = delete_company_alias(
+                db,
+                alias_id=alias_id,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPCompanyAliasWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "changed": not replayed,
+                    "message": "同じ別名削除操作は処理済みです" if replayed else "企業別名を削除しました",
+                    "company": company_identity_dict(company),
+                }
+            )
+    except CompanyIdentityValidationError as exc:
+        raise _company_domain_error(
+            client_name=client_name, request_id=request_id, action="company_alias_delete", exc=exc
+        ) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された企業別名が見つかりません"}) from exc
 
 
 @mcp.tool(

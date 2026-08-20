@@ -77,6 +77,9 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "get_sectors",
         "find_similar_opportunities",
         "find_opportunities_by_source_url",
+        "resolve_company",
+        "add_company_alias",
+        "delete_company_alias",
         "validate_opportunity",
         "add_opportunity",
         "upsert_opportunity",
@@ -126,6 +129,10 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["find_opportunities_by_source_url"]["securitySchemes"] == [{"type": "noauth"}]
     assert tools["list_stale_opportunities"]["annotations"]["readOnlyHint"] is True
     assert tools["list_stale_opportunities"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["resolve_company"]["annotations"]["readOnlyHint"] is True
+    assert tools["resolve_company"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["add_company_alias"]["annotations"]["destructiveHint"] is False
+    assert tools["delete_company_alias"]["annotations"]["destructiveHint"] is True
 
 
 def test_search_filters_publish_their_allowed_values():
@@ -301,6 +308,58 @@ def test_find_similar_opportunities_sees_through_company_name_variants(tools, db
     assert len(narrowed["matches"]) == 1
     assert missed["matches"] == []
     assert "新規登録できます" in missed["message"]
+
+
+def test_mcp_can_resolve_register_use_and_remove_a_company_alias(tools, db):
+    item = seed(db, company_name="株式会社ディー・エヌ・エー")
+
+    fuzzy = call("resolve_company", {"company_name": "ディーエヌエア"})
+    assert fuzzy["match_type"] == "fuzzy"
+    assert fuzzy["requires_confirmation"] is True
+    assert fuzzy["candidates"][0]["company"]["id"] == item.company_id
+
+    added = call(
+        "add_company_alias",
+        {
+            "company_id": item.company_id,
+            "alias": "DeNA",
+            "request_id": "mcp-company-alias-add-0001",
+        },
+    )
+    assert added["success"] is True
+    assert added["changed"] is True
+    alias_id = added["company"]["aliases"][0]["id"]
+
+    exact = call("resolve_company", {"company_name": "dena"})
+    assert exact["match_type"] == "alias_exact"
+    assert exact["requires_confirmation"] is False
+    assert call("search_opportunity", {"query": "DeNA"})["total"] == 1
+    assert call("find_similar_opportunities", {"company_name": "ＤｅＮＡ"})["matches"][0]["id"] == item.id
+
+    removed = call(
+        "delete_company_alias",
+        {"alias_id": alias_id, "request_id": "mcp-company-alias-delete-0001"},
+    )
+    assert removed["changed"] is True
+    assert removed["company"]["aliases"] == []
+    missing = call("resolve_company", {"company_name": "DeNA"})
+    assert missing["match_type"] == "none"
+    assert missing["requires_confirmation"] is True
+
+
+def test_mcp_company_alias_write_is_idempotent_and_rejects_request_reuse(tools, db):
+    item = seed(db, company_name="株式会社ディー・エヌ・エー")
+    arguments = {
+        "company_id": item.company_id,
+        "alias": "DeNA",
+        "request_id": "mcp-company-alias-replay-0001",
+    }
+
+    assert call("add_company_alias", arguments)["idempotent_replay"] is False
+    assert call("add_company_alias", arguments | {"alias": "dena"})["idempotent_replay"] is True
+    error = tool_error("add_company_alias", arguments | {"alias": "Mobage"})
+    assert error["error"] == "validation_failed"
+    assert error["errors"][0]["field"] == "request_id"
 
 
 def test_adding_the_same_posting_twice_is_refused_and_points_at_the_existing_entry(tools, db):

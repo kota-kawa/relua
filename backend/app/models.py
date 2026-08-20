@@ -183,6 +183,19 @@ class CompanyAlias(Base):
     __table_args__ = (UniqueConstraint("company_id", "alias", name="uq_company_alias_company_alias"),)
 
 
+class CompanyRequestRecord(Base):
+    """Idempotency keys for MCP writes to company identity data."""
+
+    __tablename__ = "company_request_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class CollectionTarget(Base):
     """A company the operator intends to monitor, and the schedule for monitoring it.
 

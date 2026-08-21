@@ -12,6 +12,7 @@ from sqlalchemy import Integer, Select, and_, case, cast, func, literal, or_, se
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.dates import today_in_tokyo
 from app.models import (
     PUBLIC_CODE_LENGTH,
     AuditLog,
@@ -63,6 +64,14 @@ class SearchResult:
     @property
     def total_pages(self) -> int:
         return max(1, math.ceil(self.total / self.per_page))
+
+
+@dataclass(frozen=True)
+class OpportunityReview:
+    """A live posting that needs operator confirmation, with machine-detected reasons."""
+
+    opportunity: Opportunity
+    reasons: list[str]
 
 
 def _search_signature(
@@ -602,6 +611,49 @@ def list_stale_opportunities(
         Opportunity.id,
     ).limit(limit)
     return list(db.scalars(stmt).unique())
+
+
+def list_opportunities_requiring_review(
+    db: Session, *, days: int = 7, limit: int = 50
+) -> list[OpportunityReview]:
+    """Return source-stale postings and date/status contradictions in review priority order.
+
+    The date checks are deliberately a live query rather than stored flags: an extended deadline
+    disappears from the queue immediately after an operator updates it.  Contradictions are placed
+    before ordinary stale-source work but never alter the published status themselves.
+    """
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    today = today_in_tokyo(now)
+    threshold = now - timedelta(days=days)
+    source_stale = or_(Opportunity.source_checked_at.is_(None), Opportunity.source_checked_at <= threshold)
+    date_status_conflict = and_(
+        RecruitmentStatus.name == "募集中",
+        or_(Opportunity.deadline < today, Opportunity.event_end_date < today),
+    )
+    stmt = (
+        opportunity_query()
+        .join(Opportunity.company)
+        .join(Opportunity.status)
+        .where(or_(date_status_conflict, source_stale))
+        .order_by(
+            case((date_status_conflict, 0), else_=1),
+            case((Opportunity.source_checked_at.is_(None), 0), else_=1),
+            Opportunity.source_checked_at.asc(),
+            Opportunity.id,
+        )
+        .limit(limit)
+    )
+    reviews = []
+    for item in db.scalars(stmt).unique():
+        reasons = []
+        if item.status.name == "募集中" and item.deadline is not None and item.deadline < today:
+            reasons.append("deadline_passed_while_open")
+        if item.status.name == "募集中" and item.event_end_date is not None and item.event_end_date < today:
+            reasons.append("event_ended_while_open")
+        if item.source_checked_at is None or _as_utc(item.source_checked_at) <= threshold:
+            reasons.append("source_not_checked_recently")
+        reviews.append(OpportunityReview(opportunity=item, reasons=reasons))
+    return reviews
 
 
 def _reused_request_id_error(request_id: str) -> dict[str, Any]:

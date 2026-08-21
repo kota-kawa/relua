@@ -737,7 +737,18 @@ class MCPSearchResponse(BaseModel):
 
 
 class MCPStaleOpportunityListResponse(BaseModel):
-    items: list[OpportunitySummary]
+    items: list["OpportunityReviewSummary"]
+
+
+class OpportunityReviewSummary(OpportunitySummary):
+    review_reasons: list[
+        Literal["deadline_passed_while_open", "event_ended_while_open", "source_not_checked_recently"]
+    ] = Field(
+        description=(
+            "要確認になった理由。期限・実施終了日と「募集中」の矛盾は、"
+            "情報源の未確認より優先して返します。"
+        )
+    )
 
 
 class MCPWriteResponse(BaseModel):

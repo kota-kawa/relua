@@ -12,6 +12,7 @@ from app.services.opportunities import (
     DomainValidationError,
     find_similar_opportunities,
     get_opportunity_by_public_ref,
+    list_opportunities_requiring_review,
     list_stale_opportunities,
     search_opportunities,
     update_recruitment_status,
@@ -570,3 +571,39 @@ def test_list_stale_opportunities_prioritizes_never_checked_then_oldest_first(db
 
     assert fresh.id not in stale_ids
     assert stale_ids.index(never_checked.id) < stale_ids.index(stale.id)
+
+
+def test_review_queue_includes_fresh_date_status_conflicts_before_stale_sources(db):
+    stale, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "株式会社通常確認", "source_url": "https://example.com/review-stale"}
+        ),
+        request_id="review-stale-0001",
+        client_name="pytest",
+    )
+    stale.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017 -- local Python is 3.10
+    today = today_in_tokyo()
+    conflict, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社期限矛盾",
+                "event_name": "矛盾テスト",
+                "deadline": (today - timedelta(days=1)).isoformat(),
+                "event_end_date": (today - timedelta(days=2)).isoformat(),
+                "source_url": "https://example.com/review-conflict",
+            }
+        ),
+        request_id="review-conflict-0001",
+        client_name="pytest",
+    )
+    db.commit()
+
+    reviews = list_opportunities_requiring_review(db, days=7)
+    by_id = {review.opportunity.id: review for review in reviews}
+
+    assert reviews[0].opportunity.id == conflict.id
+    assert by_id[conflict.id].reasons == ["deadline_passed_while_open", "event_ended_while_open"]
+    assert by_id[stale.id].reasons == ["source_not_checked_recently"]

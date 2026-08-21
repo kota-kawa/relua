@@ -833,6 +833,36 @@ def test_list_stale_opportunities_flags_records_not_recently_confirmed(tools, db
     assert stale.id in ids
     assert fresh.id not in ids
     assert result["items"][0]["id"] == stale.id
+    assert result["items"][0]["review_reasons"] == ["source_not_checked_recently"]
+
+
+def test_review_queue_prioritizes_open_postings_with_past_dates(tools, db):
+    stale = seed(
+        db,
+        company_name="株式会社通常再確認",
+        source_url="https://example.com/review-queue-stale",
+    )
+    stale.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017 -- tests also support Python 3.10
+    today = date.today()
+    conflict = seed(
+        db,
+        company_name="株式会社矛盾確認",
+        event_name="期限矛盾インターン",
+        deadline=(today - timedelta(days=1)).isoformat(),
+        event_end_date=(today - timedelta(days=2)).isoformat(),
+        source_url="https://example.com/review-queue-conflict",
+    )
+    db.commit()
+
+    result = call("list_stale_opportunities", {"days": 7})
+    items = {item["id"]: item for item in result["items"]}
+
+    assert result["items"][0]["id"] == conflict.id
+    assert items[conflict.id]["review_reasons"] == [
+        "deadline_passed_while_open",
+        "event_ended_while_open",
+    ]
+    assert items[stale.id]["review_reasons"] == ["source_not_checked_recently"]
 def collection_target_args(**overrides) -> dict:
     industry = overrides.pop("industry", "IT・通信")
     sector = overrides.pop("sector", "Webサービス")

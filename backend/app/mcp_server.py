@@ -108,7 +108,7 @@ from app.services.opportunities import (
     find_source_url_duplicates,
     get_opportunity_by_public_ref,
     is_patch_replay,
-    list_stale_opportunities,
+    list_opportunities_requiring_review,
     opportunity_input_dict,
     opportunity_patch_changes,
     preview_opportunity_deletion,
@@ -162,6 +162,7 @@ mcp = FastMCP(
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "公式ページを確認して内容が変わっていない場合はverify_opportunityを使って確認だけを記録してください。"
+        "日付と募集状況の矛盾、または公式情報の再確認対象はlist_stale_opportunitiesで優先順に確認してください。"
         "その他の一部項目だけを直す場合はpreview_opportunity_patchで差分を確認してからpatch_opportunityを使ってください。"
         "誤登録を削除する場合はpreview_delete_opportunityで影響を確認してからdelete_opportunityを使ってください。"
         "誤って削除した募集はrestore_opportunityで同じIDと公開コードのまま復元できます。"
@@ -1719,26 +1720,36 @@ def list_recent_writes(
 
 @mcp.tool(
     name="list_stale_opportunities",
-    title="公式情報の再確認が必要な募集を取得",
+    title="要確認の募集を優先順に取得",
     description=(
-        "公式ページを一定期間確認できていない募集情報を、確認日が古い順（未確認は最優先）に返します。"
+        "「募集中」なのに締め切りまたは実施終了日を過ぎた矛盾を最優先で返します。"
+        "続いて公式ページを一定期間確認できていない募集を、未確認・確認日が古い順に返します。"
+        "矛盾は自動で「締切」に変更しません。"
         "見つけた各募集はupdate_recruitment_status、patch_opportunity、"
-        "または収集対象があるならrecord_collection_checkで再確認結果を記録してください。認証が必要です。"
+        "変更がなければverify_opportunity、収集対象があるならrecord_collection_checkで再確認結果を記録してください。認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
 def list_stale_opportunities_tool(
     days: Annotated[
-        int, Field(ge=1, le=365, description="この日数より公式情報の確認が経過している募集を対象にします。")
+        int,
+        Field(
+            ge=1,
+            le=365,
+            description="この日数より公式情報の確認が経過している募集を対象にします。日付と「募集中」の矛盾は日数にかかわらず含まれます。",
+        ),
     ] = 7,
     limit: Annotated[int, Field(ge=1, le=100, description="取得件数（1〜100）。")] = 20,
 ) -> MCPStaleOpportunityListResponse:
     with SessionLocal() as db:
-        # No deadline filter: a posting whose deadline already passed without its status being
-        # updated is exactly the kind of gap this tool exists to surface, not one to hide.
-        items = list_stale_opportunities(db, days=days, limit=limit)
+        reviews = list_opportunities_requiring_review(db, days=days, limit=limit)
         return MCPStaleOpportunityListResponse.model_validate(
-            {"items": [opportunity_summary(item) for item in items]}
+            {
+                "items": [
+                    opportunity_summary(review.opportunity) | {"review_reasons": review.reasons}
+                    for review in reviews
+                ]
+            }
         )
 
 

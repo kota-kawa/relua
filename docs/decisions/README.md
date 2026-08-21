@@ -12,6 +12,7 @@
 | [`0004-company-identity-and-collection-model.md`](./0004-company-identity-and-collection-model.md) | 企業同一性と収集対象を企業単位で管理する | Accepted |
 | [`0005-confirmed-company-merge.md`](./0005-confirmed-company-merge.md) | 確認済みの重複企業を明示的な物理統合で解消する | Accepted |
 | [`0006-existing-company-collection-targets.md`](./0006-existing-company-collection-targets.md) | 既存CompanyをIDで収集対象へ追加し、未監視企業を検出する | Accepted |
-| [`0007-expired-opportunity-retention.md`](./0007-expired-opportunity-retention.md) | 締切募集を30日後に完全削除する | Accepted |
+| [`0007-expired-opportunity-retention.md`](./0007-expired-opportunity-retention.md) | 締切募集を30日後に完全削除する | Superseded |
+| [`0008-manual-expiry-review-queue.md`](./0008-manual-expiry-review-queue.md) | 日付と募集状況の矛盾を要確認キューへ入れ、終了を自動判定しない | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

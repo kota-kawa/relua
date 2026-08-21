@@ -1,6 +1,6 @@
 # ADR-0007: 締切募集を30日後に完全削除する
 
-- Status: Accepted
+- Status: Superseded by [ADR-0008](./0008-manual-expiry-review-queue.md)
 - Scope: 募集の削除ライフサイクル、日次運用、データ保持量
 
 ## Context

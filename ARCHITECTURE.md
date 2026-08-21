@@ -123,7 +123,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | `app/security.py` | 内部token、Bearer、operator password の比較とOAuth token hash |
 | `app/master_data.py` | 新規DBへ固定値マスタを投入する定義 |
 | `app/dates.py` | 東京時間を基準にした当日判定 |
-| `app/scripts/close_expired.py` | 締切日を過ぎた公開募集の状況を更新 |
+| `app/scripts/close_expired.py` | 締切日の翌日に論理削除し、30日経過した論理削除募集を完全削除 |
 | `app/scripts/seed_demo.py` | 架空のUI確認用データを冪等的に投入 |
 | `app/scripts/mcp_connections.py` | OAuth grant の一覧・失効・期限切れ掃除 |
 
@@ -168,7 +168,7 @@ companies ──1:1── collection_targets ──< collection_sources
 - 企業統合は明示した統合元IDの募集、別名、業界分類、収集対象・情報源・確認履歴を統合先へ移し、統合元のCompanyを物理削除する。監査ログは不変の履歴として旧IDを保持する。名前の類似だけで自動統合しない。
 - 成功・失敗を `audit_logs` に記録する。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
 - 全項目更新は `get_opportunity` で最新値を取得してから送る。部分更新・削除は `expected_updated_at` で楽観ロックし、取得後の別更新による上書きを拒否する。
-- 削除は `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。復元時にも公開中の同名重複を再確認する。
+- 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。締切日を過ぎた募集は日次ジョブで論理削除され、削除から30日後に完全削除する。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。
 - 同一企業の同名イベントは既定で拒否し、別日程等として意図的に分ける場合だけ `allow_duplicate` を明示する。
 
 ### 4.4 OAuthデータ

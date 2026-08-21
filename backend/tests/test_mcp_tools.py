@@ -94,6 +94,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "list_recent_writes",
         "list_stale_opportunities",
         "list_collection_targets",
+        "list_unmonitored_companies",
         "get_collection_target",
         "get_collection_queue",
         "list_undercovered_companies",
@@ -124,6 +125,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["restore_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["get_collection_queue"]["annotations"]["readOnlyHint"] is True
     assert tools["get_collection_queue"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["list_unmonitored_companies"]["annotations"]["readOnlyHint"] is True
     assert tools["update_collection_target"]["annotations"]["destructiveHint"] is False
     assert tools["patch_opportunity"]["annotations"]["destructiveHint"] is False
     assert tools["preview_opportunity_patch"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
@@ -892,6 +894,8 @@ def test_collection_target_schema_is_actionable_for_mcp_clients():
     assert industries["minItems"] == 1
     assert "複数指定" in industries["description"]
     assert payload["properties"]["priority_tier"]["minimum"] == 1
+    assert any(item.get("minimum") == 1 for item in payload["properties"]["company_id"]["anyOf"])
+    assert "company_name" in payload["properties"]
     assert payload["properties"]["sources"]["items"]["properties"]["url"]["description"]
     assert schemas["record_collection_check"]["properties"]["payload"]["properties"]["result"]["enum"] == [
         "found",
@@ -899,6 +903,34 @@ def test_collection_target_schema_is_actionable_for_mcp_clients():
         "unreachable",
         "needs_review",
     ]
+
+
+def test_mcp_lists_unmonitored_companies_and_adds_one_by_id(tools, db):
+    salesforce = seed(
+        db,
+        company_name="Salesforce",
+        source_url="https://example.com/salesforce-unmonitored-posting",
+    )
+    adobe = seed(
+        db,
+        company_name="Adobe",
+        event_name="Adobe未監視インターン",
+        source_url="https://example.com/adobe-unmonitored-posting",
+    )
+    target_args = collection_target_args(
+        company_id=salesforce.company_id,
+        request_id="mcp-existing-company-target-0001",
+        sources=[{"source_type": "recruit", "url": "https://example.com/salesforce-unmonitored-careers"}],
+    )
+    del target_args["payload"]["company_name"]
+
+    created = call("add_collection_target", target_args)
+    missing = call("list_unmonitored_companies", {"query": "Adobe"})
+
+    assert created["target"]["company"]["id"] == salesforce.company_id
+    assert missing["total"] == 1
+    assert missing["items"][0]["id"] == adobe.company_id
+    assert missing["items"][0]["company_opportunity_count"] == 1
 
 
 def test_collection_queue_supports_create_patch_source_management_and_checks(tools, db):

@@ -129,10 +129,11 @@ https://<公開ホスト名>/mcp
 | `restore_opportunity` | 必要 | 論理削除した募集を同じID・公開コードのまま復元する |
 | `list_recent_writes` | 必要 | 直近の登録・更新・削除・復元の記録を返す |
 | `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧する（採用ページ未登録の対象だけの抽出を含む） |
+| `list_unmonitored_companies` | 必要 | 企業マスタにあり、まだ情報収集対象を持たない企業を一覧する |
 | `get_collection_target` | 必要 | 収集対象、公式ページ、登録済み募集を1件取得する |
 | `get_collection_queue` | 必要 | 未確認または再確認期限を過ぎた企業を優先度順に返す |
 | `list_collection_checks` | 必要 | 企業ごとの情報収集・確認履歴を新しい順に返す |
-| `add_collection_target` | 必要 | 企業・所属業界・優先度・確認間隔・公式ページを収集対象へ追加する |
+| `add_collection_target` | 必要 | 既存CompanyのIDまたは新規企業名、所属業界、優先度、確認間隔、公式ページを収集対象へ追加する |
 | `update_collection_target` | 必要 | 収集対象を部分更新または無効化する |
 | `add_collection_source` | 必要 | 収集対象へ企業公式ページを追加する |
 | `update_collection_source` | 必要 | 公式ページのURL・種類・有効状態を部分更新する |
@@ -182,7 +183,7 @@ PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ�
 
 推奨操作順は次のとおりです。
 
-1. `add_collection_target` で企業、所属業界、優先度、確認間隔、1件以上の企業公式ページを登録する
+1. 既存の企業は `list_unmonitored_companies` でIDを確認し、`add_collection_target` の `company_id` で、所属業界、優先度、確認間隔、1件以上の企業公式ページを登録する。新規企業だけは `company_name` を指定する（両方は指定しない）
 2. `get_collection_queue` で未確認または次回確認期限を過ぎた企業を取得する
 3. 公式ページを確認し、`find_similar_opportunities` と `find_opportunities_by_source_url` を経て募集を追加または更新する
 4. 募集を追加・更新する場合は `collection_target_id` を渡し、募集と確認結果 `found` を同じトランザクションで記録する

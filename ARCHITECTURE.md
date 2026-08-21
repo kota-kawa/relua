@@ -93,7 +93,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `merge_company` | 前者2つは不要、企業の候補確認・別名・物理統合の書き込みは必要 |
 | 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
-| 収集キュー | target/source/check の一覧、キュー、追加、更新、確認記録 | 必要 |
+| 収集キュー | target/source/check の一覧、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
 | OAuth接続管理 | `backend/app/scripts/mcp_connections.py` | サーバー上の運用コマンド |
 
 書き込みツールは、入力を [`backend/app/schemas.py`](./backend/app/schemas.py) で検証し、ドメインエラーを構造化して返します。実際の保存や整合性処理は `mcp_server.py` に複製せず `backend/app/services/` へ委譲します。
@@ -157,6 +157,7 @@ companies ──1:1── collection_targets ──< collection_sources
 ```
 
 - `collection_targets` は1企業につき1件。複数業界の分類は `company_industries` に置き、同じ企業を二重巡回・二重計上しない。
+- `list_unmonitored_companies` はCompanyを起点に、収集対象がない企業を返す。`add_collection_target` は既存CompanyのIDを明示指定でき、名前の再入力による重複Company作成を防ぐ。
 - `collection_targets.is_active` と各 source の `is_active` は無効化で保持する。削除ではなく運用状態を表す。
 - 募集書き込みへ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。
 - 採用ページ未登録、未確認、確認期限超過は収集キューの状態として返される。

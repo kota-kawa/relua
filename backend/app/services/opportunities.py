@@ -1115,13 +1115,6 @@ def write_opportunity(
     if errors:
         raise DomainValidationError(errors)
 
-    collection_target = _collection_target_for_write(
-        db,
-        collection_target_id=collection_target_id,
-        data=data,
-        request_id=request_id,
-    )
-
     if opportunity_id:
         item = get_opportunity_for_update(db, opportunity_id) if expected_updated_at else get_opportunity(db, opportunity_id)
         if item is None:
@@ -1134,6 +1127,36 @@ def write_opportunity(
         item = Opportunity(public_code=_unique_public_code(db))
         before = None
         is_new = True
+
+    # Linking a collection target - and the "found" freshness it stamps on the target and on
+    # source_checked_at below - only belongs to a brand-new registration: that is the one case where
+    # writing the row *is* confirming the primary source right now. An update or patch is a plain
+    # content edit and must not silently claim a source check that didn't happen; write != verify. A
+    # caller who did re-check the source records that separately via verify_opportunity or
+    # record_collection_check.
+    if collection_target_id is not None and not is_new:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "情報収集対象ID",
+                    "received": collection_target_id,
+                    "reason": (
+                        "更新では指定できません。公式情報を確認した場合はverify_opportunityまたは"
+                        "record_collection_checkで別途記録してください"
+                    ),
+                }
+            ]
+        )
+    collection_target = (
+        _collection_target_for_write(
+            db,
+            collection_target_id=collection_target_id,
+            data=data,
+            request_id=request_id,
+        )
+        if is_new
+        else None
+    )
 
     scalar_fields = [
         "event_name",
@@ -1172,10 +1195,12 @@ def write_opportunity(
     # Every source-backed write advances the version used by optimistic locking. Python's
     # microsecond clock also keeps SQLite tests from collapsing two writes into one timestamp.
     item.updated_at = _next_version_timestamp(item)
-    # This write's data came from reading data.source_url just now, so it also counts as confirming
-    # the official source - independently of updated_at, which exists for optimistic locking.
-    item.source_checked_at = item.updated_at
     if is_new:
+        # This write's data came from reading data.source_url just now, so it also counts as
+        # confirming the official source - independently of updated_at, which exists for optimistic
+        # locking. An update/patch does not get the same treatment: see the collection_target guard
+        # above for why write and verification are kept separate past registration.
+        item.source_checked_at = item.updated_at
         db.add(item)
     db.flush()
     if collection_target is not None:

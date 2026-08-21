@@ -475,6 +475,54 @@ def test_write_opportunity_records_when_the_official_source_was_confirmed(db):
     assert item.source_checked_at == item.updated_at
 
 
+def test_updating_an_existing_opportunity_does_not_claim_a_fresh_source_check(db):
+    """write != verify: editing a field (e.g. fixing a tag) is not the same claim as having just
+
+    re-read the primary source, so an update/patch must leave source_checked_at exactly as it was
+    until a caller separately confirms via verify_opportunity or record_collection_check.
+    """
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="write-verify-split-0001", client_name="pytest")
+    original_checked_at = item.source_checked_at
+    original_updated_at = item.updated_at
+    assert original_checked_at is not None
+
+    updated, replayed = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload() | {"tags": ["急募"]}),
+        request_id="write-verify-split-0002",
+        client_name="pytest",
+        opportunity_id=item.id,
+        expected_updated_at=item.updated_at,
+        action="patch",
+    )
+
+    assert replayed is False
+    assert updated.updated_at > original_updated_at
+    assert updated.source_checked_at == original_checked_at
+
+
+def test_updating_an_existing_opportunity_rejects_collection_target_id(db):
+    """collection_target_id only makes sense on a brand-new registration; an update is a plain
+
+    content edit, so passing it is a caller error rather than something to silently ignore.
+    """
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="write-verify-guard-0001", client_name="pytest")
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(valid_payload() | {"tags": ["急募"]}),
+            request_id="write-verify-guard-0002",
+            client_name="pytest",
+            opportunity_id=item.id,
+            expected_updated_at=item.updated_at,
+            collection_target_id=1,
+        )
+    assert exc_info.value.errors[0]["field"] == "情報収集対象ID"
+
+
 def test_write_opportunity_locks_company_before_checking_duplicates(db):
     """write_opportunity now resolves+row-locks the Company before find_exact_duplicates runs
     (previously the duplicate check ran first, so two concurrent writers for the same company could

@@ -943,22 +943,14 @@ def upsert_opportunity(
         "get_opportunityで現在値を取得し、変更しない項目もそのまま含めた完全なpayloadを送ってください。"
         "状況や締切だけを直す場合はupdate_recruitment_statusを使ってください。"
         "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
+        "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
+        "更新にあたって一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
     ),
     annotations=REPLACING,
 )
 def update_opportunity(
     opportunity_id: Annotated[str, Field(description="更新対象のid（UUID）。get_opportunityのidをそのまま渡します。")],
     payload: UpdatePayload,
-    collection_target_id: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "確認中の収集対象ID。指定すると募集更新と確認履歴を同じトランザクションで記録します。"
-                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けて確認履歴を記録します。"
-            ),
-        ),
-    ] = None,
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPUpdateRequest)
     data = _write_input(request)
@@ -970,7 +962,6 @@ def update_opportunity(
                 request_id=request.request_id,
                 client_name=request.client_name,
                 opportunity_id=opportunity_id,
-                collection_target_id=collection_target_id,
             )
             return MCPWriteResponse.model_validate(
                 {
@@ -1039,6 +1030,9 @@ def preview_opportunity_patch_tool(
     description=(
         "指定した項目だけを更新し、サーバー側で現在値とマージして全項目を再検証します。"
         "expected_updated_atが現在値と違う場合は上書きせず拒否します。先にpreview_opportunity_patchを実行してください。"
+        "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
+        "タグや分類だけの修正のように、一次情報を読み直していない修正でも安全に使えます。"
+        "一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
     ),
     annotations=PATCHING,
 )
@@ -1051,16 +1045,6 @@ def patch_opportunity_tool(
     ],
     request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。")],
     client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
-    collection_target_id: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "指定すると更新成功と同時に収集確認結果foundを記録します。"
-                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けます。"
-            ),
-        ),
-    ] = None,
 ) -> MCPWriteResponse:
     try:
         with SessionLocal() as db:
@@ -1081,7 +1065,6 @@ def patch_opportunity_tool(
                 request_id=request_id,
                 client_name=client_name,
                 opportunity_id=opportunity_id,
-                collection_target_id=collection_target_id,
                 expected_updated_at=expected_updated_at,
                 action="patch",
             )

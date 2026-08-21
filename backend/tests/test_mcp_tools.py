@@ -550,6 +550,48 @@ def test_patch_preview_updates_only_selected_fields_and_rejects_stale_writes(too
     assert stale["errors"][0]["field"] == "更新前の最終確認日時"
 
 
+def test_patch_opportunity_writes_content_without_claiming_a_fresh_source_check(tools, db):
+    """write != verify: patch_opportunity only changes DB content. A caller who actually re-read the
+
+    primary source records that separately via verify_opportunity or record_collection_check.
+    """
+    item = seed(db)
+    original_checked_at = item.source_checked_at
+    current = call("get_opportunity", {"reference": item.id})
+
+    updated = call(
+        "patch_opportunity",
+        {
+            "opportunity_id": item.id,
+            "changes": {"description": "タグ・分類だけを修正しました。"},
+            "expected_updated_at": current["updated_at"],
+            "request_id": "patch-no-verify-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert updated["opportunity"]["description"] == "タグ・分類だけを修正しました。"
+    assert updated["opportunity"]["updated_at"] != current["updated_at"]
+    assert (
+        datetime.fromisoformat(updated["opportunity"]["source_checked_at"].replace("Z", "+00:00"))
+        == original_checked_at
+    )
+
+
+def test_patch_and_update_opportunity_no_longer_accept_collection_target_id(tools):
+    """That parameter only ever made sense for a brand-new registration; see
+
+    test_patch_opportunity_writes_content_without_claiming_a_fresh_source_check for the write/verify
+    split this schema change enforces.
+    """
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    schemas = {tool.name: tool.inputSchema for tool in listed}
+    assert "collection_target_id" not in schemas["patch_opportunity"]["properties"]
+    assert "collection_target_id" not in schemas["update_opportunity"]["properties"]
+    assert "collection_target_id" in schemas["add_opportunity"]["properties"]
+    assert "collection_target_id" in schemas["upsert_opportunity"]["properties"]
+
+
 def test_update_recruitment_status_touches_only_the_status_and_deadline(tools, db):
     item = seed(db)
     new_deadline = (date.today() + timedelta(days=60)).isoformat()

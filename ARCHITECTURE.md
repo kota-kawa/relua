@@ -159,7 +159,7 @@ companies ──1:1── collection_targets ──< collection_sources
 - `collection_targets` は1企業につき1件。複数業界の分類は `company_industries` に置き、同じ企業を二重巡回・二重計上しない。
 - `list_unmonitored_companies` はCompanyを起点に、収集対象がない企業を返す。`add_collection_target` は既存CompanyのIDを明示指定でき、名前の再入力による重複Company作成を防ぐ。
 - `collection_targets.is_active` と各 source の `is_active` は無効化で保持する。削除ではなく運用状態を表す。
-- 募集書き込みへ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。
+- 募集の新規登録（`add_opportunity`／`upsert_opportunity`）へ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。既存募集の更新・部分更新はこの自動リンクを行わない（4.3参照）。
 - 採用ページ未登録、未確認、確認期限超過は収集キューの状態として返される。
 
 ### 4.3 書き込みの安全性
@@ -167,6 +167,7 @@ companies ──1:1── collection_targets ──< collection_sources
 - `request_id` と payload hash を `idempotency_records`、企業別名・企業統合を `company_request_records`、収集操作を `collection_request_records` に記録する。同じID・同じ内容の再試行は前回結果を返し、内容や対象が違えば拒否する。
 - 企業統合は明示した統合元IDの募集、別名、業界分類、収集対象・情報源・確認履歴を統合先へ移し、統合元のCompanyを物理削除する。監査ログは不変の履歴として旧IDを保持する。名前の類似だけで自動統合しない。
 - 成功・失敗を `audit_logs` に記録する。`verify_opportunity` は内容更新・status更新とは別の `verify` 操作として、確認時刻と実際に確認した一次情報URLを記録し、`updated_at` は変えない。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
+- 書き込みと一次情報確認は分離している（write != verify）。`update_opportunity`／`patch_opportunity` によるDB内容の変更は `source_checked_at` を更新せず、`collection_target_id` も受け付けない。一次情報を確認した事実は `verify_opportunity` または `record_collection_check` で別途記録する。`source_checked_at` が更新されるのは新規登録時と、この2ツールによる確認記録時だけである。
 - 日付と募集状況の矛盾（例: 未来の締め切りで「締切」）は、書き込みを拒否せず `warnings` として返す。締切延長・追加募集・中止の可能性があるため、運営者が一次情報を確認して確定する。
 - 全項目更新は `get_opportunity` で最新値を取得してから送る。部分更新・削除は `expected_updated_at` で楽観ロックし、取得後の別更新による上書きを拒否する。
 - 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。

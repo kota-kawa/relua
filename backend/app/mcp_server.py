@@ -111,6 +111,7 @@ from app.services.opportunities import (
     get_opportunity_by_public_ref,
     is_patch_replay,
     list_opportunities_requiring_review,
+    opportunity_consistency_warnings,
     opportunity_input_dict,
     opportunity_patch_changes,
     preview_opportunity_deletion,
@@ -334,6 +335,19 @@ def _source_url_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str
     """
     matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
     return [source_duplicate_warning(matches, data.source_url)] if matches else []
+
+
+def _consistency_warnings(data: OpportunityInput) -> list[dict[str, Any]]:
+    return opportunity_consistency_warnings(
+        recruitment_status=data.recruitment_status,
+        deadline=data.deadline,
+        event_start_date=data.event_start_date,
+        event_end_date=data.event_end_date,
+    )
+
+
+def _write_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str) -> list[dict[str, Any]]:
+    return _consistency_warnings(data) + _source_url_warnings(db, data=data, opportunity_id=opportunity_id)
 
 
 def _prepare_opportunity_patch(
@@ -792,15 +806,17 @@ def validate_opportunity(
         source_matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
         seen = {item.id for item in duplicates}
         duplicates.extend(item for item in source_matches if item.id not in seen)
+        warnings = _consistency_warnings(data)
         return MCPValidationResponse.model_validate(
             {
                 "valid": True,
                 "message": (
                     "この内容で登録できます。"
-                    if not duplicates
-                    else "内容は妥当ですが、イベント名または一次情報URLが重なる募集があります。"
+                    if not duplicates and not warnings
+                    else "内容は保存できますが、重複または日付・募集状況の確認が必要です。"
                 ),
                 "duplicates": [opportunity_summary(item) for item in duplicates],
+                "warnings": warnings,
             }
         )
 
@@ -850,7 +866,7 @@ def add_opportunity(
                     "idempotent_replay": replayed,
                     "message": "募集情報を登録しました",
                     "opportunity": opportunity_dict(item),
-                    "warnings": _source_url_warnings(db, data=data, opportunity_id=item.id),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -897,7 +913,7 @@ def upsert_opportunity(
                     "result": "created",
                     "message": "募集情報を登録しました",
                     "opportunity": opportunity_dict(item),
-                    "warnings": _source_url_warnings(db, data=data, opportunity_id=item.id),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -962,6 +978,7 @@ def update_opportunity(
                     "idempotent_replay": replayed,
                     "message": "募集情報を更新しました",
                     "opportunity": opportunity_dict(item),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -975,6 +992,7 @@ def update_opportunity(
     title="募集情報の部分更新をプレビュー",
     description=(
         "保存せずに現在値へ変更項目をマージし、全項目検証、更新競合、変更差分、一次情報URLの重複を確認します。"
+        "日付と募集状況の矛盾もwarningsとして返します。"
         "get_opportunityのupdated_atをexpected_updated_atへそのまま指定してください。認証が必要です。"
     ),
     annotations=READ_ONLY,
@@ -999,7 +1017,9 @@ def preview_opportunity_patch_tool(
             client_name=client_name,
         )
         matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=item.id)
-        warnings = [source_duplicate_warning(matches, data.source_url)] if matches else []
+        warnings = _consistency_warnings(data)
+        if matches:
+            warnings.append(source_duplicate_warning(matches, data.source_url))
         diff = opportunity_patch_changes(item, data)
         return MCPOpportunityPreviewResponse.model_validate(
             {
@@ -1071,6 +1091,7 @@ def patch_opportunity_tool(
                     "idempotent_replay": replayed,
                     "message": "募集情報を部分更新しました",
                     "opportunity": opportunity_dict(item),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -1090,6 +1111,7 @@ def patch_opportunity_tool(
     description=(
         "募集状況と締め切りだけを更新します。他の項目は変更しません。"
         "「締切になった」「募集が始まった」といった保守はこのツールで行い、全項目の再送を避けてください。"
+        "日付と募集状況が矛盾する場合も保存はしますが、warningsで公式情報の再確認を促します。"
     ),
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
 )
@@ -1140,6 +1162,12 @@ def update_recruitment_status_tool(
                     "idempotent_replay": replayed,
                     "message": "募集状況を更新しました",
                     "opportunity": opportunity_dict(item),
+                    "warnings": opportunity_consistency_warnings(
+                        recruitment_status=item.status.name,
+                        deadline=item.deadline,
+                        event_start_date=item.event_start_date,
+                        event_end_date=item.event_end_date,
+                    ),
                 }
             )
     except DomainValidationError as exc:

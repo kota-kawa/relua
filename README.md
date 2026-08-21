@@ -166,6 +166,8 @@ PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ�
 
 `add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合は `update_recruitment_status` を使います。公式ページを再確認して内容が変わっていない場合は、登録済みの一次情報URLと確認日時を `verify_opportunity` へ渡してください。これは `source_checked_at` のみを更新し、監査ログでは状況更新と区別されます。
 
+書き込み・更新の応答に `warnings` が含まれる場合、保存自体は成功していますが公式情報を再確認してください。`締切` なのに締め切りまたは実施開始日が未来、`募集中` なのに締め切りまたは実施終了日が過去、といった日付と募集状況の矛盾を検出します。締切延長・追加募集・中止があり得るため、Reluaは警告だけを返し、状態を自動変更しません。
+
 その他の一部項目だけを直す場合は、`get_opportunity` が返す `updated_at` と変更項目を `preview_opportunity_patch` へ渡し、差分を確認してから同じ内容を `patch_opportunity` へ渡します。サーバー側で現在値とマージした後に全項目を検証します。取得後に別の更新があった場合は `expected_updated_at` の不一致として拒否されるため、古い値で上書きしません。
 
 誤登録などを公開データから削除する場合は、`preview_delete_opportunity` で対象と影響を確認し、返された `id` と `expected_updated_at` を `delete_opportunity` へ渡します。取得後に更新された募集は削除を拒否します。削除は論理削除で、検索、詳細ページ、収集対象の登録済み募集一覧から隠れますが、募集情報、収集確認履歴との関連付け、監査ログは保持されます。

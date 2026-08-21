@@ -810,6 +810,7 @@ class MCPValidationResponse(BaseModel):
     valid: bool
     message: str
     duplicates: list[OpportunitySummary]
+    warnings: list[ErrorItem] = []
 
 
 class CompanyAliasResponse(BaseModel):

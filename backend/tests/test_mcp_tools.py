@@ -8,6 +8,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from app import mcp_server
+from app.dates import today_in_tokyo
 from app.models import AuditLog, Opportunity
 from app.schemas import OpportunityInput
 from app.services.opportunities import write_opportunity
@@ -568,6 +569,69 @@ def test_update_recruitment_status_touches_only_the_status_and_deadline(tools, d
     assert result["opportunity"]["deadline"] == new_deadline
     assert result["opportunity"]["description"] == "プロダクト開発を体験します。"
     assert result["opportunity"]["event_name"] == "開発インターン"
+    assert result["warnings"][0]["reason"] == "締め切りが未来ですが募集状況は「締切」です"
+
+
+def test_updates_return_soft_warnings_for_date_and_status_contradictions(tools, db):
+    item = seed(db)
+    today = today_in_tokyo()
+    closed = call(
+        "update_recruitment_status",
+        {
+            "opportunity_id": item.id,
+            "recruitment_status": "締切",
+            "deadline": (today + timedelta(days=30)).isoformat(),
+            "request_id": "soft-warning-closed-0001",
+            "client_name": "pytest",
+        },
+    )
+    preview = call(
+        "preview_opportunity_patch",
+        {
+            "opportunity_id": item.id,
+            "changes": {"event_start_date": (today + timedelta(days=60)).isoformat()},
+            "expected_updated_at": closed["opportunity"]["updated_at"],
+            "request_id": "soft-warning-preview-0001",
+            "client_name": "pytest",
+        },
+    )
+    reopened = call(
+        "update_recruitment_status",
+        {
+            "opportunity_id": item.id,
+            "recruitment_status": "募集中",
+            "deadline": (today - timedelta(days=1)).isoformat(),
+            "request_id": "soft-warning-open-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert {warning["reason"] for warning in preview["warnings"]} >= {
+        "締め切りが未来ですが募集状況は「締切」です",
+        "実施開始日が未来ですが募集状況は「締切」です",
+    }
+    assert reopened["success"] is True
+    assert any(warning["reason"] == "締め切りが過去ですが募集状況は「募集中」です" for warning in reopened["warnings"])
+
+
+def test_validate_opportunity_returns_soft_date_status_warnings(tools, db):
+    today = today_in_tokyo()
+
+    validated = call(
+        "validate_opportunity",
+        write_args(
+            recruitment_status="締切",
+            deadline=(today + timedelta(days=30)).isoformat(),
+            event_start_date=(today + timedelta(days=60)).isoformat(),
+            request_id="soft-warning-validate-0001",
+        ),
+    )
+
+    assert validated["valid"] is True
+    assert {warning["reason"] for warning in validated["warnings"]} == {
+        "締め切りが未来ですが募集状況は「締切」です",
+        "実施開始日が未来ですが募集状況は「締切」です",
+    }
 
 
 def test_update_recruitment_status_replays_instead_of_writing_twice(tools, db):

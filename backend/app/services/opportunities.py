@@ -719,6 +719,65 @@ def source_duplicate_warning(matches: list[Opportunity], source_url: str) -> dic
     }
 
 
+def opportunity_consistency_warnings(
+    *,
+    recruitment_status: str,
+    deadline: date | None,
+    event_start_date: date | None,
+    event_end_date: date | None,
+    today: date | None = None,
+) -> list[dict[str, Any]]:
+    """Return non-blocking date/status contradictions that still need an operator's judgement.
+
+    A deadline extension, additional recruiting round, or cancelled event can all make these
+    combinations legitimate. They therefore remain warnings instead of validation errors, while
+    ensuring every write client sees the inconsistency before treating the update as routine.
+    """
+    today = today or today_in_tokyo()
+    warnings = []
+    if recruitment_status == "締切" and deadline is not None and deadline > today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "締め切りが未来ですが募集状況は「締切」です",
+                "expected": f"締め切りが{today.isoformat()}以前、または募集状況が「募集中」",
+                "alternative": "締切延長・追加募集なら、公式情報を確認して募集状況と締め切りを更新してください",
+            }
+        )
+    if recruitment_status == "締切" and event_start_date is not None and event_start_date > today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "実施開始日が未来ですが募集状況は「締切」です",
+                "expected": f"実施開始日が{today.isoformat()}以前、または募集状況が「募集中」",
+                "alternative": "中止・募集取りやめの場合は公式情報で確認し、必要なら内容の補足を更新してください",
+            }
+        )
+    if recruitment_status == "募集中" and deadline is not None and deadline < today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "締め切りが過去ですが募集状況は「募集中」です",
+                "expected": f"締め切りが{today.isoformat()}以降、または募集状況が「締切」",
+                "alternative": "締切延長・追加募集なら、公式情報を確認して新しい締め切りを登録してください",
+            }
+        )
+    if recruitment_status == "募集中" and event_end_date is not None and event_end_date < today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "実施終了日が過去ですが募集状況は「募集中」です",
+                "expected": f"実施終了日が{today.isoformat()}以降、または募集状況が「締切」",
+                "alternative": "追加日程・別イベントでないか公式情報を確認してください",
+            }
+        )
+    return warnings
+
+
 def _resolve_relations(db: Session, data: OpportunityInput) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
     resolved: dict[str, Any] = {}

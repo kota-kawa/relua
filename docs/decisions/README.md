@@ -14,5 +14,6 @@
 | [`0006-existing-company-collection-targets.md`](./0006-existing-company-collection-targets.md) | 既存CompanyをIDで収集対象へ追加し、未監視企業を検出する | Accepted |
 | [`0007-expired-opportunity-retention.md`](./0007-expired-opportunity-retention.md) | 締切募集を30日後に完全削除する | Superseded |
 | [`0008-manual-expiry-review-queue.md`](./0008-manual-expiry-review-queue.md) | 日付と募集状況の矛盾を要確認キューへ入れ、終了を自動判定しない | Accepted |
+| [`0009-soft-date-status-validation.md`](./0009-soft-date-status-validation.md) | 日付と募集状況の矛盾を警告し、書き込みは運営者判断で継続する | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

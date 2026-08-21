@@ -103,9 +103,10 @@ from app.services.normalization import normalize_company_name
 from app.services.opportunities import (
     DomainValidationError,
     InvalidSearchCursor,
+    classify_duplicate_candidates,
     delete_opportunity,
     ensure_expected_updated_at,
-    find_exact_duplicates,
+    find_probable_duplicates,
     find_similar_opportunities,
     find_source_url_duplicates,
     get_opportunity_by_public_ref,
@@ -115,6 +116,7 @@ from app.services.opportunities import (
     opportunity_input_dict,
     opportunity_patch_changes,
     preview_opportunity_deletion,
+    probable_duplicate_warning,
     recent_write_logs,
     record_failed_attempt,
     restore_opportunity,
@@ -159,6 +161,9 @@ mcp = FastMCP(
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
         "追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
         "同じ募集が登録済みでないかfind_similar_opportunitiesで確かめてください。"
+        "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として登録されます"
+        "（例: 同じイベント名を28卒・29卒で使い回す企業）。allow_duplicateは全く同じ日程・コースを"
+        "意図的に複数登録する場合だけ使ってください。"
         "情報源URLが既存募集と重ならないかfind_opportunities_by_source_urlでも確認してください。"
         "企業名が略称・英語名・誤記かもしれない場合はresolve_companyで候補を確認し、"
         "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
@@ -346,8 +351,17 @@ def _consistency_warnings(data: OpportunityInput) -> list[dict[str, Any]]:
     )
 
 
+def _probable_duplicate_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str) -> list[dict[str, Any]]:
+    matches = find_probable_duplicates(db, data=data, exclude_id=opportunity_id)
+    return [probable_duplicate_warning(matches)] if matches else []
+
+
 def _write_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str) -> list[dict[str, Any]]:
-    return _consistency_warnings(data) + _source_url_warnings(db, data=data, opportunity_id=opportunity_id)
+    return (
+        _consistency_warnings(data)
+        + _source_url_warnings(db, data=data, opportunity_id=opportunity_id)
+        + _probable_duplicate_warnings(db, data=data, opportunity_id=opportunity_id)
+    )
 
 
 def _prepare_opportunity_patch(
@@ -797,16 +811,21 @@ def validate_opportunity(
         errors = validate_write(db, data=data)
         if errors:
             raise _domain_error(request, "validate", DomainValidationError(errors))
-        duplicates = find_exact_duplicates(
+        duplicates, probable_duplicates = classify_duplicate_candidates(
             db,
             company_name=data.company_name,
             event_name=data.event_name,
+            graduation_years=data.graduation_years,
+            event_start_date=data.event_start_date,
+            job_categories=data.job_categories,
             exclude_id=opportunity_id,
         )
         source_matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
         seen = {item.id for item in duplicates}
         duplicates.extend(item for item in source_matches if item.id not in seen)
         warnings = _consistency_warnings(data)
+        if probable_duplicates:
+            warnings.append(probable_duplicate_warning(probable_duplicates))
         return MCPValidationResponse.model_validate(
             {
                 "valid": True,
@@ -826,7 +845,9 @@ def validate_opportunity(
     description=(
         "募集情報を1件追加します。request_idはクライアント側で一意にし、再試行時は同じ値を使用してください。"
         "payload内の固定値はget_master_values／get_sectorsのnameを指定します。"
-        "同じ企業の同名イベントが既にある場合は登録を拒否し、既存の登録を返します。"
+        "同じ企業・同名イベントで、対象学年・実施日・対象職種も一致する場合だけ登録を拒否し、既存の登録を返します。"
+        "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば「同名だが別募集」として登録し、"
+        "warningsで既存の登録を知らせます（会社が28卒・29卒で同じイベント名を使い回す場合など）。"
         "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
     ),
     annotations=APPEND_ONLY,
@@ -835,7 +856,13 @@ def add_opportunity(
     payload: WritePayload,
     allow_duplicate: Annotated[
         bool,
-        Field(description="同名イベントが既にある場合でも別の登録として追加します。別日程・別コースを分けて登録するときだけtrueにしてください。"),
+        Field(
+            description=(
+                "対象学年・実施日・対象職種まで一致する完全な重複でも、別の登録として追加します。"
+                "同一の日程・コースを意図的に複数登録するときだけtrueにしてください。"
+                "対象学年・実施日・対象職種のいずれかが違う場合はfalseのままで登録できます。"
+            )
+        ),
     ] = False,
     collection_target_id: Annotated[
         int | None,
@@ -877,9 +904,12 @@ def add_opportunity(
     name="upsert_opportunity",
     title="募集情報を検索なしで登録（重複時は既存を返す）",
     description=(
-        "同じ企業の同名イベントが既にある場合はエラーにせず既存の登録をそのまま返し、なければ新規登録します。"
+        "同じ企業・同名イベントで、対象学年・実施日・対象職種も一致する場合はエラーにせず既存の登録をそのまま返し、"
+        "そうでなければ新規登録します。同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として"
+        "新規登録し、warningsで既存の登録を知らせます（会社が28卒・29卒で同じイベント名を使い回す場合など）。"
         "find_similar_opportunitiesとadd_opportunityを毎回2回呼ぶ手間を1回にまとめたツールです。"
-        "別日程・別コースを意図的に分けて登録したい場合は、代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
+        "対象学年・実施日・対象職種まで一致する完全な重複を意図的に複数登録したい場合は、"
+        "代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
     ),
     annotations=APPEND_ONLY,
 )
@@ -1018,6 +1048,7 @@ def preview_opportunity_patch_tool(
         warnings = _consistency_warnings(data)
         if matches:
             warnings.append(source_duplicate_warning(matches, data.source_url))
+        warnings += _probable_duplicate_warnings(db, data=data, opportunity_id=item.id)
         diff = opportunity_patch_changes(item, data)
         return MCPOpportunityPreviewResponse.model_validate(
             {

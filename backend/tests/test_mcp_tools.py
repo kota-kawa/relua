@@ -438,6 +438,28 @@ def test_upsert_still_raises_on_a_non_duplicate_validation_error(tools, db):
     assert error["errors"][0]["field"] == "業種"
 
 
+def test_upsert_creates_a_new_row_for_a_different_graduation_year_sharing_the_event_name(tools, db):
+    """The exact bug report this guards against: a company reusing "新卒採用エントリー" for both 28卒
+
+    and 29卒 must not make upsert_opportunity silently return the 28卒 posting for a 29卒 registration.
+    """
+    first = call("upsert_opportunity", write_args(graduation_years=["28卒"], request_id="upsert-grad-0001"))
+    assert first["result"] == "created"
+
+    second = call(
+        "upsert_opportunity",
+        write_args(
+            graduation_years=["29卒"],
+            source_url="https://example.com/upsert-grad-2",
+            request_id="upsert-grad-0002",
+        ),
+    )
+    assert second["result"] == "created"
+    assert second["opportunity"]["id"] != first["opportunity"]["id"]
+    warning = next(w for w in second["warnings"] if w["field"] == "イベント名")
+    assert warning["existing"][0]["id"] == first["opportunity"]["id"]
+
+
 def test_add_and_upsert_warn_on_a_colliding_source_url_without_blocking_the_write(tools, db):
     seed(db, event_name="既存イベント", source_url="https://example.com/shared-source")
 
@@ -495,6 +517,24 @@ def test_validate_checks_the_payload_without_writing_anything(tools, db):
     error = tool_error("validate_opportunity", write_args(request_id="validate-0003", sector="銀行"))
     assert error["errors"][0]["field"] == "業種"
     assert call("search_opportunity", {})["total"] == 1
+
+
+def test_validate_opportunity_treats_a_different_graduation_year_as_probable_not_exact(tools, db):
+    seed(db, graduation_years=["28卒"])
+
+    validated = call(
+        "validate_opportunity",
+        write_args(
+            graduation_years=["29卒"],
+            source_url="https://example.com/validate-grad-2",
+            request_id="validate-grad-0001",
+        ),
+    )
+
+    assert validated["valid"] is True
+    assert validated["duplicates"] == []
+    warning = next(w for w in validated["warnings"] if w["field"] == "イベント名")
+    assert warning["existing"][0]["event_name"] == "開発インターン"
 
 
 def test_source_url_matching_ignores_tracking_parameters_and_warns_on_validation(tools, db):

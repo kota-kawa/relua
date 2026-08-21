@@ -575,6 +575,87 @@ def find_exact_duplicates(
     ]
 
 
+def _distinguishes_same_named_postings(
+    existing: Opportunity,
+    *,
+    graduation_years: list[str],
+    event_start_date: date | None,
+    job_categories: list[str],
+) -> bool:
+    """True when the identity fields show two same-named postings are actually different postings.
+
+    Companies routinely reuse one event name across cohorts, terms, or tracks - "新卒採用エントリー"
+    for both 28卒 and 29卒, "サマーインターン" for both a June and an August term. Same company + same
+    event name alone cannot tell those apart, so a match is only downgraded from exact to probable when
+    a field that both sides actually specify disagrees. A field left unset on either side (e.g. no
+    event_start_date yet) is not evidence of a difference, so it never downgrades a match on its own.
+    """
+    existing_grad = {item.name for item in existing.graduation_years}
+    new_grad = set(graduation_years)
+    if existing_grad and new_grad and existing_grad.isdisjoint(new_grad):
+        return True
+    if existing.event_start_date and event_start_date and existing.event_start_date != event_start_date:
+        return True
+    existing_jobs = {item.name for item in existing.job_categories}
+    new_jobs = set(job_categories)
+    if existing_jobs and new_jobs and existing_jobs.isdisjoint(new_jobs):
+        return True
+    return False
+
+
+def classify_duplicate_candidates(
+    db: Session,
+    *,
+    company_name: str,
+    event_name: str,
+    graduation_years: list[str],
+    event_start_date: date | None,
+    job_categories: list[str],
+    exclude_id: str | None = None,
+) -> tuple[list[Opportunity], list[Opportunity]]:
+    """Split same-company/same-event-name candidates into exact and probable duplicates.
+
+    A company+event_name match is downgraded from exact to probable when graduation_years,
+    event_start_date, or job_categories clearly disagree with the incoming posting - see
+    _distinguishes_same_named_postings. Only exact duplicates should block a write; probable
+    duplicates are real candidates for the same identity check but not certain enough to refuse the
+    write outright, so callers should surface them as a non-blocking warning instead.
+    """
+    candidates = find_exact_duplicates(db, company_name=company_name, event_name=event_name, exclude_id=exclude_id)
+    exact: list[Opportunity] = []
+    probable: list[Opportunity] = []
+    for item in candidates:
+        target = probable if _distinguishes_same_named_postings(
+            item,
+            graduation_years=graduation_years,
+            event_start_date=event_start_date,
+            job_categories=job_categories,
+        ) else exact
+        target.append(item)
+    return exact, probable
+
+
+def find_probable_duplicates(
+    db: Session, *, data: OpportunityInput, exclude_id: str | None = None
+) -> list[Opportunity]:
+    """Same-company/same-event-name matches downgraded by classify_duplicate_candidates.
+
+    Used post-write (exclude_id=the just-written row) to surface a non-blocking warning: the write
+    already succeeded because these differed on graduation year, start date, or job category, but a
+    caller should still double check it wasn't actually the same posting.
+    """
+    _, probable = classify_duplicate_candidates(
+        db,
+        company_name=data.company_name,
+        event_name=data.event_name,
+        graduation_years=data.graduation_years,
+        event_start_date=data.event_start_date,
+        job_categories=data.job_categories,
+        exclude_id=exclude_id,
+    )
+    return probable
+
+
 def find_source_url_duplicates(
     db: Session, *, source_url: str, exclude_id: str | None = None, limit: int = 20
 ) -> list[Opportunity]:
@@ -690,12 +771,34 @@ def _duplicate_error(matches: list[Opportunity]) -> dict[str, Any]:
     return {
         "field": "イベント名",
         "received": matches[0].event_name,
-        "reason": "同じ企業の同名イベントが既に登録されています",
-        "expected": "未登録のイベント名",
+        "reason": "同じ企業・同名イベントで、対象学年・実施日・対象職種も一致する登録が既にあります",
+        "expected": "未登録のイベント名、または異なる対象学年・実施日・対象職種",
         "example": None,
         "alternative": (
-            "既存の登録を直す場合はupdate_opportunityを使い、"
-            "別日程・別コースで意図的に分けて登録する場合はallow_duplicateをtrueにしてください"
+            "既存の登録を直す場合はpatch_opportunityまたはupdate_opportunityを使い、"
+            "全く同じ日程・コースを意図的に複数登録する場合はallow_duplicateをtrueにしてください"
+        ),
+        "existing": [
+            {"id": item.id, "public_code": item.public_code, "url": detail_url(item), "event_name": item.event_name}
+            for item in matches
+        ],
+    }
+
+
+def probable_duplicate_warning(matches: list[Opportunity]) -> dict[str, Any]:
+    """Non-blocking counterpart to _duplicate_error for a company+event_name match that
+
+    classify_duplicate_candidates downgraded because graduation year, start date, or job category
+    disagreed - most often the same event name reused across cohorts, terms, or tracks.
+    """
+    return {
+        "field": "イベント名",
+        "received": matches[0].event_name,
+        "reason": "同じ企業・同名イベントの登録がありますが、対象学年・実施日・対象職種のいずれかが異なるため別募集として保存しました",
+        "expected": "別の学年・日程・職種であることを確認してください",
+        "example": None,
+        "alternative": (
+            "同一の募集を誤って分けてしまった場合は、既存側をupdate_opportunityまたはdelete_opportunityで整理してください"
         ),
         "existing": [
             {"id": item.id, "public_code": item.public_code, "url": detail_url(item), "event_name": item.event_name}
@@ -1107,9 +1210,21 @@ def write_opportunity(
     if opportunity_id is None and not allow_duplicate:
         # Idempotency only catches a replay of the same request_id. A client that re-reads the same
         # source page next week sends a new request_id, so the same posting would land twice.
-        duplicates = find_exact_duplicates(db, company_name=data.company_name, event_name=data.event_name)
-        if duplicates:
-            raise DomainValidationError([_duplicate_error(duplicates)])
+        # Only an exact match blocks the write: a company can legitimately reuse one event name across
+        # graduation years, terms, or tracks (e.g. "新卒採用エントリー" for both 28卒 and 29卒), and a
+        # hard block on event_name alone made an agent about to register a genuinely separate posting
+        # believe it already existed. A probable match still gets created; it surfaces as a warning
+        # below instead (see _write_warnings / find_probable_duplicates).
+        exact_duplicates, _ = classify_duplicate_candidates(
+            db,
+            company_name=data.company_name,
+            event_name=data.event_name,
+            graduation_years=data.graduation_years,
+            event_start_date=data.event_start_date,
+            job_categories=data.job_categories,
+        )
+        if exact_duplicates:
+            raise DomainValidationError([_duplicate_error(exact_duplicates)])
 
     resolved, errors = _resolve_relations(db, data)
     if errors:

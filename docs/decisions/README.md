@@ -16,5 +16,6 @@
 | [`0008-manual-expiry-review-queue.md`](./0008-manual-expiry-review-queue.md) | 日付と募集状況の矛盾を要確認キューへ入れ、終了を自動判定しない | Accepted |
 | [`0009-soft-date-status-validation.md`](./0009-soft-date-status-validation.md) | 日付と募集状況の矛盾を警告し、書き込みは運営者判断で継続する | Accepted |
 | [`0010-write-verification-separation.md`](./0010-write-verification-separation.md) | 募集の更新（write）と一次情報確認（verify）を別の操作にする | Accepted |
+| [`0011-tiered-duplicate-identity.md`](./0011-tiered-duplicate-identity.md) | 募集の重複判定を対象学年・実施日・対象職種まで見てexact／probableの2段階にする | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

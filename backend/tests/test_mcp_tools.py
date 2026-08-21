@@ -8,7 +8,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from app import mcp_server
-from app.models import Opportunity
+from app.models import AuditLog, Opportunity
 from app.schemas import OpportunityInput
 from app.services.opportunities import write_opportunity
 from tests.test_validation import valid_payload
@@ -88,6 +88,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "preview_opportunity_patch",
         "patch_opportunity",
         "update_recruitment_status",
+        "verify_opportunity",
         "preview_delete_opportunity",
         "delete_opportunity",
         "restore_opportunity",
@@ -116,6 +117,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["update_opportunity"]["annotations"]["destructiveHint"] is True
     assert tools["add_opportunity"]["annotations"]["destructiveHint"] is False
     assert tools["update_recruitment_status"]["annotations"]["destructiveHint"] is False
+    assert tools["verify_opportunity"]["annotations"]["destructiveHint"] is False
+    assert tools["verify_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["delete_opportunity"]["annotations"]["destructiveHint"] is True
     assert tools["delete_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["delete_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
@@ -600,6 +603,60 @@ def test_update_recruitment_status_rejects_an_unusable_date(tools, db):
     )["error"] == "not_found"
 
 
+def test_verify_opportunity_records_an_unchanged_source_without_touching_updated_at(tools, db):
+    item = seed(db)
+    original_updated_at = item.updated_at
+    original_checked_at = item.source_checked_at
+    checked_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    arguments = {
+        "opportunity_id": item.id,
+        "checked_at": checked_at.isoformat(),
+        "source_url": item.source_url,
+        "request_id": "verify-opportunity-0001",
+        "client_name": "pytest",
+    }
+
+    verified = call("verify_opportunity", arguments)
+    replay = call("verify_opportunity", arguments)
+
+    assert verified["idempotent_replay"] is False
+    assert replay["idempotent_replay"] is True
+    assert datetime.fromisoformat(verified["opportunity"]["updated_at"].replace("Z", "+00:00")) == original_updated_at
+    assert datetime.fromisoformat(verified["opportunity"]["source_checked_at"].replace("Z", "+00:00")) == checked_at
+    assert item.source_checked_at == checked_at
+    assert item.source_checked_at > original_checked_at
+    audit = db.query(AuditLog).filter_by(request_id="verify-opportunity-0001").one()
+    assert audit.action == "verify"
+    assert audit.source_url == item.source_url
+    assert audit.changes["before"]["source_checked_at"] == original_checked_at.isoformat()
+    assert audit.changes["after"] == {"source_checked_at": checked_at.isoformat()}
+
+
+def test_verify_opportunity_rejects_a_different_or_future_source_check(tools, db):
+    item = seed(db)
+    common = {
+        "opportunity_id": item.id,
+        "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 -- tests also support Python 3.10
+        "request_id": "verify-source-mismatch-0001",
+    }
+
+    source_error = tool_error(
+        "verify_opportunity", common | {"source_url": "https://example.com/other-official-page"}
+    )
+    future_error = tool_error(
+        "verify_opportunity",
+        {
+            "opportunity_id": item.id,
+            "checked_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),  # noqa: UP017 -- tests also support Python 3.10
+            "source_url": item.source_url,
+            "request_id": "verify-future-0001",
+        },
+    )
+
+    assert source_error["errors"][0]["field"] == "情報源"
+    assert future_error["errors"][0]["field"] == "確認日時"
+
+
 def test_delete_preview_soft_delete_and_restore_preserve_the_record(tools, db):
     item = seed(db)
     preview = call("preview_delete_opportunity", {"opportunity_id": item.id})
@@ -776,8 +833,6 @@ def test_list_stale_opportunities_flags_records_not_recently_confirmed(tools, db
     assert stale.id in ids
     assert fresh.id not in ids
     assert result["items"][0]["id"] == stale.id
-
-
 def collection_target_args(**overrides) -> dict:
     industry = overrides.pop("industry", "IT・通信")
     sector = overrides.pop("sector", "Webサービス")

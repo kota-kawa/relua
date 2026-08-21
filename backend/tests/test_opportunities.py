@@ -15,6 +15,7 @@ from app.services.opportunities import (
     list_stale_opportunities,
     search_opportunities,
     update_recruitment_status,
+    verify_opportunity,
     write_opportunity,
 )
 from tests.test_validation import valid_payload
@@ -512,6 +513,26 @@ def test_update_recruitment_status_also_refreshes_source_checked_at(db):
     assert updated.source_checked_at is not None
     assert updated.source_checked_at >= first_checked_at
     assert updated.source_checked_at == updated.updated_at
+
+
+def test_verify_opportunity_refreshes_only_source_checked_at(db):
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="checked-at-verify-0001", client_name="pytest")
+    original_updated_at = item.updated_at
+    checked_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+
+    verified, replayed = verify_opportunity(
+        db,
+        opportunity_id=item.id,
+        checked_at=checked_at,
+        source_url=item.source_url,
+        request_id="checked-at-verify-0002",
+        client_name="pytest",
+    )
+
+    assert replayed is False
+    assert verified.source_checked_at == checked_at
+    assert verified.updated_at == original_updated_at
 
 
 def test_list_stale_opportunities_prioritizes_never_checked_then_oldest_first(db):

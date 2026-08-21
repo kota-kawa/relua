@@ -1211,6 +1211,111 @@ def update_recruitment_status(
     return item, False
 
 
+def verify_opportunity(
+    db: Session,
+    *,
+    opportunity_id: str,
+    checked_at: datetime,
+    source_url: str,
+    request_id: str,
+    client_name: str,
+) -> tuple[Opportunity, bool]:
+    """Record that an unchanged posting was checked on its official source.
+
+    Unlike a content or status update, this deliberately leaves ``updated_at`` intact: callers can
+    acknowledge a fresh source check without creating an optimistic-locking conflict for an editor.
+    """
+    checked_at = _as_utc(checked_at)
+    payload = {
+        "opportunity_id": opportunity_id,
+        "checked_at": checked_at.isoformat(),
+        "source_url": source_url,
+    }
+    request_hash = _hash_payload(payload)
+    previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
+    if previous:
+        if (
+            previous.operation != "verify"
+            or previous.request_hash != request_hash
+            or previous.opportunity_id != opportunity_id
+        ):
+            raise DomainValidationError([_reused_request_id_error(request_id)])
+        return _active_idempotency_target(db, previous.opportunity_id), True
+
+    item = get_opportunity(db, opportunity_id)
+    if item is None:
+        raise LookupError("opportunity_not_found")
+
+    if normalize_source_url(source_url) != item.normalized_source_url:
+        raise DomainValidationError(
+            [
+                {
+                    "field": FIELD_LABELS["source_url"],
+                    "received": source_url,
+                    "reason": "登録済みの一次情報URLと一致しません",
+                    "expected": item.source_url,
+                    "alternative": "情報源URL自体を変更する場合はpatch_opportunityを使ってください",
+                }
+            ]
+        )
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    if checked_at > now:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "確認日時",
+                    "received": checked_at.isoformat(),
+                    "reason": "未来の日時は指定できません",
+                    "expected": f"{now.isoformat()}以前のISO 8601日時",
+                    "alternative": "公式ページを確認した時刻をタイムゾーン付きで指定してください",
+                }
+            ]
+        )
+    if item.source_checked_at is not None and checked_at <= _as_utc(item.source_checked_at):
+        raise DomainValidationError(
+            [
+                {
+                    "field": "確認日時",
+                    "received": checked_at.isoformat(),
+                    "reason": "登録済みの最終確認日時より新しい日時を指定してください",
+                    "expected": f"{_as_utc(item.source_checked_at).isoformat()}より後のISO 8601日時",
+                    "alternative": "同じ確認操作の再試行なら同じrequest_idを使ってください",
+                }
+            ]
+        )
+
+    before = {"source_checked_at": item.source_checked_at}
+    item.source_checked_at = checked_at
+    db.flush()
+    json_response = jsonable_encoder(opportunity_dict(item))
+    db.add(
+        AuditLog(
+            action="verify",
+            entity_type="opportunity",
+            entity_id=item.id,
+            request_id=request_id,
+            client_name=client_name,
+            source_url=source_url,
+            success=True,
+            changes={
+                "before": jsonable_encoder(before),
+                "after": {"source_checked_at": checked_at.isoformat()},
+            },
+        )
+    )
+    db.add(
+        IdempotencyRecord(
+            request_id=request_id,
+            operation="verify",
+            request_hash=request_hash,
+            opportunity_id=item.id,
+            response_data=json_response,
+        )
+    )
+    db.commit()
+    return item, False
+
+
 def preview_opportunity_deletion(db: Session, *, opportunity_id: str) -> tuple[Opportunity, int]:
     item = get_opportunity(db, opportunity_id)
     if item is None:

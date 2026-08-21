@@ -119,6 +119,7 @@ from app.services.opportunities import (
     source_duplicate_warning,
     update_recruitment_status,
     validate_write,
+    verify_opportunity,
     write_opportunity,
 )
 from app.services.opportunities import (
@@ -160,6 +161,7 @@ mcp = FastMCP(
         "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
+        "公式ページを確認して内容が変わっていない場合はverify_opportunityを使って確認だけを記録してください。"
         "その他の一部項目だけを直す場合はpreview_opportunity_patchで差分を確認してからpatch_opportunityを使ってください。"
         "誤登録を削除する場合はpreview_delete_opportunityで影響を確認してからdelete_opportunityを使ってください。"
         "誤って削除した募集はrestore_opportunityで同じIDと公開コードのまま復元できます。"
@@ -1144,6 +1146,81 @@ def update_recruitment_status_tool(
                 request_id=request_id,
                 client_name=client_name,
                 source_url=None,
+                errors=exc.errors,
+            )
+        raise _validation_error(client_name, request_id, exc.errors) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="verify_opportunity",
+    title="募集情報の確認のみを記録",
+    description=(
+        "登録済みの一次情報URLを確認し、募集内容に変更がなかったことを記録します。"
+        "source_checked_atだけを更新し、募集内容とupdated_atは変更しません。"
+        "募集状況や締め切りが変わった場合はupdate_recruitment_status、他の内容が変わった場合はpatch_opportunityを使ってください。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def verify_opportunity_tool(
+    opportunity_id: Annotated[str, Field(description="確認した募集情報のid（UUID）。")],
+    checked_at: Annotated[
+        datetime,
+        Field(description="公式ページを確認した日時（タイムゾーン付きISO 8601）。未来の日時は指定できません。"),
+    ],
+    source_url: Annotated[str, Field(description="確認した登録済みの一次情報URL（https）。")],
+    request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
+    client_name: Annotated[str, Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。")] = "mcp-client",
+) -> MCPWriteResponse:
+    try:
+        source_url = validate_source_host(validate_https_url(source_url) or source_url)
+    except ValueError as exc:
+        errors = [
+            {
+                "field": "情報源",
+                "received": source_url,
+                "reason": str(exc),
+                "expected": "企業自身の一次情報であるhttps URL",
+                "alternative": "登録済みのsource_urlをget_opportunityで確認してください",
+            }
+        ]
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action="verify",
+                request_id=request_id,
+                client_name=client_name,
+                source_url=source_url,
+                errors=errors,
+            )
+        raise _validation_error(client_name, request_id, errors) from exc
+    try:
+        with SessionLocal() as db:
+            item, replayed = verify_opportunity(
+                db,
+                opportunity_id=opportunity_id,
+                checked_at=checked_at,
+                source_url=source_url,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "公式情報の確認のみを記録しました",
+                    "opportunity": opportunity_dict(item),
+                }
+            )
+    except DomainValidationError as exc:
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action="verify",
+                request_id=request_id,
+                client_name=client_name,
+                source_url=source_url,
                 errors=exc.errors,
             )
         raise _validation_error(client_name, request_id, exc.errors) from exc

@@ -90,8 +90,8 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | ツール群 | 主な処理 | 認証 |
 | --- | --- | --- |
 | 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応） |
-| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `merge_company` | 前者2つは不要、企業の候補確認・別名・物理統合の書き込みは必要 |
-| 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status | 必要 |
+| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要、企業の候補確認・別名・物理統合の書き込みは必要。保守コンテキストは認証が必要 |
+| 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status/verify | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
 | 収集キュー | target/source/check の一覧、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
 | OAuth接続管理 | `backend/app/scripts/mcp_connections.py` | サーバー上の運用コマンド |
@@ -123,7 +123,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | `app/security.py` | 内部token、Bearer、operator password の比較とOAuth token hash |
 | `app/master_data.py` | 新規DBへ固定値マスタを投入する定義 |
 | `app/dates.py` | 東京時間を基準にした当日判定 |
-| `app/scripts/close_expired.py` | 締切日の翌日に論理削除し、30日経過した論理削除募集を完全削除 |
+| `app/scripts/close_expired.py` | 論理削除から30日経過した募集を完全削除（期限超過だけでは状態・公開を変えない） |
 | `app/scripts/seed_demo.py` | 架空のUI確認用データを冪等的に投入 |
 | `app/scripts/mcp_connections.py` | OAuth grant の一覧・失効・期限切れ掃除 |
 
@@ -166,9 +166,10 @@ companies ──1:1── collection_targets ──< collection_sources
 
 - `request_id` と payload hash を `idempotency_records`、企業別名・企業統合を `company_request_records`、収集操作を `collection_request_records` に記録する。同じID・同じ内容の再試行は前回結果を返し、内容や対象が違えば拒否する。
 - 企業統合は明示した統合元IDの募集、別名、業界分類、収集対象・情報源・確認履歴を統合先へ移し、統合元のCompanyを物理削除する。監査ログは不変の履歴として旧IDを保持する。名前の類似だけで自動統合しない。
-- 成功・失敗を `audit_logs` に記録する。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
+- 成功・失敗を `audit_logs` に記録する。`verify_opportunity` は内容更新・status更新とは別の `verify` 操作として、確認時刻と実際に確認した一次情報URLを記録し、`updated_at` は変えない。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
+- 日付と募集状況の矛盾（例: 未来の締め切りで「締切」）は、書き込みを拒否せず `warnings` として返す。締切延長・追加募集・中止の可能性があるため、運営者が一次情報を確認して確定する。
 - 全項目更新は `get_opportunity` で最新値を取得してから送る。部分更新・削除は `expected_updated_at` で楽観ロックし、取得後の別更新による上書きを拒否する。
-- 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。締切日を過ぎた募集は日次ジョブで論理削除され、削除から30日後に完全削除する。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。
+- 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。
 - 同一企業の同名イベントは既定で拒否し、別日程等として意図的に分ける場合だけ `allow_duplicate` を明示する。
 
 ### 4.4 OAuthデータ

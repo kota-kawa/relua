@@ -737,7 +737,18 @@ class MCPSearchResponse(BaseModel):
 
 
 class MCPStaleOpportunityListResponse(BaseModel):
-    items: list[OpportunitySummary]
+    items: list["OpportunityReviewSummary"]
+
+
+class OpportunityReviewSummary(OpportunitySummary):
+    review_reasons: list[
+        Literal["deadline_passed_while_open", "event_ended_while_open", "source_not_checked_recently"]
+    ] = Field(
+        description=(
+            "要確認になった理由。期限・実施終了日と「募集中」の矛盾は、"
+            "情報源の未確認より優先して返します。"
+        )
+    )
 
 
 class MCPWriteResponse(BaseModel):
@@ -799,6 +810,7 @@ class MCPValidationResponse(BaseModel):
     valid: bool
     message: str
     duplicates: list[OpportunitySummary]
+    warnings: list[ErrorItem] = []
 
 
 class CompanyAliasResponse(BaseModel):
@@ -914,6 +926,36 @@ class CollectionOpportunityReference(BaseModel):
     recruitment_status: str
     source_url: str
     updated_at: datetime
+
+
+class CompanyMaintenanceOpportunity(BaseModel):
+    id: str
+    public_code: str
+    url: str
+    event_name: str
+    recruitment_status: str
+    graduation_years: list[str]
+    deadline: date | None
+    event_end_date: date | None
+    source_url: str
+    source_checked_at: datetime | None
+    updated_at: datetime
+
+
+class MCPCompanyMaintenanceContextResponse(BaseModel):
+    company: CompanyIdentityResponse
+    collection_target_id: int | None = Field(
+        default=None, description="情報収集対象が未作成の場合はnullです。"
+    )
+    collection_last_checked_at: datetime | None = Field(
+        default=None, description="企業単位の収集対象を最後に確認した日時。"
+    )
+    official_sources: list[CollectionSourceResponse] = Field(
+        description="企業単位で登録した公式ページ。収集対象が未作成の場合は空です。"
+    )
+    opportunities: list[CompanyMaintenanceOpportunity] = Field(
+        description="この企業の公開中の全募集。各募集の一次情報URLと最終確認日時を含みます。"
+    )
 
 
 class CompanyIndustryItem(BaseModel):

@@ -124,13 +124,16 @@ https://<公開ホスト名>/mcp
 | `preview_opportunity_patch` | 必要 | 部分更新を保存せず検証し、変更差分と警告を返す |
 | `patch_opportunity` | 必要 | 楽観ロック付きで指定項目だけを更新する |
 | `update_recruitment_status` | 必要 | 募集状況と締め切りだけを更新する |
+| `verify_opportunity` | 必要 | 一次情報に変更がないことだけを記録し、最終確認日時を更新する |
 | `preview_delete_opportunity` | 必要 | 削除対象と公開表示・関連履歴への影響を保存せず確認する |
 | `delete_opportunity` | 必要 | 楽観ロック付きで募集情報を公開データから論理削除する |
 | `restore_opportunity` | 必要 | 論理削除した募集を同じID・公開コードのまま復元する |
 | `list_recent_writes` | 必要 | 直近の登録・更新・削除・復元の記録を返す |
+| `list_stale_opportunities` | 必要 | 日付と「募集中」の矛盾を最優先に、公式情報の再確認が必要な募集を取得する |
 | `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧する（採用ページ未登録の対象だけの抽出を含む） |
 | `list_unmonitored_companies` | 必要 | 企業マスタにあり、まだ情報収集対象を持たない企業を一覧する |
 | `get_collection_target` | 必要 | 収集対象、公式ページ、登録済み募集を1件取得する |
+| `get_company_maintenance_context` | 必要 | 企業の全募集、公式URL、各募集の最終確認日時をまとめて取得する |
 | `get_collection_queue` | 必要 | 未確認または再確認期限を過ぎた企業を優先度順に返す |
 | `list_collection_checks` | 必要 | 企業ごとの情報収集・確認履歴を新しい順に返す |
 | `add_collection_target` | 必要 | 既存CompanyのIDまたは新規企業名、所属業界、優先度、確認間隔、公式ページを収集対象へ追加する |
@@ -161,7 +164,9 @@ https://<公開ホスト名>/mcp
 PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ、MCPが勝手に企業を統合することはありません。
 別名の追加・削除は監査ログへ記録され、`request_id` により安全に再試行できます。
 
-`add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合は `update_recruitment_status` を使います。
+`add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合は `update_recruitment_status` を使います。公式ページを再確認して内容が変わっていない場合は、登録済みの一次情報URLと確認日時を `verify_opportunity` へ渡してください。これは `source_checked_at` のみを更新し、監査ログでは状況更新と区別されます。
+
+書き込み・更新の応答に `warnings` が含まれる場合、保存自体は成功していますが公式情報を再確認してください。`締切` なのに締め切りまたは実施開始日が未来、`募集中` なのに締め切りまたは実施終了日が過去、といった日付と募集状況の矛盾を検出します。締切延長・追加募集・中止があり得るため、Reluaは警告だけを返し、状態を自動変更しません。
 
 その他の一部項目だけを直す場合は、`get_opportunity` が返す `updated_at` と変更項目を `preview_opportunity_patch` へ渡し、差分を確認してから同じ内容を `patch_opportunity` へ渡します。サーバー側で現在値とマージした後に全項目を検証します。取得後に別の更新があった場合は `expected_updated_at` の不一致として拒否されるため、古い値で上書きしません。
 
@@ -223,7 +228,9 @@ QRコードはブラウザ内で生成します。URLフラグメントはサー
 
 ## 運用
 
-cronやコンテナ基盤のスケジューラーから1日1回実行してください。締切日の翌日（東京基準）に募集を論理削除し、論理削除から30日経過した募集を完全削除します。完全削除後は復元できません。収集確認履歴は残りますが、削除済み募集への参照は解除されます。
+運営者は毎日 `list_stale_opportunities` を確認してください。東京基準で、`deadline < today` または `event_end_date < today` なのに募集状況が「募集中」の募集を最優先で返します。締切延長や追加募集の可能性があるため、Reluaはこの矛盾を自動で「締切」に変更しません。公式ページを確認し、変更がなければ `verify_opportunity`、変更があれば適切な更新ツールを実行してください。
+
+cronやコンテナ基盤のスケジューラーから次を1日1回実行してください。これはすでに論理削除した募集を、削除から30日後に完全削除します。期限超過だけで募集を論理削除することはありません。完全削除後は復元できません。収集確認履歴は残りますが、削除済み募集への参照は解除されます。
 
 ```bash
 docker compose exec api python -m app.scripts.close_expired

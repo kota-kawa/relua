@@ -12,6 +12,7 @@ from sqlalchemy import Integer, Select, and_, case, cast, func, literal, or_, se
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.dates import today_in_tokyo
 from app.models import (
     PUBLIC_CODE_LENGTH,
     AuditLog,
@@ -63,6 +64,14 @@ class SearchResult:
     @property
     def total_pages(self) -> int:
         return max(1, math.ceil(self.total / self.per_page))
+
+
+@dataclass(frozen=True)
+class OpportunityReview:
+    """A live posting that needs operator confirmation, with machine-detected reasons."""
+
+    opportunity: Opportunity
+    reasons: list[str]
 
 
 def _search_signature(
@@ -604,6 +613,49 @@ def list_stale_opportunities(
     return list(db.scalars(stmt).unique())
 
 
+def list_opportunities_requiring_review(
+    db: Session, *, days: int = 7, limit: int = 50
+) -> list[OpportunityReview]:
+    """Return source-stale postings and date/status contradictions in review priority order.
+
+    The date checks are deliberately a live query rather than stored flags: an extended deadline
+    disappears from the queue immediately after an operator updates it.  Contradictions are placed
+    before ordinary stale-source work but never alter the published status themselves.
+    """
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    today = today_in_tokyo(now)
+    threshold = now - timedelta(days=days)
+    source_stale = or_(Opportunity.source_checked_at.is_(None), Opportunity.source_checked_at <= threshold)
+    date_status_conflict = and_(
+        RecruitmentStatus.name == "募集中",
+        or_(Opportunity.deadline < today, Opportunity.event_end_date < today),
+    )
+    stmt = (
+        opportunity_query()
+        .join(Opportunity.company)
+        .join(Opportunity.status)
+        .where(or_(date_status_conflict, source_stale))
+        .order_by(
+            case((date_status_conflict, 0), else_=1),
+            case((Opportunity.source_checked_at.is_(None), 0), else_=1),
+            Opportunity.source_checked_at.asc(),
+            Opportunity.id,
+        )
+        .limit(limit)
+    )
+    reviews = []
+    for item in db.scalars(stmt).unique():
+        reasons = []
+        if item.status.name == "募集中" and item.deadline is not None and item.deadline < today:
+            reasons.append("deadline_passed_while_open")
+        if item.status.name == "募集中" and item.event_end_date is not None and item.event_end_date < today:
+            reasons.append("event_ended_while_open")
+        if item.source_checked_at is None or _as_utc(item.source_checked_at) <= threshold:
+            reasons.append("source_not_checked_recently")
+        reviews.append(OpportunityReview(opportunity=item, reasons=reasons))
+    return reviews
+
+
 def _reused_request_id_error(request_id: str) -> dict[str, Any]:
     return {
         "field": "request_id",
@@ -665,6 +717,65 @@ def source_duplicate_warning(matches: list[Opportunity], source_url: str) -> dic
             for item in matches
         ],
     }
+
+
+def opportunity_consistency_warnings(
+    *,
+    recruitment_status: str,
+    deadline: date | None,
+    event_start_date: date | None,
+    event_end_date: date | None,
+    today: date | None = None,
+) -> list[dict[str, Any]]:
+    """Return non-blocking date/status contradictions that still need an operator's judgement.
+
+    A deadline extension, additional recruiting round, or cancelled event can all make these
+    combinations legitimate. They therefore remain warnings instead of validation errors, while
+    ensuring every write client sees the inconsistency before treating the update as routine.
+    """
+    today = today or today_in_tokyo()
+    warnings = []
+    if recruitment_status == "締切" and deadline is not None and deadline > today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "締め切りが未来ですが募集状況は「締切」です",
+                "expected": f"締め切りが{today.isoformat()}以前、または募集状況が「募集中」",
+                "alternative": "締切延長・追加募集なら、公式情報を確認して募集状況と締め切りを更新してください",
+            }
+        )
+    if recruitment_status == "締切" and event_start_date is not None and event_start_date > today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "実施開始日が未来ですが募集状況は「締切」です",
+                "expected": f"実施開始日が{today.isoformat()}以前、または募集状況が「募集中」",
+                "alternative": "中止・募集取りやめの場合は公式情報で確認し、必要なら内容の補足を更新してください",
+            }
+        )
+    if recruitment_status == "募集中" and deadline is not None and deadline < today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "締め切りが過去ですが募集状況は「募集中」です",
+                "expected": f"締め切りが{today.isoformat()}以降、または募集状況が「締切」",
+                "alternative": "締切延長・追加募集なら、公式情報を確認して新しい締め切りを登録してください",
+            }
+        )
+    if recruitment_status == "募集中" and event_end_date is not None and event_end_date < today:
+        warnings.append(
+            {
+                "field": "募集状況",
+                "received": recruitment_status,
+                "reason": "実施終了日が過去ですが募集状況は「募集中」です",
+                "expected": f"実施終了日が{today.isoformat()}以降、または募集状況が「締切」",
+                "alternative": "追加日程・別イベントでないか公式情報を確認してください",
+            }
+        )
+    return warnings
 
 
 def _resolve_relations(db: Session, data: OpportunityInput) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -1202,6 +1313,111 @@ def update_recruitment_status(
         IdempotencyRecord(
             request_id=request_id,
             operation="status_update",
+            request_hash=request_hash,
+            opportunity_id=item.id,
+            response_data=json_response,
+        )
+    )
+    db.commit()
+    return item, False
+
+
+def verify_opportunity(
+    db: Session,
+    *,
+    opportunity_id: str,
+    checked_at: datetime,
+    source_url: str,
+    request_id: str,
+    client_name: str,
+) -> tuple[Opportunity, bool]:
+    """Record that an unchanged posting was checked on its official source.
+
+    Unlike a content or status update, this deliberately leaves ``updated_at`` intact: callers can
+    acknowledge a fresh source check without creating an optimistic-locking conflict for an editor.
+    """
+    checked_at = _as_utc(checked_at)
+    payload = {
+        "opportunity_id": opportunity_id,
+        "checked_at": checked_at.isoformat(),
+        "source_url": source_url,
+    }
+    request_hash = _hash_payload(payload)
+    previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
+    if previous:
+        if (
+            previous.operation != "verify"
+            or previous.request_hash != request_hash
+            or previous.opportunity_id != opportunity_id
+        ):
+            raise DomainValidationError([_reused_request_id_error(request_id)])
+        return _active_idempotency_target(db, previous.opportunity_id), True
+
+    item = get_opportunity(db, opportunity_id)
+    if item is None:
+        raise LookupError("opportunity_not_found")
+
+    if normalize_source_url(source_url) != item.normalized_source_url:
+        raise DomainValidationError(
+            [
+                {
+                    "field": FIELD_LABELS["source_url"],
+                    "received": source_url,
+                    "reason": "登録済みの一次情報URLと一致しません",
+                    "expected": item.source_url,
+                    "alternative": "情報源URL自体を変更する場合はpatch_opportunityを使ってください",
+                }
+            ]
+        )
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    if checked_at > now:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "確認日時",
+                    "received": checked_at.isoformat(),
+                    "reason": "未来の日時は指定できません",
+                    "expected": f"{now.isoformat()}以前のISO 8601日時",
+                    "alternative": "公式ページを確認した時刻をタイムゾーン付きで指定してください",
+                }
+            ]
+        )
+    if item.source_checked_at is not None and checked_at <= _as_utc(item.source_checked_at):
+        raise DomainValidationError(
+            [
+                {
+                    "field": "確認日時",
+                    "received": checked_at.isoformat(),
+                    "reason": "登録済みの最終確認日時より新しい日時を指定してください",
+                    "expected": f"{_as_utc(item.source_checked_at).isoformat()}より後のISO 8601日時",
+                    "alternative": "同じ確認操作の再試行なら同じrequest_idを使ってください",
+                }
+            ]
+        )
+
+    before = {"source_checked_at": item.source_checked_at}
+    item.source_checked_at = checked_at
+    db.flush()
+    json_response = jsonable_encoder(opportunity_dict(item))
+    db.add(
+        AuditLog(
+            action="verify",
+            entity_type="opportunity",
+            entity_id=item.id,
+            request_id=request_id,
+            client_name=client_name,
+            source_url=source_url,
+            success=True,
+            changes={
+                "before": jsonable_encoder(before),
+                "after": {"source_checked_at": checked_at.isoformat()},
+            },
+        )
+    )
+    db.add(
+        IdempotencyRecord(
+            request_id=request_id,
+            operation="verify",
             request_hash=request_hash,
             opportunity_id=item.id,
             response_data=json_response,

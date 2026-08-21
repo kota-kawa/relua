@@ -39,6 +39,7 @@ from app.schemas import (
     MCPCollectionTargetListResponse,
     MCPCollectionWriteResponse,
     MCPCompanyAliasWriteResponse,
+    MCPCompanyMaintenanceContextResponse,
     MCPCompanyMergeResponse,
     MCPCompanyResolutionResponse,
     MCPDeletePreviewResponse,
@@ -74,6 +75,7 @@ from app.services.collection_targets import (
     collection_target_dict,
     create_collection_source,
     create_collection_target,
+    get_company_maintenance_context,
     list_collection_checks,
     list_collection_targets,
     list_unmonitored_companies,
@@ -108,7 +110,8 @@ from app.services.opportunities import (
     find_source_url_duplicates,
     get_opportunity_by_public_ref,
     is_patch_replay,
-    list_stale_opportunities,
+    list_opportunities_requiring_review,
+    opportunity_consistency_warnings,
     opportunity_input_dict,
     opportunity_patch_changes,
     preview_opportunity_deletion,
@@ -119,13 +122,14 @@ from app.services.opportunities import (
     source_duplicate_warning,
     update_recruitment_status,
     validate_write,
+    verify_opportunity,
     write_opportunity,
 )
 from app.services.opportunities import (
     get_opportunity as get_opportunity_record,
 )
 from app.services.rate_limit import register_validation_failure
-from app.services.serialization import master_dict, opportunity_dict, opportunity_summary
+from app.services.serialization import detail_url, master_dict, opportunity_dict, opportunity_summary
 
 settings = get_settings()
 public_url = urlsplit(settings.mcp_public_url)
@@ -160,6 +164,8 @@ mcp = FastMCP(
         "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
+        "公式ページを確認して内容が変わっていない場合はverify_opportunityを使って確認だけを記録してください。"
+        "日付と募集状況の矛盾、または公式情報の再確認対象はlist_stale_opportunitiesで優先順に確認してください。"
         "その他の一部項目だけを直す場合はpreview_opportunity_patchで差分を確認してからpatch_opportunityを使ってください。"
         "誤登録を削除する場合はpreview_delete_opportunityで影響を確認してからdelete_opportunityを使ってください。"
         "誤って削除した募集はrestore_opportunityで同じIDと公開コードのまま復元できます。"
@@ -171,6 +177,7 @@ mcp = FastMCP(
         "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
         "企業マスタにあるが未監視の企業を棚卸しする場合はlist_unmonitored_companiesを使い、返されたcompany_idを"
         "add_collection_targetへ指定してください。"
+        "企業の複数募集をまとめて保守する場合はget_company_maintenance_contextで公式URLと各募集の最終確認日時を取得してください。"
     ),
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -328,6 +335,19 @@ def _source_url_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str
     """
     matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
     return [source_duplicate_warning(matches, data.source_url)] if matches else []
+
+
+def _consistency_warnings(data: OpportunityInput) -> list[dict[str, Any]]:
+    return opportunity_consistency_warnings(
+        recruitment_status=data.recruitment_status,
+        deadline=data.deadline,
+        event_start_date=data.event_start_date,
+        event_end_date=data.event_end_date,
+    )
+
+
+def _write_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str) -> list[dict[str, Any]]:
+    return _consistency_warnings(data) + _source_url_warnings(db, data=data, opportunity_id=opportunity_id)
 
 
 def _prepare_opportunity_patch(
@@ -786,15 +806,17 @@ def validate_opportunity(
         source_matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
         seen = {item.id for item in duplicates}
         duplicates.extend(item for item in source_matches if item.id not in seen)
+        warnings = _consistency_warnings(data)
         return MCPValidationResponse.model_validate(
             {
                 "valid": True,
                 "message": (
                     "この内容で登録できます。"
-                    if not duplicates
-                    else "内容は妥当ですが、イベント名または一次情報URLが重なる募集があります。"
+                    if not duplicates and not warnings
+                    else "内容は保存できますが、重複または日付・募集状況の確認が必要です。"
                 ),
                 "duplicates": [opportunity_summary(item) for item in duplicates],
+                "warnings": warnings,
             }
         )
 
@@ -844,7 +866,7 @@ def add_opportunity(
                     "idempotent_replay": replayed,
                     "message": "募集情報を登録しました",
                     "opportunity": opportunity_dict(item),
-                    "warnings": _source_url_warnings(db, data=data, opportunity_id=item.id),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -891,7 +913,7 @@ def upsert_opportunity(
                     "result": "created",
                     "message": "募集情報を登録しました",
                     "opportunity": opportunity_dict(item),
-                    "warnings": _source_url_warnings(db, data=data, opportunity_id=item.id),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -956,6 +978,7 @@ def update_opportunity(
                     "idempotent_replay": replayed,
                     "message": "募集情報を更新しました",
                     "opportunity": opportunity_dict(item),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -969,6 +992,7 @@ def update_opportunity(
     title="募集情報の部分更新をプレビュー",
     description=(
         "保存せずに現在値へ変更項目をマージし、全項目検証、更新競合、変更差分、一次情報URLの重複を確認します。"
+        "日付と募集状況の矛盾もwarningsとして返します。"
         "get_opportunityのupdated_atをexpected_updated_atへそのまま指定してください。認証が必要です。"
     ),
     annotations=READ_ONLY,
@@ -993,7 +1017,9 @@ def preview_opportunity_patch_tool(
             client_name=client_name,
         )
         matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=item.id)
-        warnings = [source_duplicate_warning(matches, data.source_url)] if matches else []
+        warnings = _consistency_warnings(data)
+        if matches:
+            warnings.append(source_duplicate_warning(matches, data.source_url))
         diff = opportunity_patch_changes(item, data)
         return MCPOpportunityPreviewResponse.model_validate(
             {
@@ -1065,6 +1091,7 @@ def patch_opportunity_tool(
                     "idempotent_replay": replayed,
                     "message": "募集情報を部分更新しました",
                     "opportunity": opportunity_dict(item),
+                    "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
             )
     except DomainValidationError as exc:
@@ -1084,6 +1111,7 @@ def patch_opportunity_tool(
     description=(
         "募集状況と締め切りだけを更新します。他の項目は変更しません。"
         "「締切になった」「募集が始まった」といった保守はこのツールで行い、全項目の再送を避けてください。"
+        "日付と募集状況が矛盾する場合も保存はしますが、warningsで公式情報の再確認を促します。"
     ),
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
 )
@@ -1134,6 +1162,12 @@ def update_recruitment_status_tool(
                     "idempotent_replay": replayed,
                     "message": "募集状況を更新しました",
                     "opportunity": opportunity_dict(item),
+                    "warnings": opportunity_consistency_warnings(
+                        recruitment_status=item.status.name,
+                        deadline=item.deadline,
+                        event_start_date=item.event_start_date,
+                        event_end_date=item.event_end_date,
+                    ),
                 }
             )
     except DomainValidationError as exc:
@@ -1144,6 +1178,81 @@ def update_recruitment_status_tool(
                 request_id=request_id,
                 client_name=client_name,
                 source_url=None,
+                errors=exc.errors,
+            )
+        raise _validation_error(client_name, request_id, exc.errors) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="verify_opportunity",
+    title="募集情報の確認のみを記録",
+    description=(
+        "登録済みの一次情報URLを確認し、募集内容に変更がなかったことを記録します。"
+        "source_checked_atだけを更新し、募集内容とupdated_atは変更しません。"
+        "募集状況や締め切りが変わった場合はupdate_recruitment_status、他の内容が変わった場合はpatch_opportunityを使ってください。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def verify_opportunity_tool(
+    opportunity_id: Annotated[str, Field(description="確認した募集情報のid（UUID）。")],
+    checked_at: Annotated[
+        datetime,
+        Field(description="公式ページを確認した日時（タイムゾーン付きISO 8601）。未来の日時は指定できません。"),
+    ],
+    source_url: Annotated[str, Field(description="確認した登録済みの一次情報URL（https）。")],
+    request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
+    client_name: Annotated[str, Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。")] = "mcp-client",
+) -> MCPWriteResponse:
+    try:
+        source_url = validate_source_host(validate_https_url(source_url) or source_url)
+    except ValueError as exc:
+        errors = [
+            {
+                "field": "情報源",
+                "received": source_url,
+                "reason": str(exc),
+                "expected": "企業自身の一次情報であるhttps URL",
+                "alternative": "登録済みのsource_urlをget_opportunityで確認してください",
+            }
+        ]
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action="verify",
+                request_id=request_id,
+                client_name=client_name,
+                source_url=source_url,
+                errors=errors,
+            )
+        raise _validation_error(client_name, request_id, errors) from exc
+    try:
+        with SessionLocal() as db:
+            item, replayed = verify_opportunity(
+                db,
+                opportunity_id=opportunity_id,
+                checked_at=checked_at,
+                source_url=source_url,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "公式情報の確認のみを記録しました",
+                    "opportunity": opportunity_dict(item),
+                }
+            )
+    except DomainValidationError as exc:
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action="verify",
+                request_id=request_id,
+                client_name=client_name,
+                source_url=source_url,
                 errors=exc.errors,
             )
         raise _validation_error(client_name, request_id, exc.errors) from exc
@@ -1377,6 +1486,56 @@ def get_collection_target_tool(
         if target is None:
             raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"})
         return CollectionTargetResponse.model_validate(collection_target_dict(db, target))
+
+
+@mcp.tool(
+    name="get_company_maintenance_context",
+    title="企業単位の募集保守コンテキストを取得",
+    description=(
+        "指定企業の公開中の全募集、各募集の一次情報URL・最終確認日時、企業単位で登録した公式ページをまとめて返します。"
+        "公式採用サイトを確認した後、複数募集を更新・確認するために使います。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def get_company_maintenance_context_tool(
+    company_id: Annotated[int, Field(ge=1, description="対象企業のID。resolve_companyなどが返すidを指定します。")],
+) -> MCPCompanyMaintenanceContextResponse:
+    with SessionLocal() as db:
+        context = get_company_maintenance_context(db, company_id)
+        if context is None:
+            raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"})
+        company, target, opportunities = context
+        return MCPCompanyMaintenanceContextResponse.model_validate(
+            {
+                "company": company_identity_dict(company),
+                "collection_target_id": target.id if target else None,
+                "collection_last_checked_at": target.last_checked_at if target else None,
+                "official_sources": [
+                    collection_source_dict(source)
+                    for source in sorted(target.sources, key=lambda value: (not value.is_active, value.id))
+                ]
+                if target
+                else [],
+                "opportunities": [
+                    {
+                        "id": item.id,
+                        "public_code": item.public_code,
+                        "url": detail_url(item),
+                        "event_name": item.event_name,
+                        "recruitment_status": item.status.name,
+                        "graduation_years": [
+                            value.name for value in sorted(item.graduation_years, key=lambda value: value.sort_order)
+                        ],
+                        "deadline": item.deadline,
+                        "event_end_date": item.event_end_date,
+                        "source_url": item.source_url,
+                        "source_checked_at": item.source_checked_at,
+                        "updated_at": item.updated_at,
+                    }
+                    for item in opportunities
+                ],
+            }
+        )
 
 
 @mcp.tool(
@@ -1642,26 +1801,36 @@ def list_recent_writes(
 
 @mcp.tool(
     name="list_stale_opportunities",
-    title="公式情報の再確認が必要な募集を取得",
+    title="要確認の募集を優先順に取得",
     description=(
-        "公式ページを一定期間確認できていない募集情報を、確認日が古い順（未確認は最優先）に返します。"
+        "「募集中」なのに締め切りまたは実施終了日を過ぎた矛盾を最優先で返します。"
+        "続いて公式ページを一定期間確認できていない募集を、未確認・確認日が古い順に返します。"
+        "矛盾は自動で「締切」に変更しません。"
         "見つけた各募集はupdate_recruitment_status、patch_opportunity、"
-        "または収集対象があるならrecord_collection_checkで再確認結果を記録してください。認証が必要です。"
+        "変更がなければverify_opportunity、収集対象があるならrecord_collection_checkで再確認結果を記録してください。認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
 def list_stale_opportunities_tool(
     days: Annotated[
-        int, Field(ge=1, le=365, description="この日数より公式情報の確認が経過している募集を対象にします。")
+        int,
+        Field(
+            ge=1,
+            le=365,
+            description="この日数より公式情報の確認が経過している募集を対象にします。日付と「募集中」の矛盾は日数にかかわらず含まれます。",
+        ),
     ] = 7,
     limit: Annotated[int, Field(ge=1, le=100, description="取得件数（1〜100）。")] = 20,
 ) -> MCPStaleOpportunityListResponse:
     with SessionLocal() as db:
-        # No deadline filter: a posting whose deadline already passed without its status being
-        # updated is exactly the kind of gap this tool exists to surface, not one to hide.
-        items = list_stale_opportunities(db, days=days, limit=limit)
+        reviews = list_opportunities_requiring_review(db, days=days, limit=limit)
         return MCPStaleOpportunityListResponse.model_validate(
-            {"items": [opportunity_summary(item) for item in items]}
+            {
+                "items": [
+                    opportunity_summary(review.opportunity) | {"review_reasons": review.reasons}
+                    for review in reviews
+                ]
+            }
         )
 
 

@@ -8,7 +8,8 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from app import mcp_server
-from app.models import Opportunity
+from app.dates import today_in_tokyo
+from app.models import AuditLog, Opportunity
 from app.schemas import OpportunityInput
 from app.services.opportunities import write_opportunity
 from tests.test_validation import valid_payload
@@ -88,6 +89,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "preview_opportunity_patch",
         "patch_opportunity",
         "update_recruitment_status",
+        "verify_opportunity",
         "preview_delete_opportunity",
         "delete_opportunity",
         "restore_opportunity",
@@ -96,6 +98,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "list_collection_targets",
         "list_unmonitored_companies",
         "get_collection_target",
+        "get_company_maintenance_context",
         "get_collection_queue",
         "list_undercovered_companies",
         "list_collection_checks",
@@ -116,6 +119,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["update_opportunity"]["annotations"]["destructiveHint"] is True
     assert tools["add_opportunity"]["annotations"]["destructiveHint"] is False
     assert tools["update_recruitment_status"]["annotations"]["destructiveHint"] is False
+    assert tools["verify_opportunity"]["annotations"]["destructiveHint"] is False
+    assert tools["verify_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["delete_opportunity"]["annotations"]["destructiveHint"] is True
     assert tools["delete_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["delete_opportunity"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
@@ -125,6 +130,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["restore_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["get_collection_queue"]["annotations"]["readOnlyHint"] is True
     assert tools["get_collection_queue"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["get_company_maintenance_context"]["annotations"]["readOnlyHint"] is True
+    assert tools["get_company_maintenance_context"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["list_unmonitored_companies"]["annotations"]["readOnlyHint"] is True
     assert tools["update_collection_target"]["annotations"]["destructiveHint"] is False
     assert tools["patch_opportunity"]["annotations"]["destructiveHint"] is False
@@ -562,6 +569,69 @@ def test_update_recruitment_status_touches_only_the_status_and_deadline(tools, d
     assert result["opportunity"]["deadline"] == new_deadline
     assert result["opportunity"]["description"] == "プロダクト開発を体験します。"
     assert result["opportunity"]["event_name"] == "開発インターン"
+    assert result["warnings"][0]["reason"] == "締め切りが未来ですが募集状況は「締切」です"
+
+
+def test_updates_return_soft_warnings_for_date_and_status_contradictions(tools, db):
+    item = seed(db)
+    today = today_in_tokyo()
+    closed = call(
+        "update_recruitment_status",
+        {
+            "opportunity_id": item.id,
+            "recruitment_status": "締切",
+            "deadline": (today + timedelta(days=30)).isoformat(),
+            "request_id": "soft-warning-closed-0001",
+            "client_name": "pytest",
+        },
+    )
+    preview = call(
+        "preview_opportunity_patch",
+        {
+            "opportunity_id": item.id,
+            "changes": {"event_start_date": (today + timedelta(days=60)).isoformat()},
+            "expected_updated_at": closed["opportunity"]["updated_at"],
+            "request_id": "soft-warning-preview-0001",
+            "client_name": "pytest",
+        },
+    )
+    reopened = call(
+        "update_recruitment_status",
+        {
+            "opportunity_id": item.id,
+            "recruitment_status": "募集中",
+            "deadline": (today - timedelta(days=1)).isoformat(),
+            "request_id": "soft-warning-open-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert {warning["reason"] for warning in preview["warnings"]} >= {
+        "締め切りが未来ですが募集状況は「締切」です",
+        "実施開始日が未来ですが募集状況は「締切」です",
+    }
+    assert reopened["success"] is True
+    assert any(warning["reason"] == "締め切りが過去ですが募集状況は「募集中」です" for warning in reopened["warnings"])
+
+
+def test_validate_opportunity_returns_soft_date_status_warnings(tools, db):
+    today = today_in_tokyo()
+
+    validated = call(
+        "validate_opportunity",
+        write_args(
+            recruitment_status="締切",
+            deadline=(today + timedelta(days=30)).isoformat(),
+            event_start_date=(today + timedelta(days=60)).isoformat(),
+            request_id="soft-warning-validate-0001",
+        ),
+    )
+
+    assert validated["valid"] is True
+    assert {warning["reason"] for warning in validated["warnings"]} == {
+        "締め切りが未来ですが募集状況は「締切」です",
+        "実施開始日が未来ですが募集状況は「締切」です",
+    }
 
 
 def test_update_recruitment_status_replays_instead_of_writing_twice(tools, db):
@@ -598,6 +668,60 @@ def test_update_recruitment_status_rejects_an_unusable_date(tools, db):
         "update_recruitment_status",
         {"opportunity_id": "missing", "recruitment_status": "締切", "request_id": "status-missing-0001"},
     )["error"] == "not_found"
+
+
+def test_verify_opportunity_records_an_unchanged_source_without_touching_updated_at(tools, db):
+    item = seed(db)
+    original_updated_at = item.updated_at
+    original_checked_at = item.source_checked_at
+    checked_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    arguments = {
+        "opportunity_id": item.id,
+        "checked_at": checked_at.isoformat(),
+        "source_url": item.source_url,
+        "request_id": "verify-opportunity-0001",
+        "client_name": "pytest",
+    }
+
+    verified = call("verify_opportunity", arguments)
+    replay = call("verify_opportunity", arguments)
+
+    assert verified["idempotent_replay"] is False
+    assert replay["idempotent_replay"] is True
+    assert datetime.fromisoformat(verified["opportunity"]["updated_at"].replace("Z", "+00:00")) == original_updated_at
+    assert datetime.fromisoformat(verified["opportunity"]["source_checked_at"].replace("Z", "+00:00")) == checked_at
+    assert item.source_checked_at == checked_at
+    assert item.source_checked_at > original_checked_at
+    audit = db.query(AuditLog).filter_by(request_id="verify-opportunity-0001").one()
+    assert audit.action == "verify"
+    assert audit.source_url == item.source_url
+    assert audit.changes["before"]["source_checked_at"] == original_checked_at.isoformat()
+    assert audit.changes["after"] == {"source_checked_at": checked_at.isoformat()}
+
+
+def test_verify_opportunity_rejects_a_different_or_future_source_check(tools, db):
+    item = seed(db)
+    common = {
+        "opportunity_id": item.id,
+        "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 -- tests also support Python 3.10
+        "request_id": "verify-source-mismatch-0001",
+    }
+
+    source_error = tool_error(
+        "verify_opportunity", common | {"source_url": "https://example.com/other-official-page"}
+    )
+    future_error = tool_error(
+        "verify_opportunity",
+        {
+            "opportunity_id": item.id,
+            "checked_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),  # noqa: UP017 -- tests also support Python 3.10
+            "source_url": item.source_url,
+            "request_id": "verify-future-0001",
+        },
+    )
+
+    assert source_error["errors"][0]["field"] == "情報源"
+    assert future_error["errors"][0]["field"] == "確認日時"
 
 
 def test_delete_preview_soft_delete_and_restore_preserve_the_record(tools, db):
@@ -776,8 +900,36 @@ def test_list_stale_opportunities_flags_records_not_recently_confirmed(tools, db
     assert stale.id in ids
     assert fresh.id not in ids
     assert result["items"][0]["id"] == stale.id
+    assert result["items"][0]["review_reasons"] == ["source_not_checked_recently"]
 
 
+def test_review_queue_prioritizes_open_postings_with_past_dates(tools, db):
+    stale = seed(
+        db,
+        company_name="株式会社通常再確認",
+        source_url="https://example.com/review-queue-stale",
+    )
+    stale.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017 -- tests also support Python 3.10
+    today = date.today()
+    conflict = seed(
+        db,
+        company_name="株式会社矛盾確認",
+        event_name="期限矛盾インターン",
+        deadline=(today - timedelta(days=1)).isoformat(),
+        event_end_date=(today - timedelta(days=2)).isoformat(),
+        source_url="https://example.com/review-queue-conflict",
+    )
+    db.commit()
+
+    result = call("list_stale_opportunities", {"days": 7})
+    items = {item["id"]: item for item in result["items"]}
+
+    assert result["items"][0]["id"] == conflict.id
+    assert items[conflict.id]["review_reasons"] == [
+        "deadline_passed_while_open",
+        "event_ended_while_open",
+    ]
+    assert items[stale.id]["review_reasons"] == ["source_not_checked_recently"]
 def collection_target_args(**overrides) -> dict:
     industry = overrides.pop("industry", "IT・通信")
     sector = overrides.pop("sector", "Webサービス")
@@ -931,6 +1083,49 @@ def test_mcp_lists_unmonitored_companies_and_adds_one_by_id(tools, db):
     assert missing["total"] == 1
     assert missing["items"][0]["id"] == adobe.company_id
     assert missing["items"][0]["company_opportunity_count"] == 1
+
+
+def test_company_maintenance_context_groups_live_postings_and_official_sources(tools, db):
+    first = seed(
+        db,
+        company_name="株式会社一括保守",
+        event_name="27卒本選考",
+        graduation_years=["27卒"],
+        source_url="https://example.com/maintenance-selection",
+    )
+    second = seed(
+        db,
+        company_name="株式会社一括保守",
+        event_name="サマーインターン",
+        graduation_years=["28卒"],
+        source_url="https://example.com/maintenance-summer",
+    )
+    target = call(
+        "add_collection_target",
+        collection_target_args(
+            company_name="株式会社一括保守",
+            request_id="maintenance-target-0001",
+            sources=[
+                {"source_type": "recruit", "url": "https://example.com/maintenance-recruit"},
+                {"source_type": "internship", "url": "https://example.com/maintenance-intern"},
+            ],
+        ),
+    )["target"]
+
+    context = call("get_company_maintenance_context", {"company_id": first.company_id})
+
+    assert context["company"]["id"] == first.company_id
+    assert context["collection_target_id"] == target["id"]
+    assert {source["url"] for source in context["official_sources"]} == {
+        "https://example.com/maintenance-recruit",
+        "https://example.com/maintenance-intern",
+    }
+    opportunities = {item["id"]: item for item in context["opportunities"]}
+    assert set(opportunities) == {first.id, second.id}
+    assert opportunities[first.id]["graduation_years"] == ["27卒"]
+    assert opportunities[second.id]["source_url"] == "https://example.com/maintenance-summer"
+    assert opportunities[second.id]["source_checked_at"] is not None
+    assert tool_error("get_company_maintenance_context", {"company_id": 999999})["error"] == "not_found"
 
 
 def test_collection_queue_supports_create_patch_source_management_and_checks(tools, db):

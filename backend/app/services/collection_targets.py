@@ -83,6 +83,37 @@ def get_collection_target(db: Session, target_id: int) -> CollectionTarget | Non
     return db.scalar(collection_target_query().where(CollectionTarget.id == target_id))
 
 
+def get_company_maintenance_context(
+    db: Session, company_id: int
+) -> tuple[Company, CollectionTarget | None, list[Opportunity]] | None:
+    """Load everything an operator needs after opening one company's official site.
+
+    Unlike ``get_collection_target``, this also works for companies that have not yet been added to
+    the collection queue.  Soft-deleted postings are intentionally excluded: they are not candidates
+    for a current-source maintenance pass and remain available through restore/audit workflows.
+    """
+    company = db.scalar(
+        select(Company)
+        .options(selectinload(Company.aliases))
+        .where(Company.id == company_id)
+    )
+    if company is None:
+        return None
+    target = db.scalar(collection_target_query().where(CollectionTarget.company_id == company.id))
+    opportunities = list(
+        db.scalars(
+            select(Opportunity)
+            .options(
+                selectinload(Opportunity.status),
+                selectinload(Opportunity.graduation_years),
+            )
+            .where(Opportunity.company_id == company.id, Opportunity.deleted_at.is_(None))
+            .order_by(Opportunity.updated_at.desc(), Opportunity.id)
+        )
+    )
+    return company, target, opportunities
+
+
 def get_collection_source(db: Session, source_id: int) -> CollectionSource | None:
     return db.scalar(select(CollectionSource).where(CollectionSource.id == source_id))
 

@@ -103,9 +103,10 @@ from app.services.normalization import normalize_company_name
 from app.services.opportunities import (
     DomainValidationError,
     InvalidSearchCursor,
+    classify_duplicate_candidates,
     delete_opportunity,
     ensure_expected_updated_at,
-    find_exact_duplicates,
+    find_probable_duplicates,
     find_similar_opportunities,
     find_source_url_duplicates,
     get_opportunity_by_public_ref,
@@ -115,6 +116,7 @@ from app.services.opportunities import (
     opportunity_input_dict,
     opportunity_patch_changes,
     preview_opportunity_deletion,
+    probable_duplicate_warning,
     recent_write_logs,
     record_failed_attempt,
     restore_opportunity,
@@ -159,6 +161,9 @@ mcp = FastMCP(
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
         "追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
         "同じ募集が登録済みでないかfind_similar_opportunitiesで確かめてください。"
+        "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として登録されます"
+        "（例: 同じイベント名を28卒・29卒で使い回す企業）。allow_duplicateは全く同じ日程・コースを"
+        "意図的に複数登録する場合だけ使ってください。"
         "情報源URLが既存募集と重ならないかfind_opportunities_by_source_urlでも確認してください。"
         "企業名が略称・英語名・誤記かもしれない場合はresolve_companyで候補を確認し、"
         "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
@@ -346,8 +351,17 @@ def _consistency_warnings(data: OpportunityInput) -> list[dict[str, Any]]:
     )
 
 
+def _probable_duplicate_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str) -> list[dict[str, Any]]:
+    matches = find_probable_duplicates(db, data=data, exclude_id=opportunity_id)
+    return [probable_duplicate_warning(matches)] if matches else []
+
+
 def _write_warnings(db: Any, *, data: OpportunityInput, opportunity_id: str) -> list[dict[str, Any]]:
-    return _consistency_warnings(data) + _source_url_warnings(db, data=data, opportunity_id=opportunity_id)
+    return (
+        _consistency_warnings(data)
+        + _source_url_warnings(db, data=data, opportunity_id=opportunity_id)
+        + _probable_duplicate_warnings(db, data=data, opportunity_id=opportunity_id)
+    )
 
 
 def _prepare_opportunity_patch(
@@ -797,16 +811,21 @@ def validate_opportunity(
         errors = validate_write(db, data=data)
         if errors:
             raise _domain_error(request, "validate", DomainValidationError(errors))
-        duplicates = find_exact_duplicates(
+        duplicates, probable_duplicates = classify_duplicate_candidates(
             db,
             company_name=data.company_name,
             event_name=data.event_name,
+            graduation_years=data.graduation_years,
+            event_start_date=data.event_start_date,
+            job_categories=data.job_categories,
             exclude_id=opportunity_id,
         )
         source_matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=opportunity_id)
         seen = {item.id for item in duplicates}
         duplicates.extend(item for item in source_matches if item.id not in seen)
         warnings = _consistency_warnings(data)
+        if probable_duplicates:
+            warnings.append(probable_duplicate_warning(probable_duplicates))
         return MCPValidationResponse.model_validate(
             {
                 "valid": True,
@@ -826,7 +845,9 @@ def validate_opportunity(
     description=(
         "募集情報を1件追加します。request_idはクライアント側で一意にし、再試行時は同じ値を使用してください。"
         "payload内の固定値はget_master_values／get_sectorsのnameを指定します。"
-        "同じ企業の同名イベントが既にある場合は登録を拒否し、既存の登録を返します。"
+        "同じ企業・同名イベントで、対象学年・実施日・対象職種も一致する場合だけ登録を拒否し、既存の登録を返します。"
+        "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば「同名だが別募集」として登録し、"
+        "warningsで既存の登録を知らせます（会社が28卒・29卒で同じイベント名を使い回す場合など）。"
         "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
     ),
     annotations=APPEND_ONLY,
@@ -835,7 +856,13 @@ def add_opportunity(
     payload: WritePayload,
     allow_duplicate: Annotated[
         bool,
-        Field(description="同名イベントが既にある場合でも別の登録として追加します。別日程・別コースを分けて登録するときだけtrueにしてください。"),
+        Field(
+            description=(
+                "対象学年・実施日・対象職種まで一致する完全な重複でも、別の登録として追加します。"
+                "同一の日程・コースを意図的に複数登録するときだけtrueにしてください。"
+                "対象学年・実施日・対象職種のいずれかが違う場合はfalseのままで登録できます。"
+            )
+        ),
     ] = False,
     collection_target_id: Annotated[
         int | None,
@@ -877,9 +904,12 @@ def add_opportunity(
     name="upsert_opportunity",
     title="募集情報を検索なしで登録（重複時は既存を返す）",
     description=(
-        "同じ企業の同名イベントが既にある場合はエラーにせず既存の登録をそのまま返し、なければ新規登録します。"
+        "同じ企業・同名イベントで、対象学年・実施日・対象職種も一致する場合はエラーにせず既存の登録をそのまま返し、"
+        "そうでなければ新規登録します。同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として"
+        "新規登録し、warningsで既存の登録を知らせます（会社が28卒・29卒で同じイベント名を使い回す場合など）。"
         "find_similar_opportunitiesとadd_opportunityを毎回2回呼ぶ手間を1回にまとめたツールです。"
-        "別日程・別コースを意図的に分けて登録したい場合は、代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
+        "対象学年・実施日・対象職種まで一致する完全な重複を意図的に複数登録したい場合は、"
+        "代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
     ),
     annotations=APPEND_ONLY,
 )
@@ -943,22 +973,20 @@ def upsert_opportunity(
         "get_opportunityで現在値を取得し、変更しない項目もそのまま含めた完全なpayloadを送ってください。"
         "状況や締切だけを直す場合はupdate_recruitment_statusを使ってください。"
         "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
+        "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
+        "更新にあたって一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
+        "expected_updated_atが現在値と違う場合は上書きせず拒否します。取得後に別の変更が入っていないか、"
+        "必ずget_opportunityで直前に取得したupdated_atを渡してください。"
     ),
     annotations=REPLACING,
 )
 def update_opportunity(
     opportunity_id: Annotated[str, Field(description="更新対象のid（UUID）。get_opportunityのidをそのまま渡します。")],
     payload: UpdatePayload,
-    collection_target_id: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "確認中の収集対象ID。指定すると募集更新と確認履歴を同じトランザクションで記録します。"
-                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けて確認履歴を記録します。"
-            ),
-        ),
-    ] = None,
+    expected_updated_at: Annotated[
+        datetime,
+        Field(description="get_opportunityで取得した現在のupdated_at。取得後の競合更新を検出します。"),
+    ],
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPUpdateRequest)
     data = _write_input(request)
@@ -970,7 +998,7 @@ def update_opportunity(
                 request_id=request.request_id,
                 client_name=request.client_name,
                 opportunity_id=opportunity_id,
-                collection_target_id=collection_target_id,
+                expected_updated_at=expected_updated_at,
             )
             return MCPWriteResponse.model_validate(
                 {
@@ -1020,6 +1048,7 @@ def preview_opportunity_patch_tool(
         warnings = _consistency_warnings(data)
         if matches:
             warnings.append(source_duplicate_warning(matches, data.source_url))
+        warnings += _probable_duplicate_warnings(db, data=data, opportunity_id=item.id)
         diff = opportunity_patch_changes(item, data)
         return MCPOpportunityPreviewResponse.model_validate(
             {
@@ -1039,6 +1068,9 @@ def preview_opportunity_patch_tool(
     description=(
         "指定した項目だけを更新し、サーバー側で現在値とマージして全項目を再検証します。"
         "expected_updated_atが現在値と違う場合は上書きせず拒否します。先にpreview_opportunity_patchを実行してください。"
+        "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
+        "タグや分類だけの修正のように、一次情報を読み直していない修正でも安全に使えます。"
+        "一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
     ),
     annotations=PATCHING,
 )
@@ -1051,16 +1083,6 @@ def patch_opportunity_tool(
     ],
     request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。")],
     client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
-    collection_target_id: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "指定すると更新成功と同時に収集確認結果foundを記録します。"
-                "省略しても、企業名・業界が一致する有効な収集対象があれば自動で紐付けます。"
-            ),
-        ),
-    ] = None,
 ) -> MCPWriteResponse:
     try:
         with SessionLocal() as db:
@@ -1081,7 +1103,6 @@ def patch_opportunity_tool(
                 request_id=request_id,
                 client_name=client_name,
                 opportunity_id=opportunity_id,
-                collection_target_id=collection_target_id,
                 expected_updated_at=expected_updated_at,
                 action="patch",
             )

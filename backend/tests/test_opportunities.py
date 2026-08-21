@@ -10,6 +10,7 @@ from app.schemas import OpportunityInput
 from app.services.normalization import normalize_company_name
 from app.services.opportunities import (
     DomainValidationError,
+    find_probable_duplicates,
     find_similar_opportunities,
     get_opportunity_by_public_ref,
     list_opportunities_requiring_review,
@@ -475,6 +476,54 @@ def test_write_opportunity_records_when_the_official_source_was_confirmed(db):
     assert item.source_checked_at == item.updated_at
 
 
+def test_updating_an_existing_opportunity_does_not_claim_a_fresh_source_check(db):
+    """write != verify: editing a field (e.g. fixing a tag) is not the same claim as having just
+
+    re-read the primary source, so an update/patch must leave source_checked_at exactly as it was
+    until a caller separately confirms via verify_opportunity or record_collection_check.
+    """
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="write-verify-split-0001", client_name="pytest")
+    original_checked_at = item.source_checked_at
+    original_updated_at = item.updated_at
+    assert original_checked_at is not None
+
+    updated, replayed = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload() | {"tags": ["急募"]}),
+        request_id="write-verify-split-0002",
+        client_name="pytest",
+        opportunity_id=item.id,
+        expected_updated_at=item.updated_at,
+        action="patch",
+    )
+
+    assert replayed is False
+    assert updated.updated_at > original_updated_at
+    assert updated.source_checked_at == original_checked_at
+
+
+def test_updating_an_existing_opportunity_rejects_collection_target_id(db):
+    """collection_target_id only makes sense on a brand-new registration; an update is a plain
+
+    content edit, so passing it is a caller error rather than something to silently ignore.
+    """
+    data = OpportunityInput.model_validate(valid_payload())
+    item, _ = write_opportunity(db, data=data, request_id="write-verify-guard-0001", client_name="pytest")
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(valid_payload() | {"tags": ["急募"]}),
+            request_id="write-verify-guard-0002",
+            client_name="pytest",
+            opportunity_id=item.id,
+            expected_updated_at=item.updated_at,
+            collection_target_id=1,
+        )
+    assert exc_info.value.errors[0]["field"] == "情報収集対象ID"
+
+
 def test_write_opportunity_locks_company_before_checking_duplicates(db):
     """write_opportunity now resolves+row-locks the Company before find_exact_duplicates runs
     (previously the duplicate check ran first, so two concurrent writers for the same company could
@@ -496,6 +545,68 @@ def test_write_opportunity_locks_company_before_checking_duplicates(db):
         )
     assert exc_info.value.errors[0]["field"] == "イベント名"
     assert exc_info.value.errors[0]["existing"]
+
+
+def test_same_event_name_with_a_different_graduation_year_is_a_probable_not_exact_duplicate(db):
+    """Companies routinely reuse one event name across cohorts ("新卒採用エントリー" for both 28卒 and
+
+    29卒). A hard block on company+event_name alone made a genuinely separate posting impossible to
+    register without allow_duplicate=true, and upsert_opportunity would silently return the wrong
+    existing row instead of creating the new one.
+    """
+    first = OpportunityInput.model_validate(valid_payload() | {"graduation_years": ["28卒"]})
+    first_item, _ = write_opportunity(db, data=first, request_id="grad-split-0001", client_name="pytest")
+
+    second = OpportunityInput.model_validate(
+        valid_payload() | {"graduation_years": ["29卒"], "source_url": "https://example.com/grad-split-2"}
+    )
+    second_item, _ = write_opportunity(db, data=second, request_id="grad-split-0002", client_name="pytest")
+
+    assert second_item.id != first_item.id
+    probable = find_probable_duplicates(db, data=second, exclude_id=second_item.id)
+    assert [item.id for item in probable] == [first_item.id]
+
+
+def test_same_event_name_with_a_different_job_category_is_a_probable_not_exact_duplicate(db):
+    first = OpportunityInput.model_validate(valid_payload() | {"job_categories": ["ソフトウェアエンジニア"]})
+    write_opportunity(db, data=first, request_id="job-split-0001", client_name="pytest")
+
+    second = OpportunityInput.model_validate(
+        valid_payload()
+        | {"job_categories": ["データサイエンティスト"], "source_url": "https://example.com/job-split-2"}
+    )
+    second_item, _ = write_opportunity(db, data=second, request_id="job-split-0002", client_name="pytest")
+    assert second_item is not None
+
+
+def test_same_event_name_with_a_different_start_date_is_a_probable_not_exact_duplicate(db):
+    first = OpportunityInput.model_validate(valid_payload() | {"event_start_date": "2026-09-01"})
+    write_opportunity(db, data=first, request_id="date-split-0001", client_name="pytest")
+
+    second = OpportunityInput.model_validate(
+        valid_payload() | {"event_start_date": "2026-10-01", "source_url": "https://example.com/date-split-2"}
+    )
+    second_item, _ = write_opportunity(db, data=second, request_id="date-split-0002", client_name="pytest")
+    assert second_item is not None
+
+
+def test_unset_identity_fields_do_not_manufacture_a_probable_duplicate(db):
+    """A field left unset on either side (e.g. no event_start_date yet) is not evidence of a
+
+    difference, so a genuine repeat registration (same graduation year, job category, and no dates on
+    either side) still blocks as an exact duplicate rather than sliding through as merely probable.
+    """
+    data = OpportunityInput.model_validate(valid_payload())
+    write_opportunity(db, data=data, request_id="unset-fields-0001", client_name="pytest")
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(valid_payload() | {"source_url": "https://example.com/unset-fields-2"}),
+            request_id="unset-fields-0002",
+            client_name="pytest",
+        )
+    assert exc_info.value.errors[0]["field"] == "イベント名"
 
 
 def test_update_recruitment_status_also_refreshes_source_checked_at(db):

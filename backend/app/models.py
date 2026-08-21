@@ -319,8 +319,10 @@ class Opportunity(Base):
     #: When the official source (source_url) was last confirmed accurate - shown to users as 公式情報確認,
     #: and distinct from updated_at: a record_collection_check "found" against an unchanged posting
     #: bumps this without touching updated_at, so confirming an entry never trips optimistic locking
-    #: for a caller mid-edit. Populated by every verification-carrying write path in
-    #: services.opportunities and services.collection_targets; null only for legacy rows predating it.
+    #: for a caller mid-edit. write != verify: only a brand-new registration (write_opportunity with no
+    #: opportunity_id) and the dedicated verify_opportunity / record_collection_check paths set this -
+    #: an update or patch to an existing row never does, since editing a field is not the same claim as
+    #: having just re-read the primary source. Null only for legacy rows predating this column.
     source_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     status: Mapped[RecruitmentStatus] = relationship()

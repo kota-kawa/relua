@@ -438,6 +438,28 @@ def test_upsert_still_raises_on_a_non_duplicate_validation_error(tools, db):
     assert error["errors"][0]["field"] == "業種"
 
 
+def test_upsert_creates_a_new_row_for_a_different_graduation_year_sharing_the_event_name(tools, db):
+    """The exact bug report this guards against: a company reusing "新卒採用エントリー" for both 28卒
+
+    and 29卒 must not make upsert_opportunity silently return the 28卒 posting for a 29卒 registration.
+    """
+    first = call("upsert_opportunity", write_args(graduation_years=["28卒"], request_id="upsert-grad-0001"))
+    assert first["result"] == "created"
+
+    second = call(
+        "upsert_opportunity",
+        write_args(
+            graduation_years=["29卒"],
+            source_url="https://example.com/upsert-grad-2",
+            request_id="upsert-grad-0002",
+        ),
+    )
+    assert second["result"] == "created"
+    assert second["opportunity"]["id"] != first["opportunity"]["id"]
+    warning = next(w for w in second["warnings"] if w["field"] == "イベント名")
+    assert warning["existing"][0]["id"] == first["opportunity"]["id"]
+
+
 def test_add_and_upsert_warn_on_a_colliding_source_url_without_blocking_the_write(tools, db):
     seed(db, event_name="既存イベント", source_url="https://example.com/shared-source")
 
@@ -497,6 +519,24 @@ def test_validate_checks_the_payload_without_writing_anything(tools, db):
     assert call("search_opportunity", {})["total"] == 1
 
 
+def test_validate_opportunity_treats_a_different_graduation_year_as_probable_not_exact(tools, db):
+    seed(db, graduation_years=["28卒"])
+
+    validated = call(
+        "validate_opportunity",
+        write_args(
+            graduation_years=["29卒"],
+            source_url="https://example.com/validate-grad-2",
+            request_id="validate-grad-0001",
+        ),
+    )
+
+    assert validated["valid"] is True
+    assert validated["duplicates"] == []
+    warning = next(w for w in validated["warnings"] if w["field"] == "イベント名")
+    assert warning["existing"][0]["event_name"] == "開発インターン"
+
+
 def test_source_url_matching_ignores_tracking_parameters_and_warns_on_validation(tools, db):
     existing = seed(db)
     variant = "https://EXAMPLE.com/source/?utm_source=chatgpt#details"
@@ -545,6 +585,83 @@ def test_patch_preview_updates_only_selected_fields_and_rejects_stale_writes(too
         | {
             "changes": {"deadline": (date.today() + timedelta(days=90)).isoformat()},
             "request_id": "patch-opportunity-0002",
+        },
+    )
+    assert stale["errors"][0]["field"] == "更新前の最終確認日時"
+
+
+def test_patch_opportunity_writes_content_without_claiming_a_fresh_source_check(tools, db):
+    """write != verify: patch_opportunity only changes DB content. A caller who actually re-read the
+
+    primary source records that separately via verify_opportunity or record_collection_check.
+    """
+    item = seed(db)
+    original_checked_at = item.source_checked_at
+    current = call("get_opportunity", {"reference": item.id})
+
+    updated = call(
+        "patch_opportunity",
+        {
+            "opportunity_id": item.id,
+            "changes": {"description": "タグ・分類だけを修正しました。"},
+            "expected_updated_at": current["updated_at"],
+            "request_id": "patch-no-verify-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert updated["opportunity"]["description"] == "タグ・分類だけを修正しました。"
+    assert updated["opportunity"]["updated_at"] != current["updated_at"]
+    assert (
+        datetime.fromisoformat(updated["opportunity"]["source_checked_at"].replace("Z", "+00:00"))
+        == original_checked_at
+    )
+
+
+def test_patch_and_update_opportunity_no_longer_accept_collection_target_id(tools):
+    """That parameter only ever made sense for a brand-new registration; see
+
+    test_patch_opportunity_writes_content_without_claiming_a_fresh_source_check for the write/verify
+    split this schema change enforces.
+    """
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    schemas = {tool.name: tool.inputSchema for tool in listed}
+    assert "collection_target_id" not in schemas["patch_opportunity"]["properties"]
+    assert "collection_target_id" not in schemas["update_opportunity"]["properties"]
+    assert "collection_target_id" in schemas["add_opportunity"]["properties"]
+    assert "collection_target_id" in schemas["upsert_opportunity"]["properties"]
+
+
+def test_update_opportunity_requires_expected_updated_at_and_rejects_stale_writes(tools, db):
+    """update_opportunity is a full replacement, so it needs the same optimistic lock as
+
+    patch_opportunity/delete_opportunity - otherwise a caller working from a stale get_opportunity
+    read can silently overwrite a concurrent edit (lost update).
+    """
+    item = seed(db)
+    current = call("get_opportunity", {"reference": item.id})
+    schema = asyncio.run(mcp_server.mcp.list_tools())
+    required = next(tool for tool in schema if tool.name == "update_opportunity").inputSchema["required"]
+    assert "expected_updated_at" in required
+
+    new_deadline = (date.today() + timedelta(days=80)).isoformat()
+    updated = call(
+        "update_opportunity",
+        {
+            "opportunity_id": item.id,
+            "payload": valid_payload() | {"deadline": new_deadline, "request_id": "update-lock-0001", "client_name": "pytest"},
+            "expected_updated_at": current["updated_at"],
+        },
+    )
+    assert updated["opportunity"]["deadline"] == new_deadline
+
+    stale = tool_error(
+        "update_opportunity",
+        {
+            "opportunity_id": item.id,
+            "payload": valid_payload()
+            | {"deadline": (date.today() + timedelta(days=95)).isoformat(), "request_id": "update-lock-0002", "client_name": "pytest"},
+            "expected_updated_at": current["updated_at"],
         },
     )
     assert stale["errors"][0]["field"] == "更新前の最終確認日時"

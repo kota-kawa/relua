@@ -39,6 +39,7 @@ from app.schemas import (
     MCPCollectionTargetListResponse,
     MCPCollectionWriteResponse,
     MCPCompanyAliasWriteResponse,
+    MCPCompanyMergeResponse,
     MCPCompanyResolutionResponse,
     MCPDeletePreviewResponse,
     MCPDeleteResponse,
@@ -48,6 +49,7 @@ from app.schemas import (
     MCPSearchResponse,
     MCPSectorsResponse,
     MCPStaleOpportunityListResponse,
+    MCPUnmonitoredCompanyListResponse,
     MCPUpdateRequest,
     MCPUpsertResponse,
     MCPValidationResponse,
@@ -74,8 +76,10 @@ from app.services.collection_targets import (
     create_collection_target,
     list_collection_checks,
     list_collection_targets,
+    list_unmonitored_companies,
     record_collection_check,
     undercovered_collection_targets,
+    unmonitored_company_dict,
     update_collection_source,
     update_collection_target,
 )
@@ -87,6 +91,7 @@ from app.services.companies import (
     add_company_alias,
     company_identity_dict,
     delete_company_alias,
+    merge_company,
     resolve_company_candidates,
 )
 from app.services.errors import pydantic_errors
@@ -164,6 +169,8 @@ mcp = FastMCP(
         "情報源には企業自身の採用ページなど一次情報を指定し、求人サイトや口コミサイトの掲載ページは使用しないでください。"
         "情報収集を進める場合はget_collection_queueで次の企業を取得し、確認後は募集の有無にかかわらず"
         "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
+        "企業マスタにあるが未監視の企業を棚卸しする場合はlist_unmonitored_companiesを使い、返されたcompany_idを"
+        "add_collection_targetへ指定してください。"
     ),
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -637,6 +644,50 @@ def delete_company_alias_tool(
         ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された企業別名が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="merge_company",
+    title="確認済みの重複企業を統合",
+    description=(
+        "公式情報で同一法人・同一の採用主体と確認済みの重複企業を、統合元IDから統合先IDへ物理統合します。"
+        "募集、旧正式名を含む別名、業界分類、収集対象・情報源・確認履歴、企業操作の冪等性記録を一つの"
+        "トランザクションで移し、統合元のCompanyを削除します。IDの取り違えは戻せないため、"
+        "必ずresolve_companyの結果と公式情報を確認してから実行してください。認証が必要です。"
+    ),
+    annotations=DELETING,
+)
+def merge_company_tool(
+    source_company_id: Annotated[int, Field(ge=1, description="削除して統合先へ移す重複CompanyのID。")],
+    target_company_id: Annotated[int, Field(ge=1, description="残す正規CompanyのID。")],
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時は同じ値を使用します。")],
+    client_name: ClientName = "mcp-client",
+) -> MCPCompanyMergeResponse:
+    try:
+        with SessionLocal() as db:
+            target, migration, replayed = merge_company(
+                db,
+                source_company_id=source_company_id,
+                target_company_id=target_company_id,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPCompanyMergeResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "同じ企業統合操作は処理済みです" if replayed else "企業を統合し、統合元を削除しました",
+                    "source_company_id": source_company_id,
+                    "target_company": company_identity_dict(target),
+                    "migration": migration,
+                }
+            )
+    except CompanyIdentityValidationError as exc:
+        raise _company_domain_error(
+            client_name=client_name, request_id=request_id, action="company_merge", exc=exc
+        ) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された統合元または統合先の企業が見つかりません"}) from exc
 
 
 @mcp.tool(
@@ -1329,6 +1380,35 @@ def get_collection_target_tool(
 
 
 @mcp.tool(
+    name="list_unmonitored_companies",
+    title="収集対象が未作成の企業を一覧",
+    description=(
+        "企業マスタには存在するものの、まだ収集対象を持たない企業を返します。"
+        "返されたidをadd_collection_targetのcompany_idへ指定すると、名称の再入力や表記ゆれなしで監視対象へ追加できます。"
+        "認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def list_unmonitored_companies_tool(
+    query: Annotated[str | None, Field(description="企業名または登録済み別名の部分一致キーワード。", max_length=200)] = None,
+    industry: Annotated[IndustryValue | None, Field(description="企業分類の業界。省略すると全業界。")] = None,
+    page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
+    per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数。")] = 20,
+) -> MCPUnmonitoredCompanyListResponse:
+    with SessionLocal() as db:
+        result = list_unmonitored_companies(db, query=query, industry=industry, page=page, per_page=per_page)
+        return MCPUnmonitoredCompanyListResponse.model_validate(
+            {
+                "items": [unmonitored_company_dict(item) for item in result.items],
+                "total": result.total,
+                "page": result.page,
+                "per_page": result.per_page,
+                "total_pages": result.total_pages,
+            }
+        )
+
+
+@mcp.tool(
     name="get_collection_queue",
     title="次に確認する企業を取得",
     description=(
@@ -1393,7 +1473,7 @@ def list_collection_checks_tool(
     name="add_collection_target",
     title="情報収集対象を追加",
     description=(
-        "企業と業界の組み合わせを内部の収集キューへ追加します。企業公式ページを1件以上指定します。"
+        "既存CompanyのIDまたは新規企業の正式名と、所属業界を内部の収集キューへ追加します。企業公式ページを1件以上指定します。"
         "priority_tierは企業評価ではなく確認順です。tier1は最優先で毎回確認する少数のリストなので"
         "上限（200社）に達している間はtier1で追加できません。tier2以下で登録するか、"
         "既存のtier1対象を見直してから再試行してください。認証が必要です。"
@@ -1415,6 +1495,8 @@ def add_collection_target_tool(payload: CollectionTargetCreatePayload) -> MCPCol
             )
     except DomainValidationError as exc:
         raise _collection_domain_error(request, "collection_target_create", exc) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された既存Companyが見つかりません"}) from exc
 
 
 @mcp.tool(

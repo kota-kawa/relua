@@ -442,7 +442,19 @@ CompanyIndustries = Annotated[
 class CollectionTargetCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    company_name: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    company_id: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            description="既存CompanyのID。resolve_companyまたはlist_unmonitored_companiesが返すIDを指定する場合はcompany_nameを省略します。",
+        ),
+    ] = None
+    company_name: Annotated[
+        str | None,
+        StringConstraints(min_length=1, max_length=200),
+        Field(description="新規企業として追加する正式名。既存Companyを指定するcompany_idとは併用できません。"),
+    ] = None
     industries: CompanyIndustries
     priority_tier: Annotated[int, Field(ge=1, le=3, description="内部の収集優先度。1が最優先、3が低優先。")]
     check_interval_days: Annotated[int, Field(ge=1, le=365, description="公式ページを再確認する間隔。")]
@@ -469,6 +481,12 @@ class CollectionTargetCreateRequest(BaseModel):
         if len({source.url for source in sources}) != len(sources):
             raise ValueError("同じURLを重複して指定できません")
         return sources
+
+    @model_validator(mode="after")
+    def has_exactly_one_company_reference(self) -> "CollectionTargetCreateRequest":
+        if (self.company_id is None) == (self.company_name is None):
+            raise ValueError("company_idまたはcompany_nameのどちらか一方を指定してください")
+        return self
 
 
 class CollectionTargetUpdateRequest(BaseModel):
@@ -820,6 +838,28 @@ class MCPCompanyAliasWriteResponse(BaseModel):
     company: CompanyIdentityResponse
 
 
+class CompanyMergeSummary(BaseModel):
+    opportunities_moved: int
+    aliases_moved: int
+    aliases_deduplicated: int
+    industries_moved: int
+    industries_deduplicated: int
+    company_request_records_moved: int
+    collection_targets_merged: int
+    collection_sources_moved: int
+    collection_sources_deduplicated: int
+    collection_checks_moved: int
+
+
+class MCPCompanyMergeResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    source_company_id: int
+    target_company: CompanyIdentityResponse
+    migration: CompanyMergeSummary
+
+
 class OpportunityFieldChange(BaseModel):
     field: str
     before: Any = None
@@ -908,6 +948,20 @@ class CollectionTargetResponse(BaseModel):
 
 class MCPCollectionTargetListResponse(BaseModel):
     items: list[CollectionTargetResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class UnmonitoredCompanyResponse(CompanyIdentityResponse):
+    industries: list[CompanyIndustryItem]
+    company_opportunity_count: int
+    created_at: datetime
+
+
+class MCPUnmonitoredCompanyListResponse(BaseModel):
+    items: list[UnmonitoredCompanyResponse]
     total: int
     page: int
     per_page: int

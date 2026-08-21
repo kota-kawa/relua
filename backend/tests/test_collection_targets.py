@@ -14,6 +14,7 @@ from app.services.collection_targets import (
     get_collection_target,
     list_collection_checks,
     list_collection_targets,
+    list_unmonitored_companies,
     record_collection_check,
     undercovered_collection_targets,
     update_collection_source,
@@ -141,6 +142,53 @@ def test_opportunity_write_auto_links_a_matching_collection_target_without_an_id
     assert refreshed.last_check_result == "found"
     checks = list_collection_checks(db, target_id=target.id)
     assert checks[0].opportunity_id == item.id
+
+
+def test_existing_company_id_can_be_added_to_collection_and_unmonitored_companies_are_listed(db):
+    monitored, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"company_name": "Salesforce", "source_url": "https://example.com/salesforce-posting"}
+        ),
+        request_id="existing-company-target-salesforce",
+        client_name="pytest",
+    )
+    unmonitored, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "Adobe",
+                "event_name": "Adobe向けインターン",
+                "source_url": "https://example.com/adobe-posting",
+            }
+        ),
+        request_id="existing-company-target-adobe",
+        client_name="pytest",
+    )
+    target, replayed = create_collection_target(
+        db,
+        target_payload(
+            company_name=None,
+            company_id=monitored.company_id,
+            request_id="existing-company-target-create",
+            sources=[{"source_type": "recruit", "url": "https://example.com/salesforce-careers"}],
+        ),
+    )
+    missing = list_unmonitored_companies(db, query="Adobe")
+
+    assert replayed is False
+    assert target.company_id == monitored.company_id
+    assert [item.company.id for item in missing.items] == [unmonitored.company_id]
+    assert missing.items[0].opportunity_count == 1
+    assert list_unmonitored_companies(db, industry="IT・通信").total == 1
+
+
+def test_collection_target_create_requires_exactly_one_company_reference():
+    with pytest.raises(ValueError, match="どちらか一方"):
+        target_payload(company_id=1)
+    with pytest.raises(ValueError, match="どちらか一方"):
+        target_payload(company_name=None)
 
 
 def test_confirm_only_check_refreshes_source_checked_at_without_touching_updated_at(db):

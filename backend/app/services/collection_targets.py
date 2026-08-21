@@ -29,7 +29,7 @@ from app.schemas import (
     CollectionTargetUpdateRequest,
     CompanyIndustryInput,
 )
-from app.services.companies import company_keyword_filter, get_or_create_company
+from app.services.companies import company_identity_dict, company_keyword_filter, get_or_create_company
 from app.services.company_industries import (
     company_industries,
     company_industry_dict,
@@ -45,6 +45,24 @@ from app.services.serialization import detail_url, master_dict
 @dataclass
 class CollectionTargetList:
     items: list[CollectionTarget]
+    total: int
+    page: int
+    per_page: int
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, math.ceil(self.total / self.per_page))
+
+
+@dataclass
+class UnmonitoredCompany:
+    company: Company
+    opportunity_count: int
+
+
+@dataclass
+class UnmonitoredCompanyList:
+    items: list[UnmonitoredCompany]
     total: int
     page: int
     per_page: int
@@ -229,6 +247,18 @@ def _classified_as_clause(*, industry: str | None = None, sector: str | None = N
     return select(CompanyIndustry.id).where(*conditions).correlate(CollectionTarget).exists()
 
 
+def _company_classified_as_clause(*, industry: str | None = None):
+    """Company-level counterpart for the unmonitored-company repair queue."""
+    conditions = [CompanyIndustry.company_id == Company.id]
+    if industry is not None:
+        conditions.append(
+            CompanyIndustry.industry_id.in_(
+                select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
+            )
+        )
+    return select(CompanyIndustry.id).where(*conditions).correlate(Company).exists()
+
+
 def _has_primary_source_clause():
     """SQL twin of _source_coverage's first element, for filtering without loading every source."""
 
@@ -330,6 +360,65 @@ def undercovered_collection_targets(
         stmt = stmt.where(_classified_as_clause(industry=industry))
     stmt = stmt.order_by(linked_count.asc(), Company.name).limit(limit)
     return list(db.scalars(stmt).unique())
+
+
+def unmonitored_company_dict(item: UnmonitoredCompany) -> dict[str, Any]:
+    return company_identity_dict(item.company) | {
+        "industries": [company_industry_dict(row) for row in company_industries_for_dict(item.company)],
+        "company_opportunity_count": item.opportunity_count,
+        "created_at": item.company.created_at,
+    }
+
+
+def company_industries_for_dict(company: Company) -> list[CompanyIndustry]:
+    """Use the eagerly loaded relationship when listing many companies, primary first."""
+    return sorted(company.industries, key=lambda row: (not row.is_primary, row.id))
+
+
+def list_unmonitored_companies(
+    db: Session,
+    *,
+    query: str | None = None,
+    industry: str | None = None,
+    page: int = 1,
+    per_page: int = 20,
+) -> UnmonitoredCompanyList:
+    """Find master companies that have no collection target yet.
+
+    This is deliberately a Company query rather than a collection-target filter: it exposes
+    postings-created companies that are otherwise invisible to the monitoring workflow.
+    """
+    opportunity_count = (
+        select(func.count(Opportunity.id))
+        .where(Opportunity.company_id == Company.id, Opportunity.deleted_at.is_(None))
+        .correlate(Company)
+        .scalar_subquery()
+    )
+    filters = [~Company.id.in_(select(CollectionTarget.company_id))]
+    if query:
+        filters.append(company_keyword_filter(db, query.strip()))
+    if industry:
+        filters.append(_company_classified_as_clause(industry=industry))
+    count_stmt = select(func.count(Company.id)).where(*filters)
+    stmt = (
+        select(Company, opportunity_count.label("opportunity_count"))
+        .options(
+            selectinload(Company.aliases),
+            selectinload(Company.industries).selectinload(CompanyIndustry.industry),
+            selectinload(Company.industries).selectinload(CompanyIndustry.sector),
+        )
+        .where(*filters)
+        .order_by(Company.name)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    rows = db.execute(stmt).all()
+    return UnmonitoredCompanyList(
+        items=[UnmonitoredCompany(company=row[0], opportunity_count=int(row[1])) for row in rows],
+        total=int(db.scalar(count_stmt) or 0),
+        page=page,
+        per_page=per_page,
+    )
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
@@ -492,7 +581,13 @@ def create_collection_target(db: Session, payload: CollectionTargetCreateRequest
         _ensure_tier_one_capacity(db)
 
     classifications = _resolve_classifications(db, payload.industries)
-    company = get_or_create_company(db, payload.company_name)
+    if payload.company_id is not None:
+        company = db.get(Company, payload.company_id)
+        if company is None:
+            raise LookupError("company_not_found")
+    else:
+        # The schema guarantees company_name is present when an ID was not supplied.
+        company = get_or_create_company(db, payload.company_name or "")
     existing = db.scalar(select(CollectionTarget).where(CollectionTarget.company_id == company.id))
     if existing is not None:
         raise DomainValidationError(

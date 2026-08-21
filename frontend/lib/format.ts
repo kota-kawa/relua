@@ -259,10 +259,10 @@ export function actionableFilterItems(items: MasterItem[], selected: string[]): 
  * Graduation cohorts whose March has already passed are dead options — 26卒 is
  * not job-hunting in July 2026. Derived from the label rather than hardcoded so
  * the list stays correct on its own as the master gains 31卒, 32卒…
- * (要件定義書_v2.md 6.3 only ever adds years, it never removes them).
  *
  * The year is read in Asia/Tokyo on both server and client so SSR and hydration
- * agree regardless of where either runs. Labels that are not a cohort
+ * agree regardless of where either runs. The backend master can add future cohorts
+ * without requiring this filter to change. Labels that are not a cohort
  * ("学年不問") are always kept, as is anything the URL already selects.
  */
 export function currentGraduationYears(items: MasterItem[], selected: string[], now = new Date()): MasterItem[] {

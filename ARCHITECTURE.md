@@ -169,7 +169,7 @@ companies ──1:1── collection_targets ──< collection_sources
 - 成功・失敗を `audit_logs` に記録する。`verify_opportunity` は内容更新・status更新とは別の `verify` 操作として、確認時刻と実際に確認した一次情報URLを記録し、`updated_at` は変えない。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
 - 書き込みと一次情報確認は分離している（write != verify）。`update_opportunity`／`patch_opportunity` によるDB内容の変更は `source_checked_at` を更新せず、`collection_target_id` も受け付けない。一次情報を確認した事実は `verify_opportunity` または `record_collection_check` で別途記録する。`source_checked_at` が更新されるのは新規登録時と、この2ツールによる確認記録時だけである。
 - 日付と募集状況の矛盾（例: 未来の締め切りで「締切」）は、書き込みを拒否せず `warnings` として返す。締切延長・追加募集・中止の可能性があるため、運営者が一次情報を確認して確定する。
-- 全項目更新は `get_opportunity` で最新値を取得してから送る。部分更新・削除は `expected_updated_at` で楽観ロックし、取得後の別更新による上書きを拒否する。
+- 全項目更新・部分更新・削除はいずれも `expected_updated_at`（`get_opportunity` で取得した現在の `updated_at`）を必須にし、`FOR UPDATE` 相当のロック取得後に一致を確認して楽観ロックする。取得後に別クライアントが更新していれば拒否し、lost update を防ぐ。
 - 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。
 - 同一企業の同名イベントは既定で拒否し、別日程等として意図的に分ける場合だけ `allow_duplicate` を明示する。
 

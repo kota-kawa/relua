@@ -592,6 +592,41 @@ def test_patch_and_update_opportunity_no_longer_accept_collection_target_id(tool
     assert "collection_target_id" in schemas["upsert_opportunity"]["properties"]
 
 
+def test_update_opportunity_requires_expected_updated_at_and_rejects_stale_writes(tools, db):
+    """update_opportunity is a full replacement, so it needs the same optimistic lock as
+
+    patch_opportunity/delete_opportunity - otherwise a caller working from a stale get_opportunity
+    read can silently overwrite a concurrent edit (lost update).
+    """
+    item = seed(db)
+    current = call("get_opportunity", {"reference": item.id})
+    schema = asyncio.run(mcp_server.mcp.list_tools())
+    required = next(tool for tool in schema if tool.name == "update_opportunity").inputSchema["required"]
+    assert "expected_updated_at" in required
+
+    new_deadline = (date.today() + timedelta(days=80)).isoformat()
+    updated = call(
+        "update_opportunity",
+        {
+            "opportunity_id": item.id,
+            "payload": valid_payload() | {"deadline": new_deadline, "request_id": "update-lock-0001", "client_name": "pytest"},
+            "expected_updated_at": current["updated_at"],
+        },
+    )
+    assert updated["opportunity"]["deadline"] == new_deadline
+
+    stale = tool_error(
+        "update_opportunity",
+        {
+            "opportunity_id": item.id,
+            "payload": valid_payload()
+            | {"deadline": (date.today() + timedelta(days=95)).isoformat(), "request_id": "update-lock-0002", "client_name": "pytest"},
+            "expected_updated_at": current["updated_at"],
+        },
+    )
+    assert stale["errors"][0]["field"] == "更新前の最終確認日時"
+
+
 def test_update_recruitment_status_touches_only_the_status_and_deadline(tools, db):
     item = seed(db)
     new_deadline = (date.today() + timedelta(days=60)).isoformat()

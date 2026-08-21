@@ -945,12 +945,18 @@ def upsert_opportunity(
         "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
         "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
         "更新にあたって一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
+        "expected_updated_atが現在値と違う場合は上書きせず拒否します。取得後に別の変更が入っていないか、"
+        "必ずget_opportunityで直前に取得したupdated_atを渡してください。"
     ),
     annotations=REPLACING,
 )
 def update_opportunity(
     opportunity_id: Annotated[str, Field(description="更新対象のid（UUID）。get_opportunityのidをそのまま渡します。")],
     payload: UpdatePayload,
+    expected_updated_at: Annotated[
+        datetime,
+        Field(description="get_opportunityで取得した現在のupdated_at。取得後の競合更新を検出します。"),
+    ],
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPUpdateRequest)
     data = _write_input(request)
@@ -962,6 +968,7 @@ def update_opportunity(
                 request_id=request.request_id,
                 client_name=request.client_name,
                 opportunity_id=opportunity_id,
+                expected_updated_at=expected_updated_at,
             )
             return MCPWriteResponse.model_validate(
                 {

@@ -12,6 +12,7 @@ from app.services.collection_targets import (
     collection_target_dict,
     create_collection_target,
     get_collection_target,
+    get_company_maintenance_context,
     list_collection_checks,
     list_collection_targets,
     list_unmonitored_companies,
@@ -414,6 +415,53 @@ def test_company_wide_postings_all_count_toward_one_target(db):
     )
     snapshot = collection_target_dict(db, get_collection_target(db, target.id))
     assert snapshot["company_opportunity_count"] == 2
+
+
+def test_collection_maintenance_views_exclude_closed_postings(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社終了除外",
+            sources=[{"source_type": "recruit", "url": "https://example.com/closed-filter-target"}],
+            request_id="closed-filter-target-0001",
+        ),
+    )
+    active, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社終了除外",
+                "event_name": "現行募集",
+                "source_url": "https://example.com/closed-filter-active",
+            }
+        ),
+        request_id="closed-filter-active-0001",
+        client_name="pytest",
+    )
+    closed, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "recruitment_status": "締切",
+                "company_name": "株式会社終了除外",
+                "event_name": "終了募集",
+                "source_url": "https://example.com/closed-filter-closed",
+            }
+        ),
+        request_id="closed-filter-closed-0001",
+        client_name="pytest",
+    )
+
+    snapshot = collection_target_dict(db, get_collection_target(db, target.id))
+    assert [item["id"] for item in snapshot["opportunities"]] == [active.id]
+    assert snapshot["company_opportunity_count"] == 1
+
+    context = get_company_maintenance_context(db, active.company_id)
+    assert context is not None
+    assert [item.id for item in context[2]] == [active.id]
+    assert closed.id not in {item.id for item in context[2]}
 
 
 @pytest.mark.parametrize(

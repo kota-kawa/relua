@@ -684,6 +684,33 @@ def test_list_stale_opportunities_prioritizes_never_checked_then_oldest_first(db
     assert stale_ids.index(never_checked.id) < stale_ids.index(stale.id)
 
 
+def test_reconfirmation_queues_exclude_closed_and_unknown_statuses(db):
+    items = {}
+    for index, status in enumerate(("募集予定", "募集中", "通年募集", "締切", "不明"), start=1):
+        item, _ = write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "recruitment_status": status,
+                    "company_name": f"株式会社保守対象{index}",
+                    "event_name": f"保守対象{index}",
+                    "source_url": f"https://example.com/reconfirmation-status-{index}",
+                }
+            ),
+            request_id=f"reconfirmation-status-{index:04d}",
+            client_name="pytest",
+        )
+        item.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017
+        items[status] = item
+    db.commit()
+
+    expected = {items[status].id for status in ("募集予定", "募集中", "通年募集")}
+    assert {item.id for item in list_stale_opportunities(db, days=7)} == expected
+    reviews = list_opportunities_requiring_review(db, days=7)
+    assert {review.opportunity.id for review in reviews} == expected
+
+
 def test_review_queue_includes_fresh_date_status_conflicts_before_stale_sources(db):
     stale, _ = write_opportunity(
         db,

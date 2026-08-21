@@ -102,7 +102,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 
 | ファイル | 責務 |
 | --- | --- |
-| `services/opportunities.py` | 検索、関連度、カーソル、固定値解決、重複検出、書き込み、論理削除・復元、監査 |
+| `services/opportunities.py` | 検索、関連度、カーソル、固定値解決、重複検出、書き込み、論理削除・復元、監査、MCP保守キューの対象状態判定 |
 | `services/companies.py` | 企業名の正規化、正式名・別名の完全一致、候補提示、別名の冪等書き込み |
 | `services/company_industries.py` | 企業と複数業界・業種の分類を維持 |
 | `services/collection_targets.py` | 企業単位の収集対象、情報源、確認履歴、優先度・次回確認日 |
@@ -161,6 +161,7 @@ companies ──1:1── collection_targets ──< collection_sources
 - `collection_targets.is_active` と各 source の `is_active` は無効化で保持する。削除ではなく運用状態を表す。
 - 募集の新規登録（`add_opportunity`／`upsert_opportunity`）へ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。既存募集の更新・部分更新はこの自動リンクを行わない（4.3参照）。
 - 採用ページ未登録、未確認、確認期限超過は収集キューの状態として返される。
+- 定期再確認の対象状態は `募集予定`、`募集中`、`通年募集` に限る。 `締切` などの終了状態は企業保守コンテキスト、収集対象の募集一覧、要確認キューから除外する。企業単位の収集キューは、新しい募集の発見が必要な企業を拾うため、現在の募集一覧が空でも返す。
 
 ### 4.3 書き込みの安全性
 
@@ -170,7 +171,7 @@ companies ──1:1── collection_targets ──< collection_sources
 - 書き込みと一次情報確認は分離している（write != verify）。`update_opportunity`／`patch_opportunity` によるDB内容の変更は `source_checked_at` を更新せず、`collection_target_id` も受け付けない。一次情報を確認した事実は `verify_opportunity` または `record_collection_check` で別途記録する。`source_checked_at` が更新されるのは新規登録時と、この2ツールによる確認記録時だけである。
 - 日付と募集状況の矛盾（例: 未来の締め切りで「締切」）は、書き込みを拒否せず `warnings` として返す。締切延長・追加募集・中止の可能性があるため、運営者が一次情報を確認して確定する。
 - 全項目更新・部分更新・削除はいずれも `expected_updated_at`（`get_opportunity` で取得した現在の `updated_at`）を必須にし、`FOR UPDATE` 相当のロック取得後に一致を確認して楽観ロックする。取得後に別クライアントが更新していれば拒否し、lost update を防ぐ。
-- 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。
+- 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。 `締切` などの終了状態は定期再確認キューへ戻さない。
 - 重複判定は同一企業・同名イベントだけでなく、対象卒業年・実施開始日・対象職種を識別キーとして`classify_duplicate_candidates`が exact／probable の2段階に分ける。3項目のいずれかが明確に異なれば probable とし、書き込みは拒否せず警告で知らせる（例: 同じイベント名を複数の卒業年で使い回す企業）。全項目が一致する exact 重複だけを既定で拒否し、意図的に同じ内容を複数登録する場合だけ `allow_duplicate` を明示する。
 
 ### 4.4 OAuthデータ

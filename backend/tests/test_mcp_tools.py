@@ -1329,6 +1329,51 @@ def test_collection_queue_supports_create_patch_source_management_and_checks(too
     assert call("list_collection_targets", {"include_inactive": True})["total"] == 1
 
 
+def test_mcp_maintenance_surfaces_exclude_closed_postings(tools, db):
+    active = seed(
+        db,
+        company_name="株式会社MCP保守対象",
+        event_name="現行募集",
+        source_url="https://example.com/mcp-maintenance-active",
+    )
+    closed = seed(
+        db,
+        company_name="株式会社MCP保守対象",
+        event_name="締切済み募集",
+        recruitment_status="締切",
+        source_url="https://example.com/mcp-maintenance-closed",
+    )
+    unknown = seed(
+        db,
+        company_name="株式会社MCP保守対象",
+        event_name="状態不明募集",
+        recruitment_status="不明",
+        source_url="https://example.com/mcp-maintenance-unknown",
+    )
+    for item in (active, closed, unknown):
+        item.source_checked_at = datetime.now(timezone.utc) - timedelta(days=40)  # noqa: UP017
+    db.commit()
+
+    stale = call("list_stale_opportunities", {"days": 7})
+    assert [item["id"] for item in stale["items"]] == [active.id]
+
+    target = call(
+        "add_collection_target",
+        collection_target_args(
+            company_name="株式会社MCP保守対象",
+            request_id="mcp-maintenance-target-0001",
+            sources=[{"source_type": "recruit", "url": "https://example.com/mcp-maintenance-recruit"}],
+        ),
+    )["target"]
+    expected_ids = [active.id]
+    assert [item["id"] for item in target["opportunities"]] == expected_ids
+    assert [item["id"] for item in call("get_collection_target", {"target_id": target["id"]})["opportunities"]] == expected_ids
+    context = call("get_company_maintenance_context", {"company_id": active.company_id})
+    assert [item["id"] for item in context["opportunities"]] == expected_ids
+    assert closed.id not in {item["id"] for item in context["opportunities"]}
+    assert unknown.id not in {item["id"] for item in context["opportunities"]}
+
+
 def test_collection_targets_reject_bad_classification_and_non_primary_sources(tools, db):
     classification = tool_error("add_collection_target", collection_target_args(sector="銀行"))
     source = tool_error(

@@ -1,6 +1,6 @@
 # ADR-0008: 日付と募集状況の矛盾は手動確認キューで扱う
 
-- Status: Accepted
+- Status: Superseded by [ADR-0012](./0012-mcp-maintenance-eligibility.md)
 - Scope: 募集の終了判定、日次確認、削除ライフサイクル
 - Supersedes: [ADR-0007](./0007-expired-opportunity-retention.md)
 

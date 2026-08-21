@@ -171,6 +171,7 @@ mcp = FastMCP(
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "公式ページを確認して内容が変わっていない場合はverify_opportunityを使って確認だけを記録してください。"
         "日付と募集状況の矛盾、または公式情報の再確認対象はlist_stale_opportunitiesで優先順に確認してください。"
+        "定期再確認の対象は募集予定・募集中・通年募集です。締切やその他の終了状態は対象から除外されます。"
         "その他の一部項目だけを直す場合はpreview_opportunity_patchで差分を確認してからpatch_opportunityを使ってください。"
         "誤登録を削除する場合はpreview_delete_opportunityで影響を確認してからdelete_opportunityを使ってください。"
         "誤って削除した募集はrestore_opportunityで同じIDと公開コードのまま復元できます。"
@@ -182,7 +183,7 @@ mcp = FastMCP(
         "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
         "企業マスタにあるが未監視の企業を棚卸しする場合はlist_unmonitored_companiesを使い、返されたcompany_idを"
         "add_collection_targetへ指定してください。"
-        "企業の複数募集をまとめて保守する場合はget_company_maintenance_contextで公式URLと各募集の最終確認日時を取得してください。"
+        "企業の複数募集をまとめて保守する場合はget_company_maintenance_contextで公式URLと、定期再確認対象の募集の最終確認日時を取得してください。"
     ),
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -1443,6 +1444,7 @@ def restore_opportunity_tool(
     description=(
         "運営者用の情報収集対象を企業名、業界、業種、優先度、確認期限で絞り込みます。"
         "source_gap=trueで、採用・インターンページが未登録の対象だけを取り出せます。"
+        "返却する募集一覧は定期再確認対象（募集予定・募集中・通年募集）だけで、締切などの終了状態は含みません。"
         "無効化済みの対象はinclude_inactive=trueの場合だけ返します。認証が必要です。"
     ),
     annotations=READ_ONLY,
@@ -1496,7 +1498,10 @@ def list_collection_targets_tool(
 @mcp.tool(
     name="get_collection_target",
     title="情報収集対象を1件取得",
-    description="収集対象、所属業界、公式ページ、その企業の登録済み募集をIDで取得します。認証が必要です。",
+    description=(
+        "収集対象、所属業界、公式ページ、その企業の定期再確認対象の募集をIDで取得します。"
+        "締切などの終了状態の募集は一覧に含みません。認証が必要です。"
+    ),
     annotations=READ_ONLY,
 )
 def get_collection_target_tool(
@@ -1513,7 +1518,8 @@ def get_collection_target_tool(
     name="get_company_maintenance_context",
     title="企業単位の募集保守コンテキストを取得",
     description=(
-        "指定企業の公開中の全募集、各募集の一次情報URL・最終確認日時、企業単位で登録した公式ページをまとめて返します。"
+        "指定企業の定期再確認対象（募集予定・募集中・通年募集）だけを、各募集の一次情報URL・最終確認日時とともに返します。"
+        "締切などの終了状態は定期保守の対象外として含めません。企業単位で登録した公式ページもまとめて返します。"
         "公式採用サイトを確認した後、複数募集を更新・確認するために使います。認証が必要です。"
     ),
     annotations=READ_ONLY,
@@ -1593,6 +1599,8 @@ def list_unmonitored_companies_tool(
     title="次に確認する企業を取得",
     description=(
         "有効な収集対象から、未確認または確認期限を過ぎた企業を優先度順に返します。"
+        "返却する募集一覧は定期再確認対象（募集予定・募集中・通年募集）だけで、締切などの終了状態は含みません。"
+        "募集一覧が空の企業も、新しい募集を発見するために返します。"
         "各公式ページを確認し、募集の有無にかかわらずrecord_collection_checkを実行してください。認証が必要です。"
     ),
     annotations=READ_ONLY,
@@ -1613,6 +1621,7 @@ def get_collection_queue_tool(
     title="紐付く募集が少ない収集対象を取得",
     description=(
         "有効な収集対象を、その企業に紐づく募集情報が少ない順（0件を優先）に返します。"
+        "募集件数は定期再確認対象（募集予定・募集中・通年募集）だけを数え、締切などの終了状態は除外します。"
         "「情報の少ない企業を優先して確認したい」場合に、get_collection_queueの結果をopportunitiesが"
         "空かどうかで絞り込む代わりに使います。認証が必要です。"
     ),
@@ -1824,8 +1833,9 @@ def list_recent_writes(
     name="list_stale_opportunities",
     title="要確認の募集を優先順に取得",
     description=(
-        "「募集中」なのに締め切りまたは実施終了日を過ぎた矛盾を最優先で返します。"
-        "続いて公式ページを一定期間確認できていない募集を、未確認・確認日が古い順に返します。"
+        "定期再確認対象（募集予定・募集中・通年募集）だけを返します。"
+        "そのうち「募集中」なのに締め切りまたは実施終了日を過ぎた矛盾を最優先で返します。"
+        "続いて公式ページを一定期間確認できていない募集を、未確認・確認日が古い順に返します。締切などの終了状態は含みません。"
         "矛盾は自動で「締切」に変更しません。"
         "見つけた各募集はupdate_recruitment_status、patch_opportunity、"
         "変更がなければverify_opportunity、収集対象があるならrecord_collection_checkで再確認結果を記録してください。認証が必要です。"

@@ -39,6 +39,7 @@ from app.schemas import (
     MCPCollectionTargetListResponse,
     MCPCollectionWriteResponse,
     MCPCompanyAliasWriteResponse,
+    MCPCompanyMaintenanceContextResponse,
     MCPCompanyMergeResponse,
     MCPCompanyResolutionResponse,
     MCPDeletePreviewResponse,
@@ -74,6 +75,7 @@ from app.services.collection_targets import (
     collection_target_dict,
     create_collection_source,
     create_collection_target,
+    get_company_maintenance_context,
     list_collection_checks,
     list_collection_targets,
     list_unmonitored_companies,
@@ -126,7 +128,7 @@ from app.services.opportunities import (
     get_opportunity as get_opportunity_record,
 )
 from app.services.rate_limit import register_validation_failure
-from app.services.serialization import master_dict, opportunity_dict, opportunity_summary
+from app.services.serialization import detail_url, master_dict, opportunity_dict, opportunity_summary
 
 settings = get_settings()
 public_url = urlsplit(settings.mcp_public_url)
@@ -174,6 +176,7 @@ mcp = FastMCP(
         "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
         "企業マスタにあるが未監視の企業を棚卸しする場合はlist_unmonitored_companiesを使い、返されたcompany_idを"
         "add_collection_targetへ指定してください。"
+        "企業の複数募集をまとめて保守する場合はget_company_maintenance_contextで公式URLと各募集の最終確認日時を取得してください。"
     ),
     streamable_http_path="/mcp",
     stateless_http=True,
@@ -1455,6 +1458,56 @@ def get_collection_target_tool(
         if target is None:
             raise _json_error({"error": "not_found", "message": "指定された収集対象が見つかりません"})
         return CollectionTargetResponse.model_validate(collection_target_dict(db, target))
+
+
+@mcp.tool(
+    name="get_company_maintenance_context",
+    title="企業単位の募集保守コンテキストを取得",
+    description=(
+        "指定企業の公開中の全募集、各募集の一次情報URL・最終確認日時、企業単位で登録した公式ページをまとめて返します。"
+        "公式採用サイトを確認した後、複数募集を更新・確認するために使います。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def get_company_maintenance_context_tool(
+    company_id: Annotated[int, Field(ge=1, description="対象企業のID。resolve_companyなどが返すidを指定します。")],
+) -> MCPCompanyMaintenanceContextResponse:
+    with SessionLocal() as db:
+        context = get_company_maintenance_context(db, company_id)
+        if context is None:
+            raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"})
+        company, target, opportunities = context
+        return MCPCompanyMaintenanceContextResponse.model_validate(
+            {
+                "company": company_identity_dict(company),
+                "collection_target_id": target.id if target else None,
+                "collection_last_checked_at": target.last_checked_at if target else None,
+                "official_sources": [
+                    collection_source_dict(source)
+                    for source in sorted(target.sources, key=lambda value: (not value.is_active, value.id))
+                ]
+                if target
+                else [],
+                "opportunities": [
+                    {
+                        "id": item.id,
+                        "public_code": item.public_code,
+                        "url": detail_url(item),
+                        "event_name": item.event_name,
+                        "recruitment_status": item.status.name,
+                        "graduation_years": [
+                            value.name for value in sorted(item.graduation_years, key=lambda value: value.sort_order)
+                        ],
+                        "deadline": item.deadline,
+                        "event_end_date": item.event_end_date,
+                        "source_url": item.source_url,
+                        "source_checked_at": item.source_checked_at,
+                        "updated_at": item.updated_at,
+                    }
+                    for item in opportunities
+                ],
+            }
+        )
 
 
 @mcp.tool(

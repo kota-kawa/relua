@@ -97,6 +97,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "list_collection_targets",
         "list_unmonitored_companies",
         "get_collection_target",
+        "get_company_maintenance_context",
         "get_collection_queue",
         "list_undercovered_companies",
         "list_collection_checks",
@@ -128,6 +129,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["restore_opportunity"]["annotations"]["idempotentHint"] is True
     assert tools["get_collection_queue"]["annotations"]["readOnlyHint"] is True
     assert tools["get_collection_queue"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
+    assert tools["get_company_maintenance_context"]["annotations"]["readOnlyHint"] is True
+    assert tools["get_company_maintenance_context"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["list_unmonitored_companies"]["annotations"]["readOnlyHint"] is True
     assert tools["update_collection_target"]["annotations"]["destructiveHint"] is False
     assert tools["patch_opportunity"]["annotations"]["destructiveHint"] is False
@@ -1016,6 +1019,49 @@ def test_mcp_lists_unmonitored_companies_and_adds_one_by_id(tools, db):
     assert missing["total"] == 1
     assert missing["items"][0]["id"] == adobe.company_id
     assert missing["items"][0]["company_opportunity_count"] == 1
+
+
+def test_company_maintenance_context_groups_live_postings_and_official_sources(tools, db):
+    first = seed(
+        db,
+        company_name="株式会社一括保守",
+        event_name="27卒本選考",
+        graduation_years=["27卒"],
+        source_url="https://example.com/maintenance-selection",
+    )
+    second = seed(
+        db,
+        company_name="株式会社一括保守",
+        event_name="サマーインターン",
+        graduation_years=["28卒"],
+        source_url="https://example.com/maintenance-summer",
+    )
+    target = call(
+        "add_collection_target",
+        collection_target_args(
+            company_name="株式会社一括保守",
+            request_id="maintenance-target-0001",
+            sources=[
+                {"source_type": "recruit", "url": "https://example.com/maintenance-recruit"},
+                {"source_type": "internship", "url": "https://example.com/maintenance-intern"},
+            ],
+        ),
+    )["target"]
+
+    context = call("get_company_maintenance_context", {"company_id": first.company_id})
+
+    assert context["company"]["id"] == first.company_id
+    assert context["collection_target_id"] == target["id"]
+    assert {source["url"] for source in context["official_sources"]} == {
+        "https://example.com/maintenance-recruit",
+        "https://example.com/maintenance-intern",
+    }
+    opportunities = {item["id"]: item for item in context["opportunities"]}
+    assert set(opportunities) == {first.id, second.id}
+    assert opportunities[first.id]["graduation_years"] == ["27卒"]
+    assert opportunities[second.id]["source_url"] == "https://example.com/maintenance-summer"
+    assert opportunities[second.id]["source_checked_at"] is not None
+    assert tool_error("get_company_maintenance_context", {"company_id": 999999})["error"] == "not_found"
 
 
 def test_collection_queue_supports_create_patch_source_management_and_checks(tools, db):

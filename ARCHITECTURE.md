@@ -90,7 +90,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | ツール群 | 主な処理 | 認証 |
 | --- | --- | --- |
 | 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応） |
-| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `merge_company` | 前者2つは不要、企業の候補確認・別名・物理統合の書き込みは必要 |
+| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要、企業の候補確認・別名・物理統合の書き込みは必要。保守コンテキストは認証が必要 |
 | 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status/verify | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
 | 収集キュー | target/source/check の一覧、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |

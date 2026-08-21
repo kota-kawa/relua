@@ -133,6 +133,7 @@ https://<公開ホスト名>/mcp
 | `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧する（採用ページ未登録の対象だけの抽出を含む） |
 | `list_unmonitored_companies` | 必要 | 企業マスタにあり、まだ情報収集対象を持たない企業を一覧する |
 | `get_collection_target` | 必要 | 収集対象、公式ページ、登録済み募集を1件取得する |
+| `get_company_maintenance_context` | 必要 | 企業の全募集、公式URL、各募集の最終確認日時をまとめて取得する |
 | `get_collection_queue` | 必要 | 未確認または再確認期限を過ぎた企業を優先度順に返す |
 | `list_collection_checks` | 必要 | 企業ごとの情報収集・確認履歴を新しい順に返す |
 | `add_collection_target` | 必要 | 既存CompanyのIDまたは新規企業名、所属業界、優先度、確認間隔、公式ページを収集対象へ追加する |

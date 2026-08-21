@@ -90,7 +90,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | ツール群 | 主な処理 | 認証 |
 | --- | --- | --- |
 | 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応） |
-| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company` | 前者2つは不要、`resolve_company` と別名の書き込みは必要 |
+| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `merge_company` | 前者2つは不要、企業の候補確認・別名・物理統合の書き込みは必要 |
 | 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
 | 収集キュー | target/source/check の一覧、キュー、追加、更新、確認記録 | 必要 |
@@ -163,7 +163,8 @@ companies ──1:1── collection_targets ──< collection_sources
 
 ### 4.3 書き込みの安全性
 
-- `request_id` と payload hash を `idempotency_records`、企業別名を `company_request_records`、収集操作を `collection_request_records` に記録する。同じID・同じ内容の再試行は前回結果を返し、内容や対象が違えば拒否する。
+- `request_id` と payload hash を `idempotency_records`、企業別名・企業統合を `company_request_records`、収集操作を `collection_request_records` に記録する。同じID・同じ内容の再試行は前回結果を返し、内容や対象が違えば拒否する。
+- 企業統合は明示した統合元IDの募集、別名、業界分類、収集対象・情報源・確認履歴を統合先へ移し、統合元のCompanyを物理削除する。監査ログは不変の履歴として旧IDを保持する。名前の類似だけで自動統合しない。
 - 成功・失敗を `audit_logs` に記録する。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
 - 全項目更新は `get_opportunity` で最新値を取得してから送る。部分更新・削除は `expected_updated_at` で楽観ロックし、取得後の別更新による上書きを拒否する。
 - 削除は `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。復元時にも公開中の同名重複を再確認する。

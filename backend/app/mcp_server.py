@@ -39,6 +39,7 @@ from app.schemas import (
     MCPCollectionTargetListResponse,
     MCPCollectionWriteResponse,
     MCPCompanyAliasWriteResponse,
+    MCPCompanyMergeResponse,
     MCPCompanyResolutionResponse,
     MCPDeletePreviewResponse,
     MCPDeleteResponse,
@@ -87,6 +88,7 @@ from app.services.companies import (
     add_company_alias,
     company_identity_dict,
     delete_company_alias,
+    merge_company,
     resolve_company_candidates,
 )
 from app.services.errors import pydantic_errors
@@ -637,6 +639,50 @@ def delete_company_alias_tool(
         ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された企業別名が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="merge_company",
+    title="確認済みの重複企業を統合",
+    description=(
+        "公式情報で同一法人・同一の採用主体と確認済みの重複企業を、統合元IDから統合先IDへ物理統合します。"
+        "募集、旧正式名を含む別名、業界分類、収集対象・情報源・確認履歴、企業操作の冪等性記録を一つの"
+        "トランザクションで移し、統合元のCompanyを削除します。IDの取り違えは戻せないため、"
+        "必ずresolve_companyの結果と公式情報を確認してから実行してください。認証が必要です。"
+    ),
+    annotations=DELETING,
+)
+def merge_company_tool(
+    source_company_id: Annotated[int, Field(ge=1, description="削除して統合先へ移す重複CompanyのID。")],
+    target_company_id: Annotated[int, Field(ge=1, description="残す正規CompanyのID。")],
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時は同じ値を使用します。")],
+    client_name: ClientName = "mcp-client",
+) -> MCPCompanyMergeResponse:
+    try:
+        with SessionLocal() as db:
+            target, migration, replayed = merge_company(
+                db,
+                source_company_id=source_company_id,
+                target_company_id=target_company_id,
+                request_id=request_id,
+                client_name=client_name,
+            )
+            return MCPCompanyMergeResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "同じ企業統合操作は処理済みです" if replayed else "企業を統合し、統合元を削除しました",
+                    "source_company_id": source_company_id,
+                    "target_company": company_identity_dict(target),
+                    "migration": migration,
+                }
+            )
+    except CompanyIdentityValidationError as exc:
+        raise _company_domain_error(
+            client_name=client_name, request_id=request_id, action="company_merge", exc=exc
+        ) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された統合元または統合先の企業が見つかりません"}) from exc
 
 
 @mcp.tool(

@@ -80,6 +80,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "resolve_company",
         "add_company_alias",
         "delete_company_alias",
+        "merge_company",
         "validate_opportunity",
         "add_opportunity",
         "upsert_opportunity",
@@ -133,6 +134,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["resolve_company"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["add_company_alias"]["annotations"]["destructiveHint"] is False
     assert tools["delete_company_alias"]["annotations"]["destructiveHint"] is True
+    assert tools["merge_company"]["annotations"]["destructiveHint"] is True
 
 
 def test_search_filters_publish_their_allowed_values():
@@ -360,6 +362,35 @@ def test_mcp_company_alias_write_is_idempotent_and_rejects_request_reuse(tools, 
     error = tool_error("add_company_alias", arguments | {"alias": "Mobage"})
     assert error["error"] == "validation_failed"
     assert error["errors"][0]["field"] == "request_id"
+
+
+def test_mcp_merges_a_confirmed_duplicate_company(tools, db):
+    source = seed(
+        db,
+        company_name="株式会社旧ティス",
+        event_name="旧会社のインターン",
+        source_url="https://example.com/old-tis-posting",
+    )
+    target = seed(
+        db,
+        company_name="TIS株式会社",
+        event_name="統合先会社のインターン",
+        source_url="https://example.com/tis-posting",
+    )
+    arguments = {
+        "source_company_id": source.company_id,
+        "target_company_id": target.company_id,
+        "request_id": "mcp-company-merge-0001",
+    }
+
+    merged = call("merge_company", arguments)
+
+    assert merged["success"] is True
+    assert merged["idempotent_replay"] is False
+    assert merged["target_company"]["id"] == target.company_id
+    assert merged["migration"]["opportunities_moved"] == 1
+    assert {alias["normalized_alias"] for alias in merged["target_company"]["aliases"]} >= {"旧ティス"}
+    assert call("merge_company", arguments)["idempotent_replay"] is True
 
 
 def test_adding_the_same_posting_twice_is_refused_and_points_at_the_existing_entry(tools, db):

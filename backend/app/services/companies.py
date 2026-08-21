@@ -10,7 +10,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models import AuditLog, Company, CompanyAlias, CompanyRequestRecord
+from app.models import (
+    AuditLog,
+    CollectionCheck,
+    CollectionSource,
+    CollectionTarget,
+    Company,
+    CompanyAlias,
+    CompanyIndustry,
+    CompanyRequestRecord,
+    Opportunity,
+)
 from app.services.normalization import normalize_company_name
 
 CompanyMatchType = Literal["canonical_exact", "alias_exact", "partial", "fuzzy"]
@@ -315,6 +325,258 @@ def delete_company_alias(db: Session, *, alias_id: int, request_id: str, client_
     )
     db.commit()
     return company, False
+
+
+def _company_merge_error(field: str, received: Any, reason: str) -> CompanyIdentityValidationError:
+    return CompanyIdentityValidationError([{"field": field, "received": received, "reason": reason}])
+
+
+def _latest(*values: Any) -> Any:
+    return max((value for value in values if value is not None), default=None)
+
+
+def _earliest(*values: Any) -> Any:
+    return min((value for value in values if value is not None), default=None)
+
+
+def _merge_collection_targets(
+    db: Session, *, source_company_id: int, target_company_id: int
+) -> dict[str, int]:
+    """Move or coalesce the one-per-company collection targets.
+
+    A duplicate source URL is deliberately represented once on the target.  Checks are append-only
+    evidence, so all of them are retained even when the target rows themselves are coalesced.
+    """
+    source_target = db.scalar(
+        select(CollectionTarget).where(CollectionTarget.company_id == source_company_id).with_for_update()
+    )
+    target_target = db.scalar(
+        select(CollectionTarget).where(CollectionTarget.company_id == target_company_id).with_for_update()
+    )
+    summary = {"collection_targets_merged": 0, "collection_sources_moved": 0, "collection_sources_deduplicated": 0,
+               "collection_checks_moved": 0}
+    if source_target is None:
+        return summary
+
+    if target_target is None:
+        source_target.company_id = target_company_id
+        summary["collection_targets_merged"] = 1
+        return summary
+
+    target_sources = list(
+        db.scalars(select(CollectionSource).where(CollectionSource.collection_target_id == target_target.id).with_for_update())
+    )
+    known_urls = {item.url for item in target_sources}
+    source_sources = list(
+        db.scalars(select(CollectionSource).where(CollectionSource.collection_target_id == source_target.id).with_for_update())
+    )
+    for item in source_sources:
+        if item.url in known_urls:
+            db.delete(item)
+            summary["collection_sources_deduplicated"] += 1
+        else:
+            item.collection_target_id = target_target.id
+            known_urls.add(item.url)
+            summary["collection_sources_moved"] += 1
+
+    source_checks = list(
+        db.scalars(select(CollectionCheck).where(CollectionCheck.collection_target_id == source_target.id).with_for_update())
+    )
+    for item in source_checks:
+        item.collection_target_id = target_target.id
+    summary["collection_checks_moved"] = len(source_checks)
+
+    # Preserve the more conservative schedule and the freshest evidence.  A merge must not turn an
+    # active target inactive or postpone a review that either former target had already scheduled.
+    source_was_latest = (
+        source_target.last_checked_at is not None
+        and (target_target.last_checked_at is None or source_target.last_checked_at > target_target.last_checked_at)
+    )
+    target_target.priority_tier = min(target_target.priority_tier, source_target.priority_tier)
+    target_target.check_interval_days = min(target_target.check_interval_days, source_target.check_interval_days)
+    target_target.is_active = target_target.is_active or source_target.is_active
+    target_target.last_checked_at = _latest(target_target.last_checked_at, source_target.last_checked_at)
+    target_target.next_check_at = _earliest(target_target.next_check_at, source_target.next_check_at)
+    target_target.last_found_at = _latest(target_target.last_found_at, source_target.last_found_at)
+    if source_was_latest:
+        target_target.last_check_result = source_target.last_check_result
+    if target_target.selection_reason is None:
+        target_target.selection_reason = source_target.selection_reason
+    # CollectionTarget also owns sources/checks through delete-orphan relationships.  Refresh the
+    # old collections after moving their rows before deleting the now-redundant target.
+    db.flush()
+    db.expire(source_target, ["sources", "checks"])
+    db.delete(source_target)
+    summary["collection_targets_merged"] = 1
+    return summary
+
+
+def merge_company(
+    db: Session, *, source_company_id: int, target_company_id: int, request_id: str, client_name: str
+) -> tuple[Company, dict[str, int], bool]:
+    """Physically merge a confirmed duplicate company into the canonical target.
+
+    The operation is intentionally ID-based: name similarity is only a review aid and must never be
+    sufficient to move public postings.  It is atomic, idempotent, and leaves audit history intact.
+    """
+    if source_company_id == target_company_id:
+        raise _company_merge_error("source_company_id", source_company_id, "統合元と統合先には異なる企業IDを指定してください")
+
+    operation = "company_merge"
+    request_hash = _request_hash(
+        operation, {"source_company_id": source_company_id, "target_company_id": target_company_id}
+    )
+    replayed = _replayed_company(db, request_id=request_id, operation=operation, request_hash=request_hash)
+    if replayed is not None:
+        audit = db.scalar(
+            select(AuditLog)
+            .where(AuditLog.action == operation, AuditLog.request_id == request_id)
+            .order_by(AuditLog.id.desc())
+        )
+        migration = (audit.changes or {}).get("after", {}).get("migration", {}) if audit else {}
+        return replayed, migration, True
+
+    # Lock in a stable order to avoid two opposing merges deadlocking on PostgreSQL.
+    companies = {
+        item.id: item
+        for item in db.scalars(
+            select(Company)
+            .where(Company.id.in_([source_company_id, target_company_id]))
+            .order_by(Company.id)
+            .with_for_update()
+        )
+    }
+    source = companies.get(source_company_id)
+    target = companies.get(target_company_id)
+    if source is None:
+        raise LookupError("source_company_not_found")
+    if target is None:
+        raise LookupError("target_company_not_found")
+
+    # Reject a third-party identity collision before changing anything.  Collisions with the target
+    # are harmless duplicates and are folded into its existing alias.
+    source_aliases = list(
+        db.scalars(select(CompanyAlias).where(CompanyAlias.company_id == source.id).with_for_update())
+    )
+    target_aliases = list(
+        db.scalars(select(CompanyAlias).where(CompanyAlias.company_id == target.id).with_for_update())
+    )
+    source_names = [(source.name, source.normalized_name)] + [
+        (alias.alias, alias.normalized_alias) for alias in source_aliases
+    ]
+    target_alias_by_normalized = {alias.normalized_alias: alias for alias in target_aliases}
+    for _name, normalized in source_names:
+        canonical = db.scalar(select(Company).where(Company.normalized_name == normalized))
+        if canonical is not None and canonical.id not in {source.id, target.id}:
+            raise _company_merge_error("source_company_id", source.id, f"別の企業「{canonical.name}」の正式名と競合します")
+        alias = db.scalar(select(CompanyAlias).where(CompanyAlias.normalized_alias == normalized))
+        if alias is not None and alias.company_id not in {source.id, target.id}:
+            raise _company_merge_error("source_company_id", source.id, f"別の企業「{alias.company.name}」の別名と競合します")
+
+    before = {"source_company": company_identity_dict(source), "target_company": company_identity_dict(target)}
+    summary = {
+        "opportunities_moved": 0,
+        "aliases_moved": 0,
+        "aliases_deduplicated": 0,
+        "industries_moved": 0,
+        "industries_deduplicated": 0,
+        "company_request_records_moved": 0,
+    }
+
+    # The old canonical name becomes an alias, retaining resolution of old company names.  Source
+    # aliases that already exist on the target or equal its canonical name are redundant.
+    source_alias_by_normalized = {alias.normalized_alias: alias for alias in source_aliases}
+    for alias_name, normalized in source_names:
+        if normalized == target.normalized_name or normalized in target_alias_by_normalized:
+            source_alias = source_alias_by_normalized.get(normalized)
+            if source_alias is not None:
+                db.delete(source_alias)
+                summary["aliases_deduplicated"] += 1
+            continue
+        source_alias = source_alias_by_normalized.get(normalized)
+        if source_alias is not None:
+            source_alias.company_id = target.id
+        else:
+            db.add(CompanyAlias(company_id=target.id, alias=alias_name, normalized_alias=normalized))
+        target_alias_by_normalized[normalized] = source_alias  # Marks later duplicate source data as handled.
+        summary["aliases_moved"] += 1
+
+    target_industries = {
+        row.industry_id: row
+        for row in db.scalars(select(CompanyIndustry).where(CompanyIndustry.company_id == target.id).with_for_update())
+    }
+    target_has_primary = any(row.is_primary for row in target_industries.values())
+    source_industries = list(
+        db.scalars(select(CompanyIndustry).where(CompanyIndustry.company_id == source.id).with_for_update())
+    )
+    for row in source_industries:
+        existing = target_industries.get(row.industry_id)
+        if existing is None:
+            if row.is_primary and target_has_primary:
+                row.is_primary = False
+            elif row.is_primary:
+                target_has_primary = True
+            row.company_id = target.id
+            summary["industries_moved"] += 1
+            continue
+        if existing.sector_id is None and row.sector_id is not None:
+            existing.sector_id = row.sector_id
+        if row.is_primary and not target_has_primary:
+            row.is_primary = False
+            existing.is_primary = True
+            target_has_primary = True
+        elif row.is_primary:
+            row.is_primary = False
+        db.delete(row)
+        summary["industries_deduplicated"] += 1
+
+    opportunities = list(
+        db.scalars(select(Opportunity).where(Opportunity.company_id == source.id).with_for_update())
+    )
+    for item in opportunities:
+        item.company_id = target.id
+    summary["opportunities_moved"] = len(opportunities)
+
+    request_records = list(
+        db.scalars(select(CompanyRequestRecord).where(CompanyRequestRecord.company_id == source.id).with_for_update())
+    )
+    for item in request_records:
+        item.company_id = target.id
+    summary["company_request_records_moved"] = len(request_records)
+
+    summary.update(_merge_collection_targets(db, source_company_id=source.id, target_company_id=target.id))
+    # ``Company.aliases`` and ``Company.industries`` are delete-orphan relationships.  Flush and
+    # expire the old collections after their children have been reassigned so deleting source does
+    # not treat an already-moved child as an orphan from its stale in-memory collection.
+    db.flush()
+    db.expire(source, ["aliases", "industries"])
+    _remember_request(
+        db,
+        request_id=request_id,
+        operation=operation,
+        request_hash=request_hash,
+        company_id=target.id,
+    )
+    db.delete(source)
+    db.flush()
+    db.expire(target, ["aliases", "industries"])
+    db.add(
+        AuditLog(
+            action=operation,
+            entity_type="company",
+            entity_id=str(target.id),
+            request_id=request_id,
+            client_name=client_name,
+            source_url=None,
+            success=True,
+            changes={
+                "before": jsonable_encoder(before),
+                "after": jsonable_encoder({"company": company_identity_dict(target), "migration": summary}),
+            },
+        )
+    )
+    db.commit()
+    return target, summary, False
 
 
 def company_name_filter(company_name: str) -> ColumnElement[bool]:

@@ -820,6 +820,28 @@ class MCPCompanyAliasWriteResponse(BaseModel):
     company: CompanyIdentityResponse
 
 
+class CompanyMergeSummary(BaseModel):
+    opportunities_moved: int
+    aliases_moved: int
+    aliases_deduplicated: int
+    industries_moved: int
+    industries_deduplicated: int
+    company_request_records_moved: int
+    collection_targets_merged: int
+    collection_sources_moved: int
+    collection_sources_deduplicated: int
+    collection_checks_moved: int
+
+
+class MCPCompanyMergeResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    message: str
+    source_company_id: int
+    target_company: CompanyIdentityResponse
+    migration: CompanyMergeSummary
+
+
 class OpportunityFieldChange(BaseModel):
     field: str
     before: Any = None

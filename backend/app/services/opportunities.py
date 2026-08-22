@@ -74,6 +74,11 @@ class OpportunityReview:
     reasons: list[str]
 
 
+# These are the only recruitment states that should receive routine source checks.  Keeping this as
+# an allowlist also makes newly added terminal states opt out of maintenance queues by default.
+RECONFIRMABLE_RECRUITMENT_STATUSES = ("募集予定", "募集中", "通年募集")
+
+
 def _search_signature(
     *,
     q: str | None,
@@ -673,16 +678,21 @@ def list_stale_opportunities(
     deadline_on_or_after: date | None = None,
     limit: int = 50,
 ) -> list[Opportunity]:
-    """Live postings whose official source hasn't been reconfirmed in at least `days` days.
+    """Reconfirmable postings whose official source hasn't been checked in at least `days` days.
 
     Ordered so an operator works through the worst gaps first: never-checked rows (source_checked_at
-    is null, e.g. records predating this column) before the oldest confirmed ones.
+    is null, e.g. records predating this column) before the oldest confirmed ones. Closed and other
+    non-reconfirmable statuses are intentionally excluded from this routine-maintenance queue.
     """
     threshold = datetime.now(timezone.utc) - timedelta(days=days)  # noqa: UP017 -- tests also support Python 3.10
     stmt = (
         opportunity_query()
         .join(Opportunity.company)
-        .where(or_(Opportunity.source_checked_at.is_(None), Opportunity.source_checked_at <= threshold))
+        .join(Opportunity.status)
+        .where(
+            RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES),
+            or_(Opportunity.source_checked_at.is_(None), Opportunity.source_checked_at <= threshold),
+        )
     )
     if deadline_on_or_after:
         stmt = stmt.where(or_(Opportunity.deadline.is_(None), Opportunity.deadline >= deadline_on_or_after))
@@ -697,11 +707,13 @@ def list_stale_opportunities(
 def list_opportunities_requiring_review(
     db: Session, *, days: int = 7, limit: int = 50
 ) -> list[OpportunityReview]:
-    """Return source-stale postings and date/status contradictions in review priority order.
+    """Return reconfirmable postings and date/status contradictions in review priority order.
 
     The date checks are deliberately a live query rather than stored flags: an extended deadline
     disappears from the queue immediately after an operator updates it.  Contradictions are placed
-    before ordinary stale-source work but never alter the published status themselves.
+    before ordinary stale-source work but never alter the published status themselves. Only
+    募集予定, 募集中, and 通年募集 are routine-maintenance states; closed and other terminal states
+    stay out of this queue.
     """
     now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
     today = today_in_tokyo(now)
@@ -715,7 +727,10 @@ def list_opportunities_requiring_review(
         opportunity_query()
         .join(Opportunity.company)
         .join(Opportunity.status)
-        .where(or_(date_status_conflict, source_stale))
+        .where(
+            RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES),
+            or_(date_status_conflict, source_stale),
+        )
         .order_by(
             case((date_status_conflict, 0), else_=1),
             case((Opportunity.source_checked_at.is_(None), 0), else_=1),

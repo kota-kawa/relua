@@ -19,6 +19,7 @@ from app.models import (
     CompanyIndustry,
     Industry,
     Opportunity,
+    RecruitmentStatus,
     Sector,
 )
 from app.schemas import (
@@ -38,7 +39,7 @@ from app.services.company_industries import (
 )
 from app.services.errors import master_error
 from app.services.masters import choices, resolve_one, resolve_sector
-from app.services.opportunities import DomainValidationError
+from app.services.opportunities import RECONFIRMABLE_RECRUITMENT_STATUSES, DomainValidationError
 from app.services.serialization import detail_url, master_dict
 
 
@@ -89,8 +90,9 @@ def get_company_maintenance_context(
     """Load everything an operator needs after opening one company's official site.
 
     Unlike ``get_collection_target``, this also works for companies that have not yet been added to
-    the collection queue.  Soft-deleted postings are intentionally excluded: they are not candidates
-    for a current-source maintenance pass and remain available through restore/audit workflows.
+    the collection queue. Soft-deleted postings and closed/non-reconfirmable postings are intentionally
+    excluded: they are not candidates for a routine current-source maintenance pass and remain
+    available through direct opportunity lookup and restore/audit workflows.
     """
     company = db.scalar(
         select(Company)
@@ -107,7 +109,12 @@ def get_company_maintenance_context(
                 selectinload(Opportunity.status),
                 selectinload(Opportunity.graduation_years),
             )
-            .where(Opportunity.company_id == company.id, Opportunity.deleted_at.is_(None))
+            .join(Opportunity.status)
+            .where(
+                Opportunity.company_id == company.id,
+                Opportunity.deleted_at.is_(None),
+                RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES),
+            )
             .order_by(Opportunity.updated_at.desc(), Opportunity.id)
         )
     )
@@ -119,12 +126,15 @@ def get_collection_source(db: Session, source_id: int) -> CollectionSource | Non
 
 
 def _opportunity_references(db: Session, target: CollectionTarget) -> list[dict[str, Any]]:
+    """Return only postings eligible for routine maintenance in collection-target views."""
     items = db.scalars(
         select(Opportunity)
         .options(selectinload(Opportunity.status))
+        .join(Opportunity.status)
         .where(
             Opportunity.company_id == target.company_id,
             Opportunity.deleted_at.is_(None),
+            RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES),
         )
         .order_by(Opportunity.updated_at.desc(), Opportunity.id)
     )
@@ -220,8 +230,9 @@ def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, A
         "has_primary_source": has_primary_source,
         "missing_source_types": missing_source_types,
         "opportunities": opportunities,
-        #: Every live posting for this company. A target covers the whole company, so there is no
-        #: longer a second, industry-scoped count that could disagree with this one.
+        #: Every reconfirmable posting for this company. A target covers the whole company, so there
+        #: is no longer a second, industry-scoped count that could disagree with this one. Closed
+        #: postings remain queryable by their own ID but are not maintenance targets.
         "company_opportunity_count": len(opportunities),
         "created_at": target.created_at,
         "updated_at": target.updated_at,
@@ -370,10 +381,11 @@ def collection_queue(db: Session, *, industry: str | None = None, limit: int = 2
 def undercovered_collection_targets(
     db: Session, *, industry: str | None = None, limit: int = 50
 ) -> list[CollectionTarget]:
-    """Active targets ordered by how few live postings their company has, fewest first.
+    """Active targets ordered by how few reconfirmable postings their company has, fewest first.
 
     Lets an operator fetch "companies we're missing postings for" directly, instead of paging
-    through the whole queue client-side and filtering on opportunities == []. Counted per company
+    through the whole queue client-side and filtering on opportunities == []. Closed postings do
+    not count as coverage because they are not routine-maintenance targets. Counted per company
     rather than per company-and-industry, so a company whose postings are filed under one of its
     several industries no longer reports as uncovered under the others.
     """
@@ -382,6 +394,11 @@ def undercovered_collection_targets(
         .where(
             Opportunity.company_id == CollectionTarget.company_id,
             Opportunity.deleted_at.is_(None),
+            Opportunity.status_id.in_(
+                select(RecruitmentStatus.id).where(
+                    RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES)
+                )
+            ),
         )
         .correlate(CollectionTarget)
         .scalar_subquery()
@@ -421,7 +438,15 @@ def list_unmonitored_companies(
     """
     opportunity_count = (
         select(func.count(Opportunity.id))
-        .where(Opportunity.company_id == Company.id, Opportunity.deleted_at.is_(None))
+        .where(
+            Opportunity.company_id == Company.id,
+            Opportunity.deleted_at.is_(None),
+            Opportunity.status_id.in_(
+                select(RecruitmentStatus.id).where(
+                    RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES)
+                )
+            ),
+        )
         .correlate(Company)
         .scalar_subquery()
     )

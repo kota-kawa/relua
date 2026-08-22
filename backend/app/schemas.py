@@ -745,8 +745,8 @@ class OpportunityReviewSummary(OpportunitySummary):
         Literal["deadline_passed_while_open", "event_ended_while_open", "source_not_checked_recently"]
     ] = Field(
         description=(
-            "要確認になった理由。期限・実施終了日と「募集中」の矛盾は、"
-            "情報源の未確認より優先して返します。"
+            "要確認になった理由。対象は募集予定・募集中・通年募集だけです。期限・実施終了日と"
+            "「募集中」の矛盾は、情報源の未確認より優先して返します。"
         )
     )
 
@@ -954,7 +954,10 @@ class MCPCompanyMaintenanceContextResponse(BaseModel):
         description="企業単位で登録した公式ページ。収集対象が未作成の場合は空です。"
     )
     opportunities: list[CompanyMaintenanceOpportunity] = Field(
-        description="この企業の公開中の全募集。各募集の一次情報URLと最終確認日時を含みます。"
+        description=(
+            "この企業の定期再確認対象（募集予定・募集中・通年募集）だけを返します。"
+            "締切などの終了状態は含まず、各募集の一次情報URLと最終確認日時を含みます。"
+        )
     )
 
 
@@ -982,7 +985,12 @@ class CollectionTargetResponse(BaseModel):
     sources: list[CollectionSourceResponse]
     has_primary_source: bool
     missing_source_types: list[CollectionSourceType]
-    opportunities: list[CollectionOpportunityReference]
+    opportunities: list[CollectionOpportunityReference] = Field(
+        description=(
+            "定期再確認対象（募集予定・募集中・通年募集）の募集だけを返します。"
+            "締切などの終了状態は含みません。"
+        )
+    )
     company_opportunity_count: int
     created_at: datetime
     updated_at: datetime

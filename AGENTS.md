@@ -47,6 +47,7 @@
 | [`docs/decisions/0002-mcp-write-safety.md`](./docs/decisions/0002-mcp-write-safety.md) | MCP書き込みの検証・冪等化・監査・ロックの理由 |
 | [`docs/decisions/0003-local-browser-data-and-public-codes.md`](./docs/decisions/0003-local-browser-data-and-public-codes.md) | localStorage保存と公開コード共有の理由 |
 | [`docs/decisions/0004-company-identity-and-collection-model.md`](./docs/decisions/0004-company-identity-and-collection-model.md) | 企業同一性、複数業界、企業単位収集の理由 |
+| [`docs/decisions/0012-mcp-maintenance-eligibility.md`](./docs/decisions/0012-mcp-maintenance-eligibility.md) | MCPの定期保守対象を現行募集の状態に限定する理由 |
 
 ## 変更時のルール
 

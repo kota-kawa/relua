@@ -39,6 +39,7 @@ from app.services.company_industries import (
 )
 from app.services.errors import master_error
 from app.services.masters import choices, resolve_one, resolve_sector
+from app.services.normalization import normalize_source_url, source_url_is_allowed
 from app.services.opportunities import RECONFIRMABLE_RECRUITMENT_STATUSES, DomainValidationError
 from app.services.serialization import detail_url, master_dict
 
@@ -911,6 +912,45 @@ def record_collection_check(
                     }
                 ]
             )
+        stored_source = opportunity.normalized_source_url or normalize_source_url(opportunity.source_url)
+        if normalize_source_url(payload.source_url) != stored_source:
+            raise DomainValidationError(
+                [
+                    {
+                        "field": "source_url",
+                        "received": payload.source_url,
+                        "reason": "募集情報に登録された一次情報URLと一致しません",
+                        "expected": opportunity.source_url,
+                    }
+                ]
+            )
+        active_sources = [source.url for source in target.sources if source.is_active]
+        if not source_url_is_allowed(payload.source_url, active_sources):
+            raise DomainValidationError(
+                [
+                    {
+                        "field": "source_url",
+                        "received": payload.source_url,
+                        "reason": "この企業の有効な公式情報源allowlistに含まれません",
+                        "expected": active_sources,
+                    }
+                ]
+            )
+    else:
+        active_sources = [source.url for source in target.sources if source.is_active]
+        if normalize_source_url(payload.source_url) not in {
+            normalize_source_url(source_url) for source_url in active_sources
+        }:
+            raise DomainValidationError(
+                [
+                    {
+                        "field": "source_url",
+                        "received": payload.source_url,
+                        "reason": "確認結果は登録済みの有効な公式source URLに対してだけ記録できます",
+                        "expected": active_sources,
+                    }
+                ]
+            )
     now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
     check = CollectionCheck(
         collection_target_id=target.id,
@@ -933,11 +973,10 @@ def record_collection_check(
             # posting's official-source-confirmed date would go stale even though someone just verified
             # it. Deliberately not touching opportunity.updated_at, which drives optimistic locking.
             opportunity.source_checked_at = now
-    if payload.source_url:
-        for source in target.sources:
-            if source.url == payload.source_url:
-                source.last_checked_at = now
-                break
+    for source in target.sources:
+        if source.is_active and normalize_source_url(source.url) == normalize_source_url(payload.source_url):
+            source.last_checked_at = now
+            break
     # Closes the loop for targets that only knew the corporate top page: whoever just read that page
     # can register the recruit/internship pages it linked to, in the same call as the check result,
     # instead of remembering to follow up with add_collection_source afterwards.

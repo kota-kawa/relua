@@ -609,7 +609,7 @@ def test_unset_identity_fields_do_not_manufacture_a_probable_duplicate(db):
     assert exc_info.value.errors[0]["field"] == "イベント名"
 
 
-def test_update_recruitment_status_also_refreshes_source_checked_at(db):
+def test_update_recruitment_status_uses_optimistic_lock_without_claiming_a_source_check(db):
     data = OpportunityInput.model_validate(valid_payload())
     item, _ = write_opportunity(db, data=data, request_id="checked-at-status-0001", client_name="pytest")
     first_checked_at = item.source_checked_at
@@ -617,14 +617,25 @@ def test_update_recruitment_status_also_refreshes_source_checked_at(db):
     updated, _ = update_recruitment_status(
         db,
         opportunity_id=item.id,
+        expected_updated_at=item.updated_at,
         recruitment_status="締切",
         request_id="checked-at-status-0002",
         client_name="pytest",
     )
 
-    assert updated.source_checked_at is not None
-    assert updated.source_checked_at >= first_checked_at
-    assert updated.source_checked_at == updated.updated_at
+    assert updated.source_checked_at == first_checked_at
+    assert updated.updated_at > first_checked_at
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        update_recruitment_status(
+            db,
+            opportunity_id=item.id,
+            expected_updated_at=first_checked_at,
+            recruitment_status="募集中",
+            request_id="checked-at-status-0003",
+            client_name="pytest",
+        )
+    assert exc_info.value.errors[0]["field"] == "更新前の最終確認日時"
 
 
 def test_verify_opportunity_refreshes_only_source_checked_at(db):

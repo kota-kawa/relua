@@ -24,7 +24,7 @@ Next.js frontend              FastAPI backend
                  レート制限／マスタキャッシュ
 ```
 
-ローカルの Compose では、`frontend`、`api`、`db`、`redis` が分離されます。`api` と `frontend` のホスト公開ポートは既定でループバックのみです。公開構成では [`relua.conf`](./relua.conf) が `/mcp` と OAuth のディスカバリ・認可ルートだけを FastAPI に渡し、通常の `/` は Next.js に渡します。
+ローカルの Compose では、`frontend`、`api`、`db`、`redis` が分離されます。`api` と `frontend` のホスト公開ポートは既定でループバックのみです。公開構成では [`relua.conf`](./relua.conf) が `/mcp` と OAuth のディスカバリ・認可ルートだけを FastAPI に渡し、通常の `/` は Next.js に渡します。論理削除済みデータの完全削除は [Daily Maintenance](./.github/workflows/maintenance.yml) が日次実行し、Actionsの成否を監視記録にします。
 
 ## 2. フロントエンド
 
@@ -126,6 +126,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | `app/scripts/close_expired.py` | 論理削除から30日経過した募集を完全削除（期限超過だけでは状態・公開を変えない） |
 | `app/scripts/seed_demo.py` | 架空のUI確認用データを冪等的に投入 |
 | `app/scripts/mcp_connections.py` | OAuth grant の一覧・失効・期限切れ掃除 |
+| `.github/workflows/maintenance.yml` | 論理削除30日後の完全削除を日次実行し、完了markerを監視 |
 
 ## 4. データモデルと不変条件
 
@@ -147,7 +148,7 @@ opportunities >──< job_categories / graduation_years / degrees / tags
 - `Industry`、`Sector`、職種、卒業年、学位、募集状況、イベント種別、形式は固定値マスタ。募集書き込み時は指定業界に属する業種だけを受け付ける。
 - 企業同一性は正規化正式名または明示登録した別名の完全一致を正本にする。部分一致・`pg_trgm` は候補提示と検索補助だけで、企業を自動統合しない。
 - 企業は複数業界に属せる。`company_industries.is_primary` は1社につき高々1件で、単一分類表示用である。
-- `source_url` は正規化した `normalized_source_url` と共に保存する。短縮URL、IP/localhost、求人集約・口コミサイトを情報源として拒否し、同じ一次情報URLは登録拒否ではなく確認用警告とする。
+- `source_url` は正規化した `normalized_source_url` と共に保存する。短縮URL、IP/localhost、求人集約・口コミサイトを情報源として拒否し、同じ一次情報URLは登録拒否ではなく確認用警告とする。収集対象がある企業では、有効な `collection_sources` を企業別公式source allowlistとし、別の公式ホストは収集元へ明示登録してから使う。
 
 ### 4.2 企業単位の収集
 
@@ -161,6 +162,7 @@ companies ──1:1── collection_targets ──< collection_sources
 - `collection_targets.is_active` と各 source の `is_active` は無効化で保持する。削除ではなく運用状態を表す。
 - 募集の新規登録（`add_opportunity`／`upsert_opportunity`）へ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。既存募集の更新・部分更新はこの自動リンクを行わない（4.3参照）。
 - 採用ページ未登録、未確認、確認期限超過は収集キューの状態として返される。
+- `record_collection_check` は実際に確認したURLを必須とする。`found` は募集自身の一次情報URLとの一致、その他の結果は登録済み有効sourceとの一致を検証し、一致した `found` だけが募集の `source_checked_at` を進める。
 - 定期再確認の対象状態は `募集予定`、`募集中`、`通年募集` に限る。 `締切` などの終了状態は企業保守コンテキスト、収集対象の募集一覧、要確認キューから除外する。企業単位の収集キューは、新しい募集の発見が必要な企業を拾うため、現在の募集一覧が空でも返す。
 
 ### 4.3 書き込みの安全性
@@ -170,9 +172,9 @@ companies ──1:1── collection_targets ──< collection_sources
 - 成功・失敗を `audit_logs` に記録する。`verify_opportunity` は内容更新・status更新とは別の `verify` 操作として、確認時刻と実際に確認した一次情報URLを記録し、`updated_at` は変えない。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
 - 書き込みと一次情報確認は分離している（write != verify）。`update_opportunity`／`patch_opportunity` によるDB内容の変更は `source_checked_at` を更新せず、`collection_target_id` も受け付けない。一次情報を確認した事実は `verify_opportunity` または `record_collection_check` で別途記録する。`source_checked_at` が更新されるのは新規登録時と、この2ツールによる確認記録時だけである。
 - 日付と募集状況の矛盾（例: 未来の締め切りで「締切」）は、書き込みを拒否せず `warnings` として返す。締切延長・追加募集・中止の可能性があるため、運営者が一次情報を確認して確定する。
-- 全項目更新・部分更新・削除はいずれも `expected_updated_at`（`get_opportunity` で取得した現在の `updated_at`）を必須にし、`FOR UPDATE` 相当のロック取得後に一致を確認して楽観ロックする。取得後に別クライアントが更新していれば拒否し、lost update を防ぐ。
+- 全項目更新・部分更新・募集状況更新・削除はいずれも `expected_updated_at`（`get_opportunity` で取得した現在の `updated_at`）を必須にし、`FOR UPDATE` 相当のロック取得後に一致を確認して楽観ロックする。取得後に別クライアントが更新していれば拒否し、lost update を防ぐ。
 - 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。 `締切` などの終了状態は定期再確認キューへ戻さない。
-- 重複判定は同一企業・同名イベントだけでなく、対象卒業年・実施開始日・対象職種を識別キーとして`classify_duplicate_candidates`が exact／probable の2段階に分ける。3項目のいずれかが明確に異なれば probable とし、書き込みは拒否せず警告で知らせる（例: 同じイベント名を複数の卒業年で使い回す企業）。全項目が一致する exact 重複だけを既定で拒否し、意図的に同じ内容を複数登録する場合だけ `allow_duplicate` を明示する。
+- 重複判定は同一企業・同名イベントだけでなく、対象卒業年・実施開始日・対象職種を識別キーとして`classify_duplicate_candidates`が exact／probable の2段階に分ける。3項目のいずれかが明確に異なれば probable とし、書き込みは拒否せず警告で知らせる（例: 同じイベント名を複数の卒業年で使い回す企業）。全項目が一致する exact 重複だけを既定で拒否し、意図的に同じ内容を複数登録する場合だけ `allow_duplicate` を明示する。復元も同じ分類器を使い、exactだけを拒否する。
 
 ### 4.4 OAuthデータ
 
@@ -250,6 +252,7 @@ MCP client
 - backend: Ruff、SQLite単体テスト、PostgreSQL Alembic upgrade、`pg_trgm`／関連度の確認。
 - frontend: `npm ci`、lint、production build。
 - main push: SSH先で `docker compose up -d --build`、サービス状態を確認し、失敗時は直前コミットへ戻して再起動する。
+- daily schedule: SSH先で論理削除済み募集の完全削除を実行し、終了コードと `purged=<件数>` markerを検証する。
 
 ## 7. 変更時のソースマップ
 
@@ -262,7 +265,7 @@ MCP client
 | 企業同一性・別名 | `services/companies.py`, `company_industries.py` | `models.py`, identity/collection tests、関連ADR |
 | 収集キュー | `services/collection_targets.py` | `models.py`, `test_collection_targets.py`, MCP tool definitions |
 | OAuth・MCP認証 | `main.py`, `api/oauth.py`, `services/oauth.py`, `mcp_server.py` | `test_oauth.py`, `test_oauth_endpoints.py`, `relua.conf` |
-| 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、該当サービスのテスト |
+| 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、`.github/workflows/maintenance.yml`、該当サービスのテスト |
 | DBスキーマ | `models.py`, 最新 migration | 0001 fresh DB、全 upgrade、PostgreSQL CI |
 | デプロイ・公開境界 | `docker-compose.yml`, Dockerfiles, `relua.conf`, CI | `.env.example`, READMEの本番設定 |
 

@@ -1133,6 +1133,7 @@ def patch_opportunity_tool(
     description=(
         "募集状況と締め切りだけを更新します。他の項目は変更しません。"
         "「締切になった」「募集が始まった」といった保守はこのツールで行い、全項目の再送を避けてください。"
+        "get_opportunityで取得したupdated_atを必ず渡し、取得後に別の更新があれば拒否します。"
         "日付と募集状況が矛盾する場合も保存はしますが、warningsで公式情報の再確認を促します。"
     ),
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
@@ -1140,6 +1141,10 @@ def patch_opportunity_tool(
 def update_recruitment_status_tool(
     opportunity_id: Annotated[str, Field(description="更新対象のid（UUID）。")],
     recruitment_status: Annotated[RecruitmentStatusValue, Field(description="新しい募集状況。", examples=["締切"])],
+    expected_updated_at: Annotated[
+        datetime,
+        Field(description="get_opportunityで取得した現在のupdated_at。取得後に更新されていた場合は拒否します。"),
+    ],
     request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
     client_name: Annotated[str, Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。")] = "mcp-client",
     deadline: Annotated[
@@ -1172,6 +1177,7 @@ def update_recruitment_status_tool(
             item, replayed = update_recruitment_status(
                 db,
                 opportunity_id=opportunity_id,
+                expected_updated_at=expected_updated_at,
                 recruitment_status=recruitment_status,
                 request_id=request_id,
                 client_name=client_name,
@@ -1389,7 +1395,8 @@ def delete_opportunity_tool(
     title="削除済み募集情報を復元",
     description=(
         "論理削除された募集情報を、元のIDと公開コードを維持したまま公開状態へ戻します。"
-        "同じ企業の同名イベントが既に公開中の場合は、重複を避けるため復元を拒否します。認証が必要です。"
+        "同じ企業・同名イベントで対象学年・実施日・対象職種も一致する募集が公開中の場合は、"
+        "重複を避けるため復元を拒否します。認証が必要です。"
     ),
     annotations=PATCHING,
 )
@@ -1780,7 +1787,8 @@ def update_collection_source_tool(
     title="企業公式ページの確認結果を記録",
     description=(
         "募集を発見した場合だけでなく、募集中なし、ページ確認不能、人の確認が必要な場合も履歴へ記録し、"
-        "次回確認日を更新します。確認中に採用ページなどを新しく見つけた場合はdiscovered_sourcesへ渡すと"
+        "次回確認日を更新します。実際に確認したsource_urlが募集自身または登録済み公式sourceと一致するか検証します。"
+        "確認中に採用ページなどを新しく見つけた場合はdiscovered_sourcesへ渡すと"
         "同時に情報源として追加します。認証が必要です。"
     ),
     annotations=APPEND_ONLY,

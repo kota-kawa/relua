@@ -248,6 +248,7 @@ def test_search_cursor_does_not_repeat_a_returned_row_after_its_deadline_moves(t
         "update_recruitment_status",
         {
             "opportunity_id": items[0].id,
+            "expected_updated_at": items[0].updated_at.isoformat(),
             "recruitment_status": "募集中",
             "deadline": (date.today() + timedelta(days=10)).isoformat(),
             "request_id": "cursor-move-0001",
@@ -670,11 +671,17 @@ def test_update_opportunity_requires_expected_updated_at_and_rejects_stale_write
 def test_update_recruitment_status_touches_only_the_status_and_deadline(tools, db):
     item = seed(db)
     new_deadline = (date.today() + timedelta(days=60)).isoformat()
+    original_checked_at = item.source_checked_at
+
+    schema = asyncio.run(mcp_server.mcp.list_tools())
+    required = next(tool for tool in schema if tool.name == "update_recruitment_status").inputSchema["required"]
+    assert "expected_updated_at" in required
 
     result = call(
         "update_recruitment_status",
         {
             "opportunity_id": item.id,
+            "expected_updated_at": item.updated_at.isoformat(),
             "recruitment_status": "締切",
             "deadline": new_deadline,
             "request_id": "status-update-0001",
@@ -686,7 +693,36 @@ def test_update_recruitment_status_touches_only_the_status_and_deadline(tools, d
     assert result["opportunity"]["deadline"] == new_deadline
     assert result["opportunity"]["description"] == "プロダクト開発を体験します。"
     assert result["opportunity"]["event_name"] == "開発インターン"
+    assert datetime.fromisoformat(result["opportunity"]["source_checked_at"].replace("Z", "+00:00")) == original_checked_at
     assert result["warnings"][0]["reason"] == "締め切りが未来ですが募集状況は「締切」です"
+
+
+def test_update_recruitment_status_rejects_a_stale_version(tools, db):
+    item = seed(db)
+    stale_version = item.updated_at.isoformat()
+    call(
+        "patch_opportunity",
+        {
+            "opportunity_id": item.id,
+            "changes": {"description": "先に保存された変更です。"},
+            "expected_updated_at": stale_version,
+            "request_id": "status-lock-patch-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    error = tool_error(
+        "update_recruitment_status",
+        {
+            "opportunity_id": item.id,
+            "expected_updated_at": stale_version,
+            "recruitment_status": "締切",
+            "request_id": "status-lock-stale-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert error["errors"][0]["field"] == "更新前の最終確認日時"
 
 
 def test_updates_return_soft_warnings_for_date_and_status_contradictions(tools, db):
@@ -696,6 +732,7 @@ def test_updates_return_soft_warnings_for_date_and_status_contradictions(tools, 
         "update_recruitment_status",
         {
             "opportunity_id": item.id,
+            "expected_updated_at": item.updated_at.isoformat(),
             "recruitment_status": "締切",
             "deadline": (today + timedelta(days=30)).isoformat(),
             "request_id": "soft-warning-closed-0001",
@@ -716,6 +753,7 @@ def test_updates_return_soft_warnings_for_date_and_status_contradictions(tools, 
         "update_recruitment_status",
         {
             "opportunity_id": item.id,
+            "expected_updated_at": closed["opportunity"]["updated_at"],
             "recruitment_status": "募集中",
             "deadline": (today - timedelta(days=1)).isoformat(),
             "request_id": "soft-warning-open-0001",
@@ -755,6 +793,7 @@ def test_update_recruitment_status_replays_instead_of_writing_twice(tools, db):
     item = seed(db)
     arguments = {
         "opportunity_id": item.id,
+        "expected_updated_at": item.updated_at.isoformat(),
         "recruitment_status": "締切",
         "request_id": "status-replay-0001",
         "client_name": "pytest",
@@ -774,6 +813,7 @@ def test_update_recruitment_status_rejects_an_unusable_date(tools, db):
         "update_recruitment_status",
         {
             "opportunity_id": item.id,
+            "expected_updated_at": item.updated_at.isoformat(),
             "recruitment_status": "締切",
             "deadline": "2026/09/01",
             "request_id": "status-bad-date-0001",
@@ -783,7 +823,12 @@ def test_update_recruitment_status_rejects_an_unusable_date(tools, db):
     assert error["errors"][0]["field"] == "締め切り"
     assert tool_error(
         "update_recruitment_status",
-        {"opportunity_id": "missing", "recruitment_status": "締切", "request_id": "status-missing-0001"},
+        {
+            "opportunity_id": "missing",
+            "expected_updated_at": item.updated_at.isoformat(),
+            "recruitment_status": "締切",
+            "request_id": "status-missing-0001",
+        },
     )["error"] == "not_found"
 
 
@@ -983,9 +1028,43 @@ def test_restore_rejects_a_new_active_duplicate(tools, db):
         },
     )
 
-    assert error["errors"][0]["reason"] == "同じ企業の同名イベントが公開中のため復元できません"
+    assert "対象学年・実施日・対象職種も一致" in error["errors"][0]["reason"]
     assert error["errors"][0]["existing"][0]["id"] == replacement["opportunity"]["id"]
     assert call("search_opportunity", {})["total"] == 1
+
+
+def test_restore_allows_a_same_named_posting_with_a_different_cohort(tools, db):
+    original = seed(db, graduation_years=["28卒"])
+    preview = call("preview_delete_opportunity", {"opportunity_id": original.id})
+    call(
+        "delete_opportunity",
+        {
+            "opportunity_id": original.id,
+            "expected_updated_at": preview["expected_updated_at"],
+            "request_id": "delete-before-cohort-restore-0001",
+            "client_name": "pytest",
+        },
+    )
+    call(
+        "add_opportunity",
+        write_args(
+            graduation_years=["29卒"],
+            source_url="https://example.com/source-29",
+            request_id="replacement-cohort-0001",
+        ),
+    )
+
+    restored = call(
+        "restore_opportunity",
+        {
+            "opportunity_id": original.id,
+            "request_id": "restore-different-cohort-0001",
+            "client_name": "pytest",
+        },
+    )
+
+    assert restored["success"] is True
+    assert call("search_opportunity", {})["total"] == 2
 
 
 def test_list_recent_writes_reports_successes_and_failures(tools, db):
@@ -1172,6 +1251,9 @@ def test_collection_target_schema_is_actionable_for_mcp_clients():
         "unreachable",
         "needs_review",
     ]
+    check_payload = schemas["record_collection_check"]["properties"]["payload"]
+    assert {"result", "source_url", "request_id"}.issubset(check_payload["required"])
+    assert "実際に確認" in check_payload["properties"]["source_url"]["description"]
 
 
 def test_mcp_lists_unmonitored_companies_and_adds_one_by_id(tools, db):

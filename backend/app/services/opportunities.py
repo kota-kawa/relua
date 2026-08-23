@@ -39,7 +39,13 @@ from app.services.companies import company_name_filter, find_company, get_or_cre
 from app.services.company_industries import ensure_company_industry
 from app.services.errors import FIELD_LABELS, master_error
 from app.services.masters import choices, resolve_many, resolve_one, resolve_sector, sectors_for_industry
-from app.services.normalization import normalize_common, normalize_company_name, normalize_source_url, normalize_tag
+from app.services.normalization import (
+    normalize_common,
+    normalize_company_name,
+    normalize_source_url,
+    normalize_tag,
+    source_url_is_allowed,
+)
 from app.services.serialization import detail_url, opportunity_dict, public_detail_url
 
 
@@ -1138,6 +1144,47 @@ def _collection_target_for_write(
     return target
 
 
+def _ensure_company_source_allowed(
+    db: Session,
+    *,
+    company: Company,
+    source_url: str,
+    target: CollectionTarget | None = None,
+) -> None:
+    """Enforce a company's active collection sources as its official-source allowlist.
+
+    Unmonitored companies have no curated trust anchor yet and retain the legacy denylist check.
+    Once a collection target exists, however, an agent cannot silently introduce an unrelated host
+    through an opportunity write.  Operators extend the allowlist explicitly with
+    add_collection_source/update_collection_source, both of which are audited writes.
+    """
+
+    target = target or db.scalar(
+        select(CollectionTarget)
+        .options(selectinload(CollectionTarget.sources))
+        .where(CollectionTarget.company_id == company.id)
+    )
+    if target is None:
+        return
+    allowed_urls = [source.url for source in target.sources if source.is_active]
+    if allowed_urls and source_url_is_allowed(source_url, allowed_urls):
+        return
+    raise DomainValidationError(
+        [
+            {
+                "field": FIELD_LABELS["source_url"],
+                "received": source_url,
+                "reason": "この企業の公式情報源allowlistに含まれないURLです",
+                "expected": allowed_urls,
+                "alternative": (
+                    "企業自身の公式ページであることを確認し、先にadd_collection_sourceで"
+                    "収集対象へ登録してください"
+                ),
+            }
+        ]
+    )
+
+
 def _record_collection_success(
     db: Session,
     *,
@@ -1288,6 +1335,20 @@ def write_opportunity(
         else None
     )
 
+    previous_source = (
+        item.normalized_source_url
+        if is_new or item.normalized_source_url is not None
+        else normalize_source_url(item.source_url)
+    )
+    source_changed = is_new or normalize_source_url(data.source_url) != previous_source
+    if source_changed:
+        _ensure_company_source_allowed(
+            db,
+            company=company,
+            source_url=data.source_url,
+            target=collection_target,
+        )
+
     scalar_fields = [
         "event_name",
         "deadline",
@@ -1373,6 +1434,7 @@ def update_recruitment_status(
     db: Session,
     *,
     opportunity_id: str,
+    expected_updated_at: datetime,
     recruitment_status: str,
     request_id: str,
     client_name: str,
@@ -1386,6 +1448,7 @@ def update_recruitment_status(
     """
     payload = {
         "opportunity_id": opportunity_id,
+        "expected_updated_at": _as_utc(expected_updated_at).isoformat(),
         "recruitment_status": recruitment_status,
         "deadline": deadline,
         "clear_deadline": clear_deadline,
@@ -1401,9 +1464,10 @@ def update_recruitment_status(
             raise DomainValidationError([_reused_request_id_error(request_id)])
         return _active_idempotency_target(db, previous.opportunity_id), True
 
-    item = get_opportunity(db, opportunity_id)
+    item = get_opportunity_for_update(db, opportunity_id)
     if item is None:
         raise LookupError("opportunity_not_found")
+    ensure_expected_updated_at(item, expected_updated_at)
 
     status = resolve_one(db, RecruitmentStatus, recruitment_status)
     if status is None:
@@ -1446,9 +1510,7 @@ def update_recruitment_status(
     before = opportunity_dict(item)
     item.status = status
     item.deadline = new_deadline
-    #: A status edit is still an agent reporting what the source says now, so it refreshes the stamp.
     item.updated_at = _next_version_timestamp(item)
-    item.source_checked_at = item.updated_at
     db.flush()
     json_response = jsonable_encoder(opportunity_dict(item))
 
@@ -1716,15 +1778,20 @@ def restore_opportunity(
             ]
         )
 
-    duplicates = find_exact_duplicates(
+    _ensure_company_source_allowed(db, company=item.company, source_url=item.source_url)
+
+    duplicates, _ = classify_duplicate_candidates(
         db,
         company_name=item.company.name,
         event_name=item.event_name,
+        graduation_years=[value.name for value in item.graduation_years],
+        event_start_date=item.event_start_date,
+        job_categories=[value.name for value in item.job_categories],
         exclude_id=item.id,
     )
     if duplicates:
         error = _duplicate_error(duplicates)
-        error["reason"] = "同じ企業の同名イベントが公開中のため復元できません"
+        error["reason"] = "同じ企業・同名イベントで、対象学年・実施日・対象職種も一致する募集が公開中のため復元できません"
         error["alternative"] = "公開中の登録を確認し、重複を解消してから復元してください"
         raise DomainValidationError([error])
 

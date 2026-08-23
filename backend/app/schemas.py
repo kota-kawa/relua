@@ -565,7 +565,10 @@ class CollectionCheckRequest(BaseModel):
             description="found=募集を発見、no_opening=募集中なし、unreachable=確認不能、needs_review=人の確認が必要。"
         ),
     ]
-    source_url: str | None = None
+    source_url: Annotated[
+        str,
+        Field(description="実際に確認したURL。foundでは募集のsource_url、その他では登録済み公式sourceを指定します。"),
+    ]
     opportunity_id: str | None = None
     note: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
     discovered_sources: Annotated[
@@ -590,10 +593,16 @@ class CollectionCheckRequest(BaseModel):
 
     @field_validator("source_url")
     @classmethod
-    def checked_source_url(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def checked_source_url(cls, value: str) -> str:
         return validate_source_host(validate_https_url(value) or value)
+
+    @model_validator(mode="after")
+    def result_matches_opportunity(self) -> "CollectionCheckRequest":
+        if self.result == "found" and self.opportunity_id is None:
+            raise ValueError("foundでは確認したopportunity_idを指定してください")
+        if self.result != "found" and self.opportunity_id is not None:
+            raise ValueError("opportunity_idはfoundの場合だけ指定できます")
+        return self
 
     @field_validator("note")
     @classmethod

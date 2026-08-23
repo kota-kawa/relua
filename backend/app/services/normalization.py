@@ -65,3 +65,31 @@ def normalize_source_url(value: str) -> str:
         doseq=True,
     )
     return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def source_host(value: str) -> str:
+    """Return the normalized hostname used by a company's official-source allowlist."""
+
+    host = (urlsplit(value.strip()).hostname or "").casefold().rstrip(".")
+    return host.removeprefix("www.")
+
+
+def source_url_is_allowed(value: str, allowed_urls: list[str]) -> bool:
+    """Accept an exact registered source or another page below the same official host.
+
+    Collection sources are deliberately the trust anchor.  The registered host and its child hosts
+    are accepted (``company.example`` and ``careers.company.example``), while parent and sibling
+    hosts require an explicit source entry.  This avoids broadening an allowlist entry for a hosted
+    recruitment service to that service's entire registrable domain, and avoids treating a host as
+    official merely because it is absent from the global aggregator denylist.
+    """
+
+    normalized = normalize_source_url(value)
+    host = source_host(value)
+    for allowed in allowed_urls:
+        if normalize_source_url(allowed) == normalized:
+            return True
+        allowed_host = source_host(allowed)
+        if host == allowed_host or host.endswith(f".{allowed_host}"):
+            return True
+    return False

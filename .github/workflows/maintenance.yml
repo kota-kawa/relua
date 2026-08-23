@@ -1,0 +1,75 @@
+name: Daily Maintenance
+
+on:
+  schedule:
+    # 02:15 JST. GitHub schedules are expressed in UTC and may start a few minutes late.
+    - cron: "15 17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relua-daily-maintenance
+  cancel-in-progress: false
+
+jobs:
+  purge-soft-deleted-opportunities:
+    name: Purge expired soft deletes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate maintenance secrets
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in SERVER_HOST SERVER_USER SERVER_SSH_KEY DEPLOY_PATH; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("${name}")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Required GitHub secrets are missing: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Configure SSH key
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "${SERVER_PORT:-22}" -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Run and verify cleanup
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          printf -v quoted_deploy_path '%q' "${DEPLOY_PATH}"
+          output="$(ssh -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            -p "${SERVER_PORT:-22}" "${SERVER_USER}@${SERVER_HOST}" \
+            "bash -seu -- ${quoted_deploy_path}" <<'REMOTE_SCRIPT'
+          cd "$1"
+          docker compose exec -T api python -m app.scripts.close_expired
+          REMOTE_SCRIPT
+          )"
+          printf '%s\n' "${output}"
+          if ! grep -Eq '^purged=[0-9]+$' <<<"${output}"; then
+            echo "::error::Cleanup did not return the expected completion marker"
+            exit 1
+          fi
+          echo "### Daily cleanup" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Completed: ${output}" >> "${GITHUB_STEP_SUMMARY}"

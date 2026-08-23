@@ -217,6 +217,7 @@ def test_confirm_only_check_refreshes_source_checked_at_without_touching_updated
             {
                 "result": "found",
                 "opportunity_id": item.id,
+                "source_url": item.source_url,
                 "request_id": "confirm-only-check-0001",
                 "client_name": "pytest",
             }
@@ -226,6 +227,103 @@ def test_confirm_only_check_refreshes_source_checked_at_without_touching_updated
     assert item.source_checked_at is not None
     assert item.source_checked_at > original_checked_at
     assert item.updated_at == original_updated_at
+
+
+def test_found_check_requires_the_opportunity_source_url(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社確認URL照合",
+            sources=[{"source_type": "recruit", "url": "https://example.com/check-source"}],
+            request_id="check-source-target-0001",
+        ),
+    )
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社確認URL照合",
+                "source_url": "https://example.com/check-source/posting",
+            }
+        ),
+        request_id="check-source-write-0001",
+        client_name="pytest",
+    )
+    original_checked_at = item.source_checked_at
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        record_collection_check(
+            db,
+            target_id=target.id,
+            payload=CollectionCheckRequest.model_validate(
+                {
+                    "result": "found",
+                    "opportunity_id": item.id,
+                    "source_url": "https://example.com/check-source/other",
+                    "request_id": "check-source-mismatch-0001",
+                    "client_name": "pytest",
+                }
+            ),
+        )
+
+    assert exc_info.value.errors[0]["field"] == "source_url"
+    assert item.source_checked_at == original_checked_at
+
+
+def test_non_found_check_requires_an_active_registered_source_url(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社確認元限定",
+            sources=[{"source_type": "recruit", "url": "https://example.com/registered"}],
+            request_id="registered-check-target-0001",
+        ),
+    )
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        record_collection_check(
+            db,
+            target_id=target.id,
+            payload=CollectionCheckRequest.model_validate(
+                {
+                    "result": "no_opening",
+                    "source_url": "https://unknown.example/unchecked",
+                    "request_id": "registered-check-mismatch-0001",
+                    "client_name": "pytest",
+                }
+            ),
+        )
+
+    assert "登録済み" in exc_info.value.errors[0]["reason"]
+
+
+def test_opportunity_source_must_match_the_company_official_allowlist(db):
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社公式ドメイン限定",
+            sources=[{"source_type": "recruit", "url": "https://careers.example.com/"}],
+            request_id="source-allowlist-target-0001",
+        ),
+    )
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "company_name": "株式会社公式ドメイン限定",
+                    "source_url": "https://unknown-job-board.example/posting",
+                }
+            ),
+            request_id="source-allowlist-write-0001",
+            client_name="pytest",
+            collection_target_id=target.id,
+        )
+
+    assert "allowlist" in exc_info.value.errors[0]["reason"]
 
 
 def test_collection_target_sonota_sector_resolves_to_its_own_industrys_row(db):
@@ -484,12 +582,31 @@ def test_check_status_maps_last_check_result(db, result, expected_status):
     )
     assert collection_target_dict(db, target)["check_status"] == "unreviewed"
 
+    check_payload = {
+        "result": result,
+        "source_url": f"https://example.com/status-{result}",
+        "request_id": f"status-check-{result}-0001",
+        "client_name": "pytest",
+    }
+    if result == "found":
+        opportunity, _ = write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "company_name": f"株式会社ステータス{result}",
+                    "source_url": f"https://example.com/status-{result}",
+                }
+            ),
+            request_id=f"status-opportunity-{result}-0001",
+            client_name="pytest",
+        )
+        check_payload["opportunity_id"] = opportunity.id
+
     record_collection_check(
         db,
         target_id=target.id,
-        payload=CollectionCheckRequest.model_validate(
-            {"result": result, "request_id": f"status-check-{result}-0001", "client_name": "pytest"}
-        ),
+        payload=CollectionCheckRequest.model_validate(check_payload),
     )
     refreshed = get_collection_target(db, target.id)
     assert collection_target_dict(db, refreshed)["check_status"] == expected_status

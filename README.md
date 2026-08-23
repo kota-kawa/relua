@@ -25,7 +25,7 @@
   - Bearerトークン認証、request IDによる冪等化、同名イベントの重複検出、成功・失敗監査ログ
   - ChatGPT・Claudeから接続するためのOAuth 2.1認可サーバー（動的クライアント登録、PKCE、リフレッシュトークン）
 - Alembic初期マイグレーション、固定値マスタ投入
-- 締め切り超過を「締切」に更新する運用ジョブ
+- 論理削除から30日後の完全削除を行う、監視可能な日次運用ジョブ
 - Docker Compose、GitHub Actions、バックエンド自動テスト
 
 依存ライブラリは実装時点の最新安定版を固定しています。TypeScriptとESLintだけは、Next.js 16.2.12が実際にビルド・lintできる最新互換版（TypeScript 6.0.3 / ESLint 9.39.5）です。TypeScript 7とESLint 10は現行Next.jsの利用するAPIに未対応のため採用していません。
@@ -123,7 +123,7 @@ https://<公開ホスト名>/mcp
 | `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
 | `preview_opportunity_patch` | 必要 | 部分更新を保存せず検証し、変更差分と警告を返す |
 | `patch_opportunity` | 必要 | 楽観ロック付きで指定項目だけを更新する |
-| `update_recruitment_status` | 必要 | 募集状況と締め切りだけを更新する |
+| `update_recruitment_status` | 必要 | 楽観ロック付きで募集状況と締め切りだけを更新する |
 | `verify_opportunity` | 必要 | 一次情報に変更がないことだけを記録し、最終確認日時を更新する |
 | `preview_delete_opportunity` | 必要 | 削除対象と公開表示・関連履歴への影響を保存せず確認する |
 | `delete_opportunity` | 必要 | 楽観ロック付きで募集情報を公開データから論理削除する |
@@ -140,7 +140,7 @@ https://<公開ホスト名>/mcp
 | `update_collection_target` | 必要 | 収集対象を部分更新または無効化する |
 | `add_collection_source` | 必要 | 収集対象へ企業公式ページを追加する |
 | `update_collection_source` | 必要 | 公式ページのURL・種類・有効状態を部分更新する |
-| `record_collection_check` | 必要 | 募集の有無や確認不能などの確認結果と次回確認日を記録する |
+| `record_collection_check` | 必要 | 確認URLを照合し、募集の有無や確認不能などの結果と次回確認日を記録する |
 
 `search_opportunity` の続きを取得するときは、応答の `next_cursor` を検索条件を変えずに次の呼び出しの `cursor` へ渡します。`next_cursor` が `null` になれば終端です。カーソルは検索開始時点と並び順を保持するため、取得済みの募集を途中で削除してもページ境界がずれません。
 
@@ -164,7 +164,7 @@ https://<公開ホスト名>/mcp
 PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ、MCPが勝手に企業を統合することはありません。
 別名の追加・削除は監査ログへ記録され、`request_id` により安全に再試行できます。
 
-`add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合は `update_recruitment_status` を使います。公式ページを再確認して内容が変わっていない場合は、登録済みの一次情報URLと確認日時を `verify_opportunity` へ渡してください。これは `source_checked_at` のみを更新し、監査ログでは状況更新と区別されます。
+`add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合も、`get_opportunity` の `updated_at` を `expected_updated_at` として `update_recruitment_status` へ渡します。公式ページを再確認して内容が変わっていない場合は、登録済みの一次情報URLと確認日時を `verify_opportunity` へ渡してください。これは `source_checked_at` のみを更新し、監査ログでは状況更新と区別されます。status更新自体は一次情報確認とは見なさず、`source_checked_at` を変更しません。
 
 書き込み・更新の応答に `warnings` が含まれる場合、保存自体は成功していますが公式情報を再確認してください。`締切` なのに締め切りまたは実施開始日が未来、`募集中` なのに締め切りまたは実施終了日が過去、といった日付と募集状況の矛盾を検出します。締切延長・追加募集・中止があり得るため、Reluaは警告だけを返し、状態を自動変更しません。
 
@@ -176,9 +176,9 @@ PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ�
 
 誤って削除した場合は、削除結果または `list_recent_writes` で確認できる募集情報IDを `restore_opportunity` へ渡します。元のUUIDと公開コードを維持するため、復元後は既存のブックマークと共有リンクも再び利用できます。削除と復元はいずれも `request_id` で冪等化されます。
 
-`source_url` には企業自身の採用ページなど一次情報を指定します。求人サイト・就活情報サイト・口コミサイトのURLは拒否されます。これらの掲載内容は各社が構築したデータベースであり、規約上も自動的な再利用が認められていないためです。自由記述の項目には出典の文章を転記せず、日程・対象・報酬などの事実だけを要約して記載し、担当者名などの個人名と個人宛の連絡先は含めません。
+`source_url` には企業自身の採用ページなど一次情報を指定します。求人サイト・就活情報サイト・口コミサイトのURLは拒否されます。さらに収集対象が登録済みの企業では、有効な `collection_sources` が企業別の公式source allowlistになります。同一URLまたは同じ公式ホスト配下以外のURLは拒否されるため、新しい公式ホストを使う場合は、確認後に `add_collection_source` で先に登録してください。未監視企業にも同じ保護を適用するには、募集登録より先に収集対象を作成します。自由記述の項目には出典の文章を転記せず、日程・対象・報酬などの事実だけを要約して記載し、担当者名などの個人名と個人宛の連絡先は含めません。
 
-同じ企業の同名イベントを新規登録しようとすると、既存の登録を示して拒否します。別日程・別コースとして意図的に分ける場合だけ、`add_opportunity` の `allow_duplicate` を `true` にしてください。
+同じ企業・同名イベントでも、対象卒業年・実施開始日・対象職種のいずれかが明確に異なる場合は別募集として保存し、確認用warningを返します。これらも一致するexact重複だけを拒否します。全く同じ日程・コースを意図的に複数登録する場合に限り、`add_opportunity` の `allow_duplicate` を `true` にしてください。復元も同じ2段階判定を使います。
 
 一次情報URLは、ホスト名の大文字小文字、末尾スラッシュ、フラグメント、既知の計測パラメータを除いて照合します。同じ公式ページに複数募集が掲載される場合があるため、URL一致は一律の登録拒否ではなく、既存募集を確認するための警告として扱います。
 
@@ -193,8 +193,8 @@ PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ�
 1. 既存の企業は `list_unmonitored_companies` でIDを確認し、`add_collection_target` の `company_id` で、所属業界、優先度、確認間隔、1件以上の企業公式ページを登録する。新規企業だけは `company_name` を指定する（両方は指定しない）
 2. `get_collection_queue` で未確認または次回確認期限を過ぎた企業を取得する
 3. 公式ページを確認し、`find_similar_opportunities` と `find_opportunities_by_source_url` を経て募集を追加または更新する（定期再確認対象は `募集予定`、`募集中`、`通年募集` のみ）
-4. 募集を追加・更新する場合は `collection_target_id` を渡し、募集と確認結果 `found` を同じトランザクションで記録する
-5. 募集がない場合は `record_collection_check` で `no_opening`、`unreachable`、`needs_review` のいずれかを記録する
+4. 募集を新規追加する場合は `collection_target_id` を渡し、募集と確認結果 `found` を同じトランザクションで記録する。既存募集の更新はこのIDを受け付けないため、確認結果を手順5で別途記録する
+5. `record_collection_check` へ実際に確認した `source_url` を必ず渡す。`found` では募集の `opportunity_id` とその募集自身の `source_url`、募集がない場合等では登録済みの有効な収集元URLと `no_opening`、`unreachable`、`needs_review` のいずれかを記録する
 
 収集対象の更新は部分更新です。省略した項目は維持され、`selection_reason` は明示的に `null` を指定すると解除されます。`industries` だけは例外で、指定した内容で分類を全置換します（業界を追加する場合は既存の業界も併せて送ります）。収集を止める場合はデータを削除せず、`update_collection_target` で `is_active` を `false` にします。公式ページも同様に `update_collection_source` で無効化できます。すべての書き込みは `request_id` で冪等化され、監査ログに記録されます。
 
@@ -232,11 +232,13 @@ QRコードはブラウザ内で生成します。URLフラグメントはサー
 
 運営者は毎日 `list_stale_opportunities` を確認してください。定期再確認対象は「募集予定」「募集中」「通年募集」に限られ、東京基準で `deadline < today` または `event_end_date < today` なのに募集状況が「募集中」の募集を最優先で返します。締切延長や追加募集の可能性があるため、Reluaはこの矛盾を自動で「締切」に変更しません。公式ページを確認し、変更がなければ `verify_opportunity`、変更があれば適切な更新ツールを実行してください。すでに「締切」などの終了状態になった募集は、この定期キューには戻りません。
 
-cronやコンテナ基盤のスケジューラーから次を1日1回実行してください。これはすでに論理削除した募集を、削除から30日後に完全削除します。期限超過だけで募集を論理削除することはありません。完全削除後は復元できません。収集確認履歴は残りますが、削除済み募集への参照は解除されます。
+default branchでは [Daily Maintenance](./.github/workflows/maintenance.yml) が毎日02:15（JST）にSSH経由で次のコマンドを実行します。これはすでに論理削除した募集を、削除から30日後に完全削除します。期限超過だけで募集を論理削除することはありません。完全削除後は復元できません。収集確認履歴は残りますが、削除済み募集への参照は解除されます。
 
 ```bash
 docker compose exec api python -m app.scripts.close_expired
 ```
+
+workflowはdeployと同じ `SERVER_HOST`、`SERVER_USER`、`SERVER_SSH_KEY`、`SERVER_PORT`（任意）、`DEPLOY_PATH` Secretsを使います。導入時はActions画面から `workflow_dispatch` で手動実行し、`purged=<件数>` が記録されることを確認してください。SSH、Compose、DB接続、完了markerのいずれかに問題があればworkflowが失敗します。GitHubのActions失敗通知を有効にし、Daily Maintenanceの履歴を実行監視の正本にします。サーバー側cronを重ねて設定する必要はありません。
 
 OAuthで接続中のクライアントを確認し、不要になった接続を切ります。
 

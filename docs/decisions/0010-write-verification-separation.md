@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Scope: 募集情報の更新・部分更新、`source_checked_at`、収集対象への確認記録
+- Amended by: [ADR-0013](./0013-official-source-allowlist-and-check-evidence.md)（確認URLと `opportunity_id` の必須条件を追加）
 
 ## Context
 

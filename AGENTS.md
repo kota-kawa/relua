@@ -48,6 +48,8 @@
 | [`docs/decisions/0003-local-browser-data-and-public-codes.md`](./docs/decisions/0003-local-browser-data-and-public-codes.md) | localStorage保存と公開コード共有の理由 |
 | [`docs/decisions/0004-company-identity-and-collection-model.md`](./docs/decisions/0004-company-identity-and-collection-model.md) | 企業同一性、複数業界、企業単位収集の理由 |
 | [`docs/decisions/0012-mcp-maintenance-eligibility.md`](./docs/decisions/0012-mcp-maintenance-eligibility.md) | MCPの定期保守対象を現行募集の状態に限定する理由 |
+| [`docs/decisions/0013-official-source-allowlist-and-check-evidence.md`](./docs/decisions/0013-official-source-allowlist-and-check-evidence.md) | 企業公式source allowlistと確認証跡の理由 |
+| [`docs/decisions/0014-scheduled-expiry-cleanup.md`](./docs/decisions/0014-scheduled-expiry-cleanup.md) | 完全削除を日次schedule化し監視する理由 |
 
 ## 変更時のルール
 

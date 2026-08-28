@@ -209,13 +209,7 @@ export function FilterPanel({ masters, params, total }: { masters: Masters; para
       const delta = input.getBoundingClientRect().top - anchor.top;
       const sheetBody = input.closest<HTMLElement>(".filter-sheet-body");
       if (sheetBody) sheetBody.scrollTop += delta;
-      else if (delta) {
-        const root = document.documentElement;
-        const previousBehavior = root.style.scrollBehavior;
-        root.style.scrollBehavior = "auto";
-        window.scrollBy(0, delta);
-        root.style.scrollBehavior = previousBehavior;
-      }
+      else if (delta) window.scrollBy(0, delta);
     }
     scrollAnchorRef.current = null;
   }, [fieldsKey, params]);

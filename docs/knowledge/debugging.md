@@ -115,6 +115,17 @@ MCPの公開エンドポイントは `/mcp` と `/mcp/` を同じ意味として
 - `.env.example`、`docker-compose.yml`、`frontend/Dockerfile`、`backend/app/config.py` の同名・類似名を突き合わせる。
 - buildは通るが実行時だけAPI取得に失敗する場合、build argではなく runner の `API_INTERNAL_URL` / `API_INTERNAL_TOKEN` が欠けていないか確認する。
 
-## 7. 知識を追記するとき
+## 7. 画面遷移時のスクロール
+
+一覧の絞り込み・表示切替・ページ送りは同じ画面のURLだけを変えるため、遷移後にどこへスクロールするかがApp Routerの実装依存になります。挙動がおかしいときは次を順に確認します。
+
+- スクロールイベントの発生回数を数える。1回なら即時移動、数十回ならアニメーションが走っている。
+- `html { scroll-behavior: smooth }` を置くと、App Routerは `<html data-scroll-behavior="smooth">` が無いかぎり遷移中にそれを止められない（devのconsoleに警告が出る）。差し替え中の内容の上を長距離スクロールするので、document のスクローラーは `auto` のままにする。この指定はbrowserのback/forward位置復元も遅延アニメーション化する。
+- ハッシュの飛び先が `position: sticky` / `fixed` だと、routerはその要素を読み飛ばして次の兄弟要素へ落ちる。sticky barそのものにidを付けると、結果セクションの先頭がbarの裏に潜る。飛び先はflow内に置いた高さ0の要素にする。
+- URLに残ったハッシュは、そのhistory entryへ戻るたび再適用され、読み手が実際にいたスクロール位置の復元を上書きする。一度きりの移動はクリック時に `scrollIntoView` し、リンクは `scroll={false}` にしてURLにハッシュを残さない。
+- 遷移が `loading.tsx` の表示中に確定すると、ハッシュの飛び先要素がまだDOMに無く、documentの先頭へ落ちる。skeleton側にも同じidを同じ位置で持たせる。
+- skeletonと実際のheader/hero/barの高さがずれていると、差し替えの瞬間にその差だけ画面が跳ねる。幅ごとに実測して合わせる。
+
+## 8. 知識を追記するとき
 
 同じ問題を再び切り分ける価値がある場合だけ、原因の一般化、再現条件、確認先、回避策を追記します。作業日時、担当者、特定環境のログ、修正しただけの履歴は残しません。

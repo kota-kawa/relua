@@ -80,6 +80,10 @@ export function selected(params: Record<string, string | string[] | undefined>, 
   return Array.isArray(current) ? current.includes(value) : current === value;
 }
 
+/** Paging links. Deliberately free of the `#listings` anchor: a hash stays in
+ *  the URL for the life of the entry, so the browser would replay it instead of
+ *  the reader's own position every time they came back to this page. Pagination
+ *  scrolls to the results itself — see components/pagination.tsx. */
 export function withQuery(
   params: Record<string, string | string[] | undefined>,
   changes: Record<string, string | undefined>,

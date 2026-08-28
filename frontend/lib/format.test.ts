@@ -52,6 +52,12 @@ describe("public listing links", () => {
     expect(withFilter(params, "industry", "industry-01")).toBe("/?industry=industry-01#listings");
     expect(withQuery(params, { page: "2" })).toBe("/?page=2");
   });
+
+  /* Pagination scrolls to the results from its click handler instead. A hash
+     would outlive the click and be replayed on every return to the page. */
+  it("keeps paging links free of the listing anchor", () => {
+    expect(withQuery({ q: "AI", view: "list" }, { page: "3" })).toBe("/?q=AI&view=list&page=3");
+  });
 });
 
 describe("deadlineCompactLabel", () => {

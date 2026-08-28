@@ -16,7 +16,13 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+/* The document scroller is deliberately left on `auto`. Every jump to
+   `#listings` is a navigation to a different URL, so the scroll happens while
+   the results underneath it are being replaced — animating it means watching
+   the page glide across content that is no longer the content it started on.
+   The same rule animates the browser's back/forward scroll restoration, which
+   should be instant. Give an individual scroller `scroll-behavior: smooth` if
+   it ever needs it; do not put it back on the document. */
 body {
   margin: 0;
   color: var(--ink-deep);
@@ -132,6 +138,10 @@ button, summary, select { cursor: pointer; }
 .quick-filters a.active svg { color: var(--orange); }
 
 /* Discovery navigation */
+/* Zero-height target for `#listings`, sitting in normal flow immediately above
+   the sticky bar so a jump to the listings puts the bar back at the top of the
+   viewport with the results starting right below it. */
+.listings-anchor { height: 0; }
 .discovery-bar {
   position: sticky; top: 0; z-index: 9; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.94);
   box-shadow: 0 8px 24px rgba(16,26,39,.035); backdrop-filter: blur(16px);
@@ -941,8 +951,10 @@ button, summary, select { cursor: pointer; }
   .loading-layout { display: block; }
   .loading-filter { display: none; }
   .loading-grid { grid-template-columns: 1fr; }
-  .loading-hero { height: 230px; }
-  .loading-tabs { height: 56px; }
+  /* Matched to the real hero and discovery bar at this width so swapping the
+     skeleton for the loaded page does not shift what is already on screen. */
+  .loading-hero { height: 256px; }
+  .loading-tabs { height: 70px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

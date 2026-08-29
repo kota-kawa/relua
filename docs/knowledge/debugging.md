@@ -136,6 +136,15 @@ MCPの公開エンドポイントは `/mcp` と `/mcp/` を同じ意味として
 - 登場アニメーションが再生されないときは、要素が作り直されているかを見る。keyが同じなら React はDOMを再利用し、CSS animationは再実行されない。
 - `prefers-reduced-motion: reduce` の一括リセットは `animation-duration` しか縮めない。`animation-delay` と `animation-fill-mode` は残るので、`opacity: 0` から始まる登場は明示的に `animation: none` で止める。止め忘れると内容が見えないまま残りうる。
 
-## 9. 知識を追記するとき
+## 9. スクローラーを増やしたときに出る余白
+
+`overflow: auto` を新しく付けた要素に、中身が無いのにスクロール量が生まれることがあります。`scrollHeight - clientHeight` が実際の最後の子要素の位置と合わないときは、絶対配置の子孫を疑います。
+
+- `position: absolute` の要素を切り取れるのは、その要素の包含ブロック（`position` が `static` 以外の最も近い祖先）から先の `overflow` だけ。あいだに `overflow: hidden` の祖先があっても、そこが包含ブロックでなければ素通りする。
+- 視覚的に隠したcheckbox（`position: absolute; opacity: 0`）を折り畳み領域の中に置くと、これが起きる。折り畳みは高さ0でも、checkboxは元の位置に居残り、包含ブロックである外側のスクローラーの高さに算入される。
+- 直し方は、行そのものに `position: relative` を付けて包含ブロックを行に閉じること。スクローラー側で `overflow: hidden` を足しても、包含ブロックが変わらなければ効かない。
+- 確認は、スクローラー内の全要素の `getBoundingClientRect().bottom` を content box の下端と比べて、はみ出しているものを列挙するのが速い。
+
+## 10. 知識を追記するとき
 
 同じ問題を再び切り分ける価値がある場合だけ、原因の一般化、再現条件、確認先、回避策を追記します。作業日時、担当者、特定環境のログ、修正しただけの履歴は残しません。

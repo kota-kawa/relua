@@ -209,8 +209,12 @@ export function FilterPanel({ masters, params, total }: { masters: Masters; para
       .find((candidate) => candidate.name === anchor.name && candidate.value === anchor.value);
     if (input) {
       const delta = input.getBoundingClientRect().top - anchor.top;
-      const sheetBody = input.closest<HTMLElement>(".filter-sheet-body");
-      if (sheetBody) sheetBody.scrollTop += delta;
+      /* Both filter surfaces are bounded scrollers, so a group opening or
+         closing shifts the row the user just clicked without the page moving at
+         all — the correction belongs to whichever scroller owns the row. The
+         window is the fallback for a panel short enough not to scroll. */
+      const scroller = input.closest<HTMLElement>(".filter-sheet-body, .filter-panel");
+      if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop += delta;
       else if (delta) window.scrollBy(0, delta);
     }
     scrollAnchorRef.current = null;

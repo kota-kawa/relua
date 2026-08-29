@@ -67,7 +67,17 @@ Next.js frontend              FastAPI backend
 
 `app/page.tsx` は結果ブロックに検索条件由来の `key` を渡します。同じ画面のURLだけが変わる遷移ではDOMが再利用されるため、これが無いと新しい結果が動きなく差し替わります。
 
-### 2.4 ブラウザ内データ
+### 2.4 一覧画面のスクロール
+
+PC幅（921px以上）の一覧画面には独立したスクローラーが2つあります。結果側はページ本体のスクロールをそのまま使い、絞り込みパネルだけが自分の内側をスクロールします。
+
+- `.filter-panel` は `--discovery-bar-h` の分だけ下げた位置に `position: sticky` で止まり、`max-height` を `100dvh` からその高さ分引いた値に制限する。パネルは結果より高くなりうるので、これが無いと下端が画面外に固定され、ページを最後までスクロールしても届かない。
+- `overscroll-behavior: contain` で、絞り込みの上のホイールは末尾に達してもページへ伝播させない。結果の上のホイールはページだけを動かす。
+- `--discovery-bar-h` は sticky bar の高さの正本で、`.discovery-inner` の `min-height` とパネルの停止位置の両方が読む。片方だけ変えるとパネルがbarの裏に潜る。
+- 920px以下ではこの列ごと隠れ、絞り込みは `.filter-sheet`（bottom sheet）に移る。スクロールを閉じ込める役割は `.filter-sheet-body` が持つ。
+- 絞り込みの開閉で高さが変わったときの位置補正（`components/filter-panel.tsx`）は、行を含むスクローラー側を動かす。パネルもシートも自前のスクローラーなので、windowを動かすと画面が跳ねる。
+
+### 2.5 ブラウザ内データ
 
 [`frontend/lib/local-data.ts`](./frontend/lib/local-data.ts) が保存方式の正本です。
 

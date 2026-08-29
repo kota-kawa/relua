@@ -25,6 +25,13 @@
   --dur-enter: .42s;
   /* Gap between neighbours in an entrance cascade. See lib/motion.ts. */
   --stagger-step: 34ms;
+
+  /* Height of the sticky discovery bar, its bottom border included. The bar
+     sizes itself from this and the desktop filter panel parks below it, so the
+     two can never disagree about where the bar ends. Desktop figure: under
+     640px the bar wraps to two rows when filter chips are present, and the
+     desktop panel is hidden there anyway. */
+  --discovery-bar-h: 65px;
 }
 
 * { box-sizing: border-box; }
@@ -213,7 +220,7 @@ button, summary, select { cursor: pointer; }
   position: sticky; top: 0; z-index: 9; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.94);
   box-shadow: 0 8px 24px rgba(16,26,39,.035); backdrop-filter: blur(16px);
 }
-.discovery-inner { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 11px 0; }
+.discovery-inner { min-height: calc(var(--discovery-bar-h) - 1px); display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 11px 0; }
 .filter-summary { margin: 0; color: var(--muted); font-size: 13px; }
 .filter-summary strong { color: var(--ink); font-family: Georgia, serif; font-size: 16px; }
 /* Shown only on mobile, where the chips move to their own row and would
@@ -258,8 +265,32 @@ button, summary, select { cursor: pointer; }
 .view-list .shell, .view-calendar .shell { width: min(1300px, calc(100% - 48px)); }
 .view-list .result-layout, .view-calendar .result-layout { grid-template-columns: 210px minmax(0,1fr); gap: 34px; }
 .result-layout { display: grid; grid-template-columns: 232px minmax(0,1fr); gap: 48px; align-items: start; }
-.filter-panel { position: sticky; top: 24px; }
-.filter-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-bottom: 17px; border-bottom: 2px solid var(--ink); }
+/* The filter column scrolls on its own.
+   The full filter set is taller than most laptop viewports, and as a plain
+   sticky block its lower half had nowhere to go: the page stops scrolling when
+   the results end, so the last groups stayed below the fold permanently.
+   Bounding the panel to the band between the discovery bar and the bottom of
+   the window turns it into its own scroller, and `overscroll-behavior: contain`
+   stops a wheel over the filters from spilling into the page when it bottoms
+   out. The two columns then move independently: filters over the filters,
+   results over the results. */
+.filter-panel {
+  position: sticky;
+  top: calc(var(--discovery-bar-h) + 20px);
+  max-height: calc(100dvh - var(--discovery-bar-h) - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Padding + matching negative margin park the scrollbar in the column gap
+     rather than narrowing the options; the 4px on the left is room for the
+     checkbox focus ring, which the new scroll container would otherwise clip. */
+  padding: 0 12px 4px 4px;
+  margin: 0 -12px 0 -4px;
+  scrollbar-width: thin;
+  scrollbar-color: #cfcac3 transparent;
+}
+/* Stays put while the groups scroll under it, so the heading — and the
+   "更新中…" status that appears beside it — is always in view. */
+.filter-title { position: sticky; top: 0; z-index: 1; background: var(--paper); display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-bottom: 17px; border-bottom: 2px solid var(--ink); }
 .filter-title > span { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800; }
 .filter-updating { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 700; }
 .filter-group { margin: 0; padding: 17px 0; border: 0; border-bottom: 1px solid var(--line); }
@@ -300,7 +331,13 @@ button, summary, select { cursor: pointer; }
 .filter-more { margin-top: 13px; }
 .filter-more > summary { color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer; }
 .filter-more > .filter-options { margin-top: 12px; }
-.check-row { display: flex; align-items: center; gap: 10px; color: #454c56; font-size: 13px; cursor: pointer; }
+/* `position: relative` is load-bearing: it makes each row the containing block
+   for its own visually-hidden checkbox. Without it those absolute boxes belong
+   to the sticky filter panel instead, which puts the ones inside a collapsed
+   sector list outside the reach of that list's `overflow: hidden` — they then
+   count towards the panel's scrollable height and give its new scrollbar ~115px
+   of travel over nothing. */
+.check-row { position: relative; display: flex; align-items: center; gap: 10px; color: #454c56; font-size: 13px; cursor: pointer; }
 .check-row input { position: absolute; opacity: 0; pointer-events: none; }
 .custom-check { position: relative; width: 16px; height: 16px; border: 1px solid #adb2b8; border-radius: 3px; background: white; transition: .15s; }
 .check-row input:checked + .custom-check { border-color: var(--ink); background: var(--ink); }
@@ -977,7 +1014,8 @@ button, summary, select { cursor: pointer; }
   .quick-filters { flex-wrap: nowrap; overflow-x: auto; margin: 14px -13px 0; padding: 2px 13px; scrollbar-width: none; }
   .quick-filters::-webkit-scrollbar { display: none; }
   .quick-filters a { flex: none; }
-  .discovery-inner { width: calc(100% - 18px); min-height: 56px; gap: 10px; }
+  :root { --discovery-bar-h: 57px; }
+  .discovery-inner { width: calc(100% - 18px); gap: 10px; }
   /* With chips present the bar becomes two rows: sharing one line clipped the
      chips (and their remove buttons) behind the view switcher. */
   .discovery-inner:has(.active-filters) { flex-wrap: wrap; gap: 4px 10px; }

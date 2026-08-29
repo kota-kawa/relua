@@ -35,10 +35,9 @@ from app.services.company_industries import (
     company_industries,
     company_industry_dict,
     primary_company_industry,
+    resolve_company_industries,
     set_company_industries,
 )
-from app.services.errors import master_error
-from app.services.masters import choices, resolve_one, resolve_sector
 from app.services.normalization import normalize_source_url, source_url_is_allowed
 from app.services.opportunities import RECONFIRMABLE_RECRUITMENT_STATUSES, DomainValidationError
 from app.services.serialization import detail_url, master_dict
@@ -580,47 +579,12 @@ def _ensure_tier_one_capacity(db: Session) -> None:
         )
 
 
-def _resolve_classification(
-    db: Session, *, industry_value: str, sector_value: str | None
-) -> tuple[Industry, Sector | None]:
-    industry = resolve_one(db, Industry, industry_value)
-    if industry is None:
-        raise DomainValidationError([master_error("industry", industry_value, choices(db, Industry))])
-    sector = None
-    if sector_value is not None:
-        sector = resolve_sector(db, industry_id=industry.id, value=sector_value)
-        if sector is None:
-            available = list(
-                db.scalars(
-                    select(Sector.name)
-                    .where(Sector.industry_id == industry.id, Sector.is_active.is_(True))
-                    .order_by(Sector.sort_order, Sector.id)
-                )
-            )
-            raise DomainValidationError([master_error("sector", sector_value, available)])
-    return industry, sector
-
-
 def _resolve_classifications(
     db: Session, entries: list[CompanyIndustryInput]
 ) -> list[tuple[Industry, Sector | None]]:
-    resolved = []
-    seen: set[int] = set()
-    for entry in entries:
-        industry, sector = _resolve_classification(db, industry_value=entry.industry, sector_value=entry.sector)
-        if industry.id in seen:
-            raise DomainValidationError(
-                [
-                    {
-                        "field": "業界",
-                        "received": entry.industry,
-                        "reason": "同じ業界を重複して指定できません",
-                        "expected": "業界ごとに1件",
-                    }
-                ]
-            )
-        seen.add(industry.id)
-        resolved.append((industry, sector))
+    resolved, errors = resolve_company_industries(db, entries)
+    if errors:
+        raise DomainValidationError(errors)
     return resolved
 
 

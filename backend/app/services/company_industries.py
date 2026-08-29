@@ -6,6 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Company, CompanyIndustry, Industry, Sector
+from app.schemas import CompanyIndustryInput
+from app.services.errors import master_error
+from app.services.masters import choices, resolve_one, resolve_sector
 from app.services.serialization import master_dict
 
 
@@ -27,6 +30,47 @@ def company_industry_dict(row: CompanyIndustry) -> dict[str, Any]:
         "sector": master_dict(row.sector) if row.sector else None,
         "is_primary": row.is_primary,
     }
+
+
+def resolve_company_industries(
+    db: Session, entries: list[CompanyIndustryInput]
+) -> tuple[list[tuple[Industry, Sector | None]], list[dict[str, Any]]]:
+    """Resolve a complete category list and return all validation errors without mutating data."""
+
+    resolved: list[tuple[Industry, Sector | None]] = []
+    errors: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for entry in entries:
+        industry = resolve_one(db, Industry, entry.industry)
+        if industry is None:
+            errors.append(master_error("industry", entry.industry, choices(db, Industry)))
+            continue
+
+        sector = resolve_sector(db, industry_id=industry.id, value=entry.sector) if entry.sector else None
+        if entry.sector and sector is None:
+            available = list(
+                db.scalars(
+                    select(Sector.name)
+                    .where(Sector.industry_id == industry.id, Sector.is_active.is_(True))
+                    .order_by(Sector.sort_order, Sector.id)
+                )
+            )
+            errors.append(master_error("sector", entry.sector, available))
+            continue
+
+        if industry.id in seen:
+            errors.append(
+                {
+                    "field": "業界",
+                    "received": entry.industry,
+                    "reason": "同じ業界を重複して指定できません",
+                    "expected": "業界ごとに1件",
+                }
+            )
+            continue
+        seen.add(industry.id)
+        resolved.append((industry, sector))
+    return resolved, errors
 
 
 def primary_company_industry(rows: list[CompanyIndustry]) -> CompanyIndustry | None:
@@ -106,4 +150,3 @@ def set_company_industries(
         row.is_primary = industry.id == primary_industry_id
     db.flush()
     return company_industries(db, company.id)
-

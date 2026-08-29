@@ -21,6 +21,12 @@ from app.models import (
     CompanyRequestRecord,
     Opportunity,
 )
+from app.schemas import CompanyIndustryInput
+from app.services.company_industries import (
+    company_industry_dict,
+    resolve_company_industries,
+    set_company_industries,
+)
 from app.services.normalization import normalize_company_name
 
 CompanyMatchType = Literal["canonical_exact", "alias_exact", "partial", "fuzzy"]
@@ -50,6 +56,10 @@ def company_identity_dict(company: Company) -> dict[str, Any]:
             {"id": alias.id, "alias": alias.alias, "normalized_alias": alias.normalized_alias}
             for alias in sorted(company.aliases, key=lambda item: (item.normalized_alias, item.id))
         ],
+        "industries": [
+            company_industry_dict(row)
+            for row in sorted(company.industries, key=lambda item: (not item.is_primary, item.id))
+        ],
     }
 
 
@@ -74,6 +84,62 @@ def get_or_create_company(db: Session, name: str) -> Company:
     db.add(company)
     db.flush()
     return company
+
+
+def replace_company_industries(
+    db: Session,
+    *,
+    company_id: int,
+    entries: list[CompanyIndustryInput],
+    request_id: str,
+    client_name: str,
+) -> tuple[Company, bool]:
+    """Replace an existing company's complete category list atomically and idempotently."""
+
+    operation = "company_industries_update"
+    request_hash = _request_hash(
+        operation,
+        {
+            "company_id": company_id,
+            "industries": [entry.model_dump(mode="json") for entry in entries],
+        },
+    )
+    replayed = _replayed_company(db, request_id=request_id, operation=operation, request_hash=request_hash)
+    if replayed is not None:
+        return replayed, True
+
+    company = db.get(Company, company_id)
+    if company is None:
+        raise LookupError("company_not_found")
+    resolved, errors = resolve_company_industries(db, entries)
+    if errors:
+        raise CompanyIdentityValidationError(errors)
+
+    # A posting written earlier in this session may have added a classification after the Company's
+    # select-in-loaded relationship was populated. Refresh it so the audit snapshot includes every
+    # category that currently belongs to the company.
+    db.expire(company, ["industries"])
+    before = company_identity_dict(company)
+    set_company_industries(db, company=company, classifications=resolved)
+    db.expire(company, ["industries"])
+    _remember_request(
+        db,
+        request_id=request_id,
+        operation=operation,
+        request_hash=request_hash,
+        company_id=company.id,
+    )
+    db.flush()
+    _audit_identity(
+        db,
+        action=operation,
+        company=company,
+        request_id=request_id,
+        client_name=client_name,
+        before=before,
+    )
+    db.commit()
+    return company, False
 
 
 def _best_name(company: Company, normalized_query: str) -> tuple[str, float]:

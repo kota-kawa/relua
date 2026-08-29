@@ -1,8 +1,8 @@
-import Link from "next/link";
-
 import { BookmarkButton } from "@/components/bookmark-button";
 import { ArrowRight, CalendarDays, MapPin } from "@/components/icons";
+import { NavLink } from "@/components/nav-link";
 import { daysUntil, deadlineChipLabel, formatDate } from "@/lib/format";
+import { stagger } from "@/lib/motion";
 import type { Opportunity } from "@/lib/types";
 
 function urgencyClass(deadline: string | null) {
@@ -12,11 +12,13 @@ function urgencyClass(deadline: string | null) {
   return "";
 }
 
-export function OpportunityCard({ item }: { item: Opportunity }) {
+/** `index` is the card's position in its grid, which sets its place in the
+    entrance cascade. */
+export function OpportunityCard({ item, index = 0 }: { item: Opportunity; index?: number }) {
   const sourceCheckedAt = item.source_checked_at ?? item.updated_at;
 
   return (
-    <article className="opportunity-card">
+    <article className="opportunity-card" style={stagger(index)}>
       <div className="card-bookmark"><BookmarkButton id={item.id} compact /></div>
       <div className="card-topline">
         <div className="card-badges">
@@ -30,7 +32,7 @@ export function OpportunityCard({ item }: { item: Opportunity }) {
           the event name stays the heading the page outline and search rely on. */}
       <p className="company-name">{item.company.name}</p>
       {/* The link is stretched over the whole card, so the card itself is the target. */}
-      <h2><Link className="card-link" href={`/opportunities/${item.id}`}>{item.event_name}</Link></h2>
+      <h2><NavLink className="card-link" href={`/opportunities/${item.id}`}>{item.event_name}</NavLink></h2>
 
       {/* Eligibility is the first thing a student checks, so it sits with the title. */}
       <div className="card-audience">

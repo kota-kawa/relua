@@ -8,7 +8,12 @@ import { Check } from "@/components/icons";
 const TOAST_EVENT = "relua:toast";
 
 type ToastDetail = { message: string; actionLabel?: string; actionHref?: string };
-type Toast = ToastDetail & { id: number };
+type Toast = ToastDetail & { id: number; leaving?: boolean };
+
+/** How long the confirmation stays put before it starts to go. */
+const VISIBLE_MS = 3600;
+/** Matches the leaving transition in globals.css. */
+const LEAVE_MS = 220;
 
 /** Fire-and-forget: any client component can announce a result without wiring state up the tree. */
 export function showToast(message: string, action?: { label: string; href: string }) {
@@ -23,18 +28,27 @@ export function Toaster() {
 
   useEffect(() => {
     let counter = 0;
-    let timer: number | undefined;
+    let timers: number[] = [];
     function handleToast(event: Event) {
       const detail = (event as CustomEvent<ToastDetail>).detail;
       counter += 1;
-      setToast({ id: counter, ...detail });
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => setToast(null), 3600);
+      const id = counter;
+      setToast({ id, ...detail });
+      timers.forEach(window.clearTimeout);
+      /* Two steps rather than one: the toast is marked as leaving, plays its
+         exit, and only then leaves the tree. Both steps check the id so a
+         newer toast is never cut short by the previous one's timers. */
+      timers = [
+        window.setTimeout(() => {
+          setToast((current) => (current?.id === id ? { ...current, leaving: true } : current));
+          timers.push(window.setTimeout(() => setToast((current) => (current?.id === id ? null : current)), LEAVE_MS));
+        }, VISIBLE_MS),
+      ];
     }
     window.addEventListener(TOAST_EVENT, handleToast);
     return () => {
       window.removeEventListener(TOAST_EVENT, handleToast);
-      window.clearTimeout(timer);
+      timers.forEach(window.clearTimeout);
     };
   }, []);
 
@@ -42,7 +56,7 @@ export function Toaster() {
     <div className="toast-region" role="status" aria-live="polite">
       {toast && (
         /* Keyed by id so repeated toasts restart the entrance animation. */
-        <div key={toast.id} className="toast">
+        <div key={toast.id} className={`toast${toast.leaving ? " leaving" : ""}`}>
           <Check size={16} aria-hidden="true" />
           <span>{toast.message}</span>
           {toast.actionLabel && toast.actionHref && (

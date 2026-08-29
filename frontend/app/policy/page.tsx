@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 
 export default function Policy() {
   return (
-    <main className="legal-page">
+    <main className="legal-page page-enter">
       <section className="legal-hero">
         <div className="hex-field" aria-hidden="true" />
         <div className="shell legal-hero-inner">

@@ -3,6 +3,7 @@ import Script from "next/script";
 
 import { Footer } from "@/components/footer";
 import { Header } from "@/components/header";
+import { RouteProgress } from "@/components/route-progress";
 import { Toaster } from "@/components/toast";
 
 import "./globals.css";
@@ -50,6 +51,7 @@ function gtag(){dataLayer.push(arguments);}
 gtag('js', new Date());
 gtag('config', 'G-M4K571GKCX');`}
         </Script>
+        <RouteProgress />
         <Header />
         {children}
         <Footer />

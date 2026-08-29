@@ -28,7 +28,7 @@ function HexIcon({ children }: { children: React.ReactNode }) {
 
 export default function About() {
   return (
-    <main className="about-page">
+    <main className="about-page page-enter">
       <section className="about-hero">
         <div className="hex-field" aria-hidden="true" />
         <div className="shell about-hero-inner">

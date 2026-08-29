@@ -32,7 +32,7 @@ export function SharedOpportunityList() {
     });
   }, []);
   return (
-    <main className="local-page shared-page">
+    <main className="local-page shared-page page-enter">
       <div className="shell">
         <header className="local-page-header">
           <p className="eyebrow"><Share2 size={15} /> SHARED LIST</p>
@@ -54,7 +54,7 @@ export function SharedOpportunityList() {
           </div>
         )}
         {notice && <p className="local-notice"><Check size={16} /> {notice}</p>}
-        {loading ? <p className="local-empty">読み込み中…</p> : items.length ? <div className="card-grid">{items.map((item) => <OpportunityCard key={item.id} item={item} />)}</div> : <div className="local-empty"><p>表示できる募集がありません。</p><Link href="/">募集を探す</Link></div>}
+        {loading ? <p className="local-empty">読み込み中…</p> : items.length ? <div className="card-grid">{items.map((item, index) => <OpportunityCard key={item.id} item={item} index={index} />)}</div> : <div className="local-empty"><p>表示できる募集がありません。</p><Link href="/">募集を探す</Link></div>}
       </div>
     </main>
   );

@@ -15,6 +15,7 @@ import {
   valuesOf,
   withoutAllFilters,
 } from "@/lib/format";
+import { useReportNavigation } from "@/lib/navigation-progress";
 import type { MasterItem, Masters, SearchParams } from "@/lib/types";
 
 function CheckboxGroup({
@@ -178,6 +179,7 @@ export function FilterPanel({ masters, params, total }: { masters: Masters; para
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [sheetOpen, setSheetOpen] = useState(false);
+  useReportNavigation(isPending);
   const sheetRef = useRef<HTMLDialogElement>(null);
   const scrollAnchorRef = useRef<{ surface: string; name: string; value: string; top: number } | null>(null);
   const fieldsKey = FILTER_KEYS.map((key) => valuesOf(params, key).join(",")).join("|");

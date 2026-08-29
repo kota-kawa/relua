@@ -1,6 +1,5 @@
-import Link from "next/link";
-
 import { X } from "@/components/icons";
+import { NavLink } from "@/components/nav-link";
 import { FILTER_KEYS, hasDefaultOpenStatus, labelledSectors, valuesOf, withoutAllFilters, withoutFilter } from "@/lib/format";
 import type { MasterItem, Masters, SearchParams } from "@/lib/types";
 
@@ -67,25 +66,25 @@ export function ActiveFilters({ masters, params, total }: { masters: Masters; pa
         <ul>
           {query && (
             <li>
-              <Link href={withoutFilter(params, "q", query)}>
+              <NavLink href={withoutFilter(params, "q", query)}>
                 <b>キーワード</b> {query}
                 <X size={13} aria-label="この条件を外す" />
-              </Link>
+              </NavLink>
             </li>
           )}
           {chips.map((chip) => (
             <li key={`${chip.key}-${chip.slug}`}>
-              <Link href={withoutFilter(params, chip.key, chip.slug)}>
+              <NavLink href={withoutFilter(params, chip.key, chip.slug)}>
                 <b>{chip.group}</b> {chip.name}
                 <X size={13} aria-label="この条件を外す" />
-              </Link>
+              </NavLink>
             </li>
           ))}
         </ul>
         {chips.length > 0 && (
-          <Link className="clear-all" href={withoutAllFilters(params)}>
+          <NavLink className="clear-all" href={withoutAllFilters(params)}>
             すべて解除
-          </Link>
+          </NavLink>
         )}
       </div>
     </>

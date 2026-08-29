@@ -49,7 +49,25 @@ Next.js frontend              FastAPI backend
 | `/about`, `/terms`, `/policy` | 各 `page.tsx` | サービス説明、利用規約、プライバシー説明 |
 | `/sitemap.xml`, `/robots.txt` | `sitemap.ts`, `robots.ts` | SEO用の公開URL |
 
-### 2.3 ブラウザ内データ
+### 2.3 遷移中の表示とモーション
+
+遷移のあいだ何が見えているかは、`loading.tsx` の有無で決まります。
+
+- 同じ画面のURLだけを変える遷移（絞り込み・並び替え・表示切替・ページ送り）では、routerは新しい結果が揃うまで今の画面を出したままにする。`app/loading.tsx` は表示されない。押した瞬間に何も起きないように見えるため、フィードバックは自前で出す。
+- 別ルートへの遷移（詳細ページなど）では、そのルート直近の `loading.tsx` が即座に出る。skeleton自体がフィードバックなので、進捗表示は重ねない。
+
+| ファイル | 役割 |
+| --- | --- |
+| [`frontend/lib/navigation-progress.ts`](./frontend/lib/navigation-progress.ts) | 進行中の遷移数を持つモジュール内ストア。`useReportNavigation` で報告し、`useNavigationPending` で読む |
+| [`frontend/components/nav-link.tsx`](./frontend/components/nav-link.tsx) | `useLinkStatus` を子から読み、そのリンクの遷移をストアへ報告する `next/link` |
+| [`frontend/components/route-progress.tsx`](./frontend/components/route-progress.tsx) | root layout に1つだけ置く進捗バー。140ms未満の遷移では表示しない |
+| [`frontend/components/view-switcher.tsx`](./frontend/components/view-switcher.tsx) | カード／一覧／締切順の切替。ハイライトは遷移中だけ押した側へ先行し、それ以外はURLに従う |
+| [`frontend/lib/motion.ts`](./frontend/lib/motion.ts) | 一覧項目の登場順（`--stagger`）。上限を超えた項目は同じ遅延にまとめる |
+| [`frontend/app/globals.css`](./frontend/app/globals.css) | 緩急と時間のトークン（`--ease-settle` / `--dur-*`）、登場アニメーション、`prefers-reduced-motion` での無効化 |
+
+`app/page.tsx` は結果ブロックに検索条件由来の `key` を渡します。同じ画面のURLだけが変わる遷移ではDOMが再利用されるため、これが無いと新しい結果が動きなく差し替わります。
+
+### 2.4 ブラウザ内データ
 
 [`frontend/lib/local-data.ts`](./frontend/lib/local-data.ts) が保存方式の正本です。
 

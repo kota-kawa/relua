@@ -262,7 +262,7 @@ export function SavedDashboard() {
   }
 
   return (
-    <main className="local-page">
+    <main className="local-page page-enter">
       <div className="shell">
         <header className="local-page-header">
           <p className="eyebrow">LOCAL BOOKMARKS</p>
@@ -308,7 +308,7 @@ export function SavedDashboard() {
         <section className="saved-section">
           <div className="section-heading"><h2>ブックマーク</h2><span>{ids.length}件</span></div>
           {loading ? <p className="local-empty">読み込み中…</p> : items.length ? (
-            <div className="card-grid">{items.map((item) => <OpportunityCard key={item.id} item={item} />)}</div>
+            <div className="card-grid">{items.map((item, index) => <OpportunityCard key={item.id} item={item} index={index} />)}</div>
           ) : (
             <div className="local-empty"><p>保存した募集はまだありません。</p><Link href="/">募集を探す</Link></div>
           )}

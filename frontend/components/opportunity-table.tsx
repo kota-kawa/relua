@@ -1,7 +1,7 @@
-import Link from "next/link";
-
 import { ArrowRight, MapPin } from "@/components/icons";
+import { NavLink } from "@/components/nav-link";
 import { deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
+import { stagger } from "@/lib/motion";
 import type { Opportunity } from "@/lib/types";
 
 export function OpportunityTable({ items }: { items: Opportunity[] }) {
@@ -19,14 +19,14 @@ export function OpportunityTable({ items }: { items: Opportunity[] }) {
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => (
-            <tr key={item.id}>
+          {items.map((item, index) => (
+            <tr key={item.id} style={stagger(index)}>
               <td data-label="状況">
                 <span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>
               </td>
               <td className="table-opportunity" data-label="募集">
                 <span>{item.company.name}</span>
-                <Link href={`/opportunities/${item.id}`}>{item.event_name}</Link>
+                <NavLink href={`/opportunities/${item.id}`}>{item.event_name}</NavLink>
                 <small>{item.industry.name}・{item.sector.name}</small>
               </td>
               <td className="table-deadline" data-label="締切">
@@ -44,7 +44,7 @@ export function OpportunityTable({ items }: { items: Opportunity[] }) {
                 {!!item.tags.length && <small className="table-tech">{item.tags.slice(0, 3).join(" / ")}</small>}
               </td>
               <td className="table-action">
-                <Link href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={17} /></Link>
+                <NavLink href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={17} /></NavLink>
               </td>
             </tr>
           ))}

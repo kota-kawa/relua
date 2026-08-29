@@ -63,9 +63,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
     : undefined;
   const query = first(params, "q");
   const sort = first(params, "sort");
+  /* Remount key for the results. Every listing navigation lands on the same
+     page component, so React reuses the DOM it can match and the arrival of a
+     new result set would pass without a frame of motion. Keying the block on
+     the request makes each set enter as one. */
+  const resultsKey = Object.entries(params)
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(",") : value ?? ""}`)
+    .sort()
+    .join("&");
 
   return (
-    <main>
+    <main className="page-enter">
       <Hero defaultQuery={query} heading={categoryHeading}>
         <QuickFilters masters={masters} params={params} />
       </Hero>
@@ -83,20 +91,22 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
               {view !== "calendar" && <SortForm params={params} value={sort ?? (query ? "relevance" : "deadline")} />}
             </div>
 
-            {result.items.length ? (
-              <>
-                {view === "list" ? (
-                  <OpportunityTable items={result.items} />
-                ) : view === "calendar" ? (
-                  <DeadlineCalendar items={result.items} />
-                ) : (
-                  <div className="card-grid">
-                    {result.items.map((item) => <OpportunityCard key={item.id} item={item} />)}
-                  </div>
-                )}
-                <Pagination page={result.page} totalPages={result.total_pages} params={params} />
-              </>
-            ) : <EmptyState />}
+            <div className="results-flow" key={resultsKey}>
+              {result.items.length ? (
+                <>
+                  {view === "list" ? (
+                    <OpportunityTable items={result.items} />
+                  ) : view === "calendar" ? (
+                    <DeadlineCalendar items={result.items} />
+                  ) : (
+                    <div className="card-grid">
+                      {result.items.map((item, index) => <OpportunityCard key={item.id} item={item} index={index} />)}
+                    </div>
+                  )}
+                  <Pagination page={result.page} totalPages={result.total_pages} params={params} />
+                </>
+              ) : <EmptyState />}
+            </div>
           </div>
         </div>
       </section>

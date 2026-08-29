@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { Check, ChevronDown, SlidersHorizontal } from "@/components/icons";
 import { filterHref, publicValuesOf } from "@/lib/format";
+import { useReportNavigation } from "@/lib/navigation-progress";
 import type { SearchParams } from "@/lib/types";
 
 const OPTIONS = [
@@ -19,6 +20,7 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
   const rootRef = useRef<HTMLDivElement>(null);
+  useReportNavigation(isPending);
   const menuId = useId();
   const hasQuery = Array.isArray(params.q) ? params.q.some(Boolean) : Boolean(params.q);
   const availableOptions = hasQuery ? OPTIONS : OPTIONS.filter((option) => option.value !== "relevance");

@@ -75,7 +75,7 @@ export function ImportBookmarks() {
   );
 
   return (
-    <main className="confirm-page">
+    <main className="confirm-page page-enter">
       <section className="confirm-card" aria-live="polite">
         <div className="confirm-icon"><Smartphone size={28} /></div>
         <p className="eyebrow">保存データの引き継ぎ</p>

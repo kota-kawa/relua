@@ -7,6 +7,7 @@ import type { Masters } from "@/lib/types";
 
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={String(href)} {...props}>{children}</a>,
+  useLinkStatus: () => ({ pending: false }),
 }));
 
 import { DiscoveryNav } from "./discovery-nav";

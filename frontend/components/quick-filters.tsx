@@ -1,6 +1,5 @@
-import Link from "next/link";
-
 import { Check } from "@/components/icons";
+import { NavLink } from "@/components/nav-link";
 import { valuesOf, withFilter, withoutFilter } from "@/lib/format";
 import type { MasterItem, Masters, SearchParams } from "@/lib/types";
 
@@ -38,7 +37,7 @@ export function QuickFilters({ masters, params }: { masters: Masters; params: Se
       {chips.map((chip) => {
         const active = valuesOf(params, chip.key).includes(chip.slug);
         return (
-          <Link
+          <NavLink
             key={`${chip.key}-${chip.slug}`}
             href={active ? withoutFilter(params, chip.key, chip.slug) : withFilter(params, chip.key, chip.slug)}
             className={active ? "active" : ""}
@@ -49,7 +48,7 @@ export function QuickFilters({ masters, params }: { masters: Masters; params: Se
           >
             {active && <Check size={14} aria-hidden="true" />}
             {chip.label ?? chip.name}
-          </Link>
+          </NavLink>
         );
       })}
     </nav>

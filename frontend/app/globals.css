@@ -13,9 +13,76 @@
   --line: #ddd9d4;
   --muted: #6b7686;
   --shadow: 0 20px 50px rgba(22,39,61,0.09);
+
+  /* Motion. Two curves carry everything on the site: --ease-settle for things
+     arriving (fast start, long quiet landing, no overshoot) and --ease-standard
+     for a state changing in place. Durations are short on purpose — the point
+     is to show that something happened, not to stage it. */
+  --ease-settle: cubic-bezier(.22, 1, .36, 1);
+  --ease-standard: cubic-bezier(.4, 0, .2, 1);
+  --dur-quick: .15s;
+  --dur-base: .28s;
+  --dur-enter: .42s;
+  /* Gap between neighbours in an entrance cascade. See lib/motion.ts. */
+  --stagger-step: 34ms;
 }
 
 * { box-sizing: border-box; }
+
+/* Arrivals
+   --------
+   App Router navigations hold the current page on screen until the next one is
+   ready, so nothing ever fades out — the only motion worth having is the new
+   content settling in. Two shapes cover the site: a page fades, and the items
+   inside a result set rise in sequence so a new set reads as new.
+
+   A whole page only ever fades — it never rises. An ancestor running a transform
+   becomes the containing block for its `position: fixed` descendants for as long
+   as the transform lasts, which would pull the floating filter button off its
+   corner for the length of every page load. Opacity has no such effect, so the
+   rise is left to the blocks inside, none of which hold anything fixed. */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+.page-enter { animation: fade-in var(--dur-base) var(--ease-standard) both; }
+
+/* One step per neighbour, and `backwards` so an item waiting for its turn is
+   already invisible rather than flashing in place first. The fill stops at the
+   end of the animation, which leaves hover transforms to the cards again. */
+.results-flow .opportunity-card,
+.results-flow .calendar-item,
+.results-flow .opportunity-table tbody tr {
+  animation: rise-in var(--dur-enter) var(--ease-settle) backwards;
+  animation-delay: calc(var(--stagger, 0) * var(--stagger-step));
+}
+.results-flow .empty-state,
+.results-flow .calendar-intro,
+.results-flow .pagination { animation: fade-in var(--dur-enter) var(--ease-standard) both; }
+
+/* Navigation progress — a line across the very top of the viewport while the
+   router is fetching. It fills on a decelerating curve that stops short of the
+   edge: the page arriving is what finishes it, so the bar can never promise an
+   end it does not control — it fades out from wherever it got to.
+   See components/route-progress.tsx. */
+.route-progress {
+  position: fixed; z-index: 90; top: 0; left: 0; width: 100%; height: 2px;
+  pointer-events: none;
+}
+.route-progress::before {
+  content: ""; display: block; height: 100%;
+  background: linear-gradient(90deg, #f7b35c, var(--orange));
+  transform-origin: 0 50%;
+  /* The fill stays on the element for the whole of its life, ending included:
+     swapping it for a transition on arrival makes the bar jump to the far edge
+     rather than run out, because a transition does not pick up where a removed
+     animation left off. What ends the bar is the fade. */
+  animation: route-progress 9s var(--ease-settle) both;
+}
+.route-progress[data-phase="done"]::before { opacity: 0; transition: opacity .24s var(--ease-standard); }
+@keyframes route-progress {
+  from { transform: scaleX(.04); }
+  to { transform: scaleX(.94); }
+}
 /* The document scroller is deliberately left on `auto`. Every jump to
    `#listings` is a navigation to a different URL, so the scroll happens while
    the results underneath it are being replaced — animating it means watching
@@ -165,9 +232,26 @@ button, summary, select { cursor: pointer; }
 .active-filters li a b { color: #9a6a12; font-size: 11px; font-weight: 800; }
 .active-filters li a svg { color: #a7825a; }
 .active-filters .clear-all { flex: none; color: var(--muted); font-size: 12px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
-.view-switcher { align-self: center; display: flex; flex: none; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
-.view-switcher a { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 4px; color: var(--muted); font-size: 12px; font-weight: 750; }
-.view-switcher a.active { color: var(--ink); background: var(--white); box-shadow: 0 1px 4px rgba(16,26,39,.09); }
+/* One highlight slides between the three views instead of each tab painting its
+   own background. Equal columns are what make the travel a plain percentage of
+   the track: `1fr` in a grid sized by its contents gives every column the width
+   of the widest tab, at both the desktop and the icon-only mobile size. */
+.view-switcher {
+  position: relative; align-self: center; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  flex: none; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper);
+}
+.view-switcher-thumb {
+  position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3);
+  border-radius: 4px; background: var(--white); box-shadow: 0 1px 4px rgba(16,26,39,.09);
+  transform: translateX(calc(var(--view-index, 0) * 100%));
+  transition: transform var(--dur-base) var(--ease-settle);
+}
+.view-switcher a {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 10px; border-radius: 4px; color: var(--muted); font-size: 12px; font-weight: 750;
+  transition: color var(--dur-quick) var(--ease-standard);
+}
+.view-switcher a.active { color: var(--ink); }
 
 /* Results and filters */
 .results-section { padding: 38px 0 90px; }
@@ -239,10 +323,36 @@ button, summary, select { cursor: pointer; }
 }
 .filter-fab b { display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 99px; color: white; background: var(--orange); font-size: 11px; }
 .filter-fab:active { transform: scale(.95); }
-.filter-sheet { width: 100%; max-width: 100%; margin: auto 0 0; border: 0; border-radius: 16px 16px 0 0; padding: 0; background: var(--paper); }
-.filter-sheet[open] { display: flex; flex-direction: column; max-height: 82dvh; animation: sheet-up .28s ease; }
+/* The sheet leaves the way it arrives. A dialog is `display: none` when closed,
+   so both halves need the discrete-property transitions — without them only the
+   entrance can be animated and the sheet vanishes on close. Browsers that lack
+   them fall back to appearing and disappearing outright, which is what the
+   sheet did before. */
+.filter-sheet {
+  width: 100%; max-width: 100%; margin: auto 0 0; border: 0; border-radius: 16px 16px 0 0; padding: 0;
+  background: var(--paper); opacity: 0; transform: translateY(48px);
+}
+.filter-sheet[open] { display: flex; flex-direction: column; max-height: 82dvh; opacity: 1; transform: none; }
 .filter-sheet::backdrop { background: rgba(15,25,39,.55); }
-@keyframes sheet-up { from { transform: translateY(48px); opacity: .4; } to { transform: translateY(0); opacity: 1; } }
+@supports (transition-behavior: allow-discrete) {
+  .filter-sheet {
+    transition-property: opacity, transform, display, overlay;
+    transition-duration: var(--dur-base);
+    transition-timing-function: var(--ease-settle);
+    transition-behavior: allow-discrete;
+  }
+  .filter-sheet::backdrop {
+    transition-property: opacity, display, overlay;
+    transition-duration: var(--dur-base);
+    transition-timing-function: var(--ease-standard);
+    transition-behavior: allow-discrete;
+  }
+  .filter-sheet:not([open])::backdrop { opacity: 0; }
+  @starting-style {
+    .filter-sheet[open] { opacity: 0; transform: translateY(48px); }
+    .filter-sheet[open]::backdrop { opacity: 0; }
+  }
+}
 .filter-sheet-header { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 .filter-sheet-header > span { display: flex; align-items: center; gap: 8px; margin-right: auto; font-size: 14px; font-weight: 800; }
 .filter-sheet-clear { display: inline-flex; align-items: center; gap: 3px; min-height: 44px; color: var(--muted); font-size: 12px; font-weight: 700; }
@@ -714,7 +824,11 @@ button, summary, select { cursor: pointer; }
   border-radius: 99px; color: var(--paper); background: var(--ink-deep);
   box-shadow: 0 18px 40px rgba(5,10,17,.35); font-size: 13px; font-weight: 700;
   pointer-events: auto; animation: toast-in .25s ease;
+  transition: opacity .2s var(--ease-standard), transform .2s var(--ease-standard);
 }
+/* Confirmations were replaced by nothing when their time was up, which reads as
+   a dropped frame. The component holds the node for the length of this. */
+.toast.leaving { opacity: 0; transform: translateY(8px); }
 .toast svg { flex: none; color: #7fc79e; }
 .toast span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .toast a { margin-left: 4px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.25); color: #ffc47d; font-weight: 800; white-space: nowrap; }
@@ -759,13 +873,32 @@ button, summary, select { cursor: pointer; }
 .bookmark-button:active, .secondary-action:active, .local-tools button:active, .file-import:active,
 .shared-list-action button:active, .table-action a:active, .calendar-arrow:active, .panel-close:active { transform: scale(.94); transition-duration: .08s; }
 .active-filters li a:active, .quick-filters a:active { transform: scale(.96); transition-duration: .08s; }
-.loading-hero, .loading-filter, .loading-card { background: linear-gradient(100deg,#e7e5de 30%,#f3f1eb 50%,#e7e5de 70%); background-size: 400%; animation: shimmer 1.4s infinite; }
-.loading-hero { height: 246px; background-color: #dfe1e4; }
+/* The skeleton only reaches the screen on a cold load — client navigations keep
+   the previous page up instead. Holding it back for a moment means a load that
+   was nearly done never shows a placeholder at all. */
+.loading-page { animation: fade-in var(--dur-base) var(--ease-standard) .12s both; }
+.loading-filter, .loading-card, .loading-back, .loading-detail-actions, .loading-detail-block, .loading-detail-side { background: linear-gradient(100deg,#e7e5de 30%,#f3f1eb 50%,#e7e5de 70%); background-size: 400%; animation: shimmer 1.4s infinite; }
+/* The two headers the site actually has are navy, so their placeholders are
+   navy: a grey block in their place makes the moment the page arrives read as a
+   different page rather than the same one filling in. */
+.loading-hero, .loading-detail-hero { background: linear-gradient(100deg,#1d3251 30%,#2b4468 50%,#1d3251 70%); background-size: 400%; animation: shimmer 1.4s infinite; }
+.loading-hero { height: 246px; }
 .loading-tabs { height: 62px; border-bottom: 1px solid var(--line); background: var(--white); }
 .loading-layout { display: grid; grid-template-columns: 230px 1fr; gap: 48px; padding: 65px 0; }
 .loading-filter { height: 570px; border-radius: 7px; }
 .loading-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .loading-card { height: 370px; border-radius: 9px; }
+/* The bar is thinner than the real link, so the margins make up the rest of
+   its 44px tap target and the navy block below starts where it will land. */
+.loading-back { width: 132px; height: 20px; margin: 12px 0 32px; border-radius: 4px; }
+.loading-detail-hero { height: 298px; border-radius: 12px; box-shadow: var(--shadow); }
+/* Stands in for the save / share / calendar row, which sets how far down the
+   page the reading column starts. */
+.loading-detail-actions { width: 430px; max-width: 100%; height: 44px; margin-top: 18px; border-radius: 5px; }
+.loading-detail-layout { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 70px; align-items: start; margin: 66px 0 100px; }
+.loading-detail-main { display: grid; gap: 48px; }
+.loading-detail-block { height: 168px; border-radius: 7px; }
+.loading-detail-side { height: 430px; border-radius: 8px; }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
 
 @media (max-width: 920px) {
@@ -787,8 +920,10 @@ button, summary, select { cursor: pointer; }
   .mobile-filter-body .filter-submit { grid-column: 1/-1; }
   .detail-hero { grid-template-columns: 1fr; gap: 32px; padding: 40px; }
   .deadline-box { width: 100%; }
-  .detail-layout { grid-template-columns: 1fr; gap: 45px; }
+  .detail-layout, .loading-detail-layout { grid-template-columns: 1fr; gap: 45px; }
   .detail-sidebar { position: static; }
+  .loading-detail-hero { height: 320px; }
+  .loading-detail-side { height: 300px; }
   .same-company-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .concept-pair { grid-template-columns: 1fr; gap: 18px; }
   .honeycomb-section { grid-template-columns: 1fr; gap: 32px; }
@@ -955,10 +1090,25 @@ button, summary, select { cursor: pointer; }
      skeleton for the loaded page does not shift what is already on screen. */
   .loading-hero { height: 256px; }
   .loading-tabs { height: 70px; }
+  .loading-detail-hero { height: 300px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* Delays are reset alongside the durations: every entrance here fills
+     backwards, so a cascade left in place would hold the last card blank for a
+     quarter of a second after the motion it was waiting for was switched off. */
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important; animation-delay: 0s !important;
+    transition-duration: .01ms !important; transition-delay: 0s !important;
+  }
+  /* Entrances are dropped outright rather than run at .01ms. They start from
+     `opacity: 0`, and anything that keeps them from running — a stylesheet that
+     arrives late, an extension that stops animations — would leave the page
+     blank. With no motion to reduce there is nothing to gain by keeping them. */
+  .page-enter, .loading-page,
+  .results-flow .opportunity-card, .results-flow .calendar-item, .results-flow .opportunity-table tbody tr,
+  .results-flow .empty-state, .results-flow .calendar-intro, .results-flow .pagination { animation: none !important; }
   /* The blanket reset leaves iteration-count alone, so looping animations would
      still churn at .01ms. Stop the wave outright and hold the warm cells lit —
      that leaves a static honeycomb composed like the logo. */

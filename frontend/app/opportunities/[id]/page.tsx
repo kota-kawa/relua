@@ -51,7 +51,7 @@ export default async function OpportunityDetail({ params }: Props) {
   const sourceCheckedAt = item.source_checked_at ?? item.updated_at;
 
   return (
-    <main className="detail-page">
+    <main className="detail-page page-enter">
       <RecentTracker id={item.id} />
       <div className="shell">
         <BackLink>募集一覧に戻る</BackLink>
@@ -152,8 +152,8 @@ export default async function OpportunityDetail({ params }: Props) {
                 <p>{item.company.name}が現在掲載している、その他の募集です。</p>
               </div>
               <div className="card-grid same-company-grid">
-                {sameCompanyOpportunities.map((opportunity) => (
-                  <OpportunityCard key={opportunity.id} item={opportunity} />
+                {sameCompanyOpportunities.map((opportunity, index) => (
+                  <OpportunityCard key={opportunity.id} item={opportunity} index={index} />
                 ))}
               </div>
             </section>

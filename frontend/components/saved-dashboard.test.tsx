@@ -14,6 +14,7 @@ vi.mock("@/components/bookmark-button", () => ({
 }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={String(href)} {...props}>{children}</a>,
+  useLinkStatus: () => ({ pending: false }),
 }));
 
 import { SavedDashboard } from "./saved-dashboard";

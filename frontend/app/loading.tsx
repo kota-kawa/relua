@@ -1,6 +1,6 @@
 export default function Loading() {
   return (
-    <main>
+    <main className="loading-page">
       <div className="loading-hero" />
       {/* The skeleton stands in for the listing page while its data loads, and a
           navigation to `#listings` can land on it. Carrying the same anchor, at

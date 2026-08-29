@@ -126,6 +126,16 @@ MCPの公開エンドポイントは `/mcp` と `/mcp/` を同じ意味として
 - 遷移が `loading.tsx` の表示中に確定すると、ハッシュの飛び先要素がまだDOMに無く、documentの先頭へ落ちる。skeleton側にも同じidを同じ位置で持たせる。
 - skeletonと実際のheader/hero/barの高さがずれていると、差し替えの瞬間にその差だけ画面が跳ねる。幅ごとに実測して合わせる。
 
-## 8. 知識を追記するとき
+## 8. 遷移中に何が表示されるか
+
+「押しても反応がない」「一瞬別の画面が挟まる」を切り分けるときは、まず `loading.tsx` が出ているかどうかを確定させます。dev serverはHMRのwebsocketが張れないとリンクがfull reloadに落ちることがあり、遷移の観察には向きません。`npm run build && npx next start` で確認します。
+
+- 同一ルート内の遷移（`/?view=list` など）では `loading.tsx` は出ない。routerは新しい結果が揃うまで今のDOMを保持する。`window.__probe = 1` を置いてから遷移し、遷移後も残っていればclient遷移、消えていればfull reloadである。
+- 別ルートへの遷移では、そのルートに最も近い `loading.tsx` が出る。ルート直下にしか置かないと、詳細ページへ移るあいだ一覧のskeletonが挟まる。
+- Playwrightで遅い遷移を再現するときは、prefetchまで遅らせないこと。`next-router-prefetch` ヘッダのあるリクエストは素通しし、それ以外の `_rsc=` だけ遅らせる。両方遅らせるとクリックがprefetch待ちになり、遷移そのものが始まらない。
+- 登場アニメーションが再生されないときは、要素が作り直されているかを見る。keyが同じなら React はDOMを再利用し、CSS animationは再実行されない。
+- `prefers-reduced-motion: reduce` の一括リセットは `animation-duration` しか縮めない。`animation-delay` と `animation-fill-mode` は残るので、`opacity: 0` から始まる登場は明示的に `animation: none` で止める。止め忘れると内容が見えないまま残りうる。
+
+## 9. 知識を追記するとき
 
 同じ問題を再び切り分ける価値がある場合だけ、原因の一般化、再現条件、確認先、回避策を追記します。作業日時、担当者、特定環境のログ、修正しただけの履歴は残しません。

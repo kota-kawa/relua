@@ -1,7 +1,7 @@
-import Link from "next/link";
-
 import { ArrowRight, CalendarDays, MapPin } from "@/components/icons";
+import { NavLink } from "@/components/nav-link";
 import { deadlineIsRelative, deadlineLabel } from "@/lib/format";
+import { stagger } from "@/lib/motion";
 import type { Opportunity } from "@/lib/types";
 
 const monthFormatter = new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "long", timeZone: "Asia/Tokyo" });
@@ -35,10 +35,10 @@ export function DeadlineCalendar({ items }: { items: Opportunity[] }) {
             <small>{monthItems.length}件</small>
           </div>
           <div className="calendar-items">
-            {monthItems.map((item) => {
+            {monthItems.map((item, index) => {
               const date = asDate(item.deadline);
               return (
-                <article className="calendar-item" key={item.id}>
+                <article className="calendar-item" key={item.id} style={stagger(index)}>
                   <div className="calendar-date">
                     <strong>{dayFormatter.format(date).replace("日", "")}</strong>
                     <span>{weekdayFormatter.format(date)}</span>
@@ -52,10 +52,10 @@ export function DeadlineCalendar({ items }: { items: Opportunity[] }) {
                       {deadlineIsRelative(item.deadline) && <b>{deadlineLabel(item.deadline)}</b>}
                     </div>
                     <p>{item.company.name}</p>
-                    <h3><Link href={`/opportunities/${item.id}`}>{item.event_name}</Link></h3>
+                    <h3><NavLink href={`/opportunities/${item.id}`}>{item.event_name}</NavLink></h3>
                     <small><MapPin size={13} /> {item.event_format.name}{item.location ? `・${item.location}` : ""}</small>
                   </div>
-                  <Link className="calendar-arrow" href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></Link>
+                  <NavLink className="calendar-arrow" href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></NavLink>
                 </article>
               );
             })}
@@ -66,15 +66,15 @@ export function DeadlineCalendar({ items }: { items: Opportunity[] }) {
         <section className="calendar-month undated">
           <div className="calendar-month-title"><span>DATE</span><h3>締切未定</h3><small>{undated.length}件</small></div>
           <div className="calendar-items">
-            {undated.map((item) => (
-              <article className="calendar-item" key={item.id}>
+            {undated.map((item, index) => (
+              <article className="calendar-item" key={item.id} style={stagger(index)}>
                 <div className="calendar-date"><strong>—</strong><span>未定</span></div>
                 <div className="calendar-content">
                   <div className="calendar-badges"><span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span><span>{item.event_type.name}</span></div>
                   <p>{item.company.name}</p>
-                  <h3><Link href={`/opportunities/${item.id}`}>{item.event_name}</Link></h3>
+                  <h3><NavLink href={`/opportunities/${item.id}`}>{item.event_name}</NavLink></h3>
                 </div>
-                <Link className="calendar-arrow" href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></Link>
+                <NavLink className="calendar-arrow" href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></NavLink>
               </article>
             ))}
           </div>

@@ -80,6 +80,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "find_opportunities_by_source_url",
         "resolve_company",
         "add_company_alias",
+        "set_company_industries",
         "delete_company_alias",
         "merge_company",
         "validate_opportunity",
@@ -142,6 +143,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["resolve_company"]["annotations"]["readOnlyHint"] is True
     assert tools["resolve_company"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["add_company_alias"]["annotations"]["destructiveHint"] is False
+    assert tools["set_company_industries"]["annotations"]["destructiveHint"] is True
+    assert tools["set_company_industries"]["annotations"]["idempotentHint"] is True
     assert tools["delete_company_alias"]["annotations"]["destructiveHint"] is True
     assert tools["merge_company"]["annotations"]["destructiveHint"] is True
 
@@ -372,6 +375,60 @@ def test_mcp_company_alias_write_is_idempotent_and_rejects_request_reuse(tools, 
     error = tool_error("add_company_alias", arguments | {"alias": "Mobage"})
     assert error["error"] == "validation_failed"
     assert error["errors"][0]["field"] == "request_id"
+
+
+def test_mcp_sets_multiple_company_categories_without_a_collection_target(tools, db):
+    item = seed(db, company_name="株式会社小売IT")
+    arguments = {
+        "payload": {
+            "company_id": item.company_id,
+            "industries": [
+                {"industry": "小売・流通", "sector": "EC"},
+                {"industry": "IT・通信", "sector": "Webサービス"},
+            ],
+            "request_id": "mcp-company-industries-0001",
+            "client_name": "pytest",
+        }
+    }
+
+    updated = call("set_company_industries", arguments)
+    assert updated["success"] is True
+    assert updated["idempotent_replay"] is False
+    assert [(row["industry"]["name"], row["sector"]["name"], row["is_primary"]) for row in updated["company"]["industries"]] == [
+        ("小売・流通", "EC", True),
+        ("IT・通信", "Webサービス", False),
+    ]
+    audit = db.query(AuditLog).filter_by(action="company_industries_update").one()
+    assert audit.changes["before"]["industries"][0]["industry"]["name"] == "IT・通信"
+    assert audit.changes["after"]["industries"][0]["industry"]["name"] == "小売・流通"
+
+    replay = call("set_company_industries", arguments)
+    assert replay["idempotent_replay"] is True
+    assert call("resolve_company", {"company_name": "株式会社小売IT"})["candidates"][0]["company"]["industries"] == updated[
+        "company"
+    ]["industries"]
+
+
+def test_mcp_company_category_setting_rejects_duplicate_industries(tools, db):
+    item = seed(db, company_name="株式会社カテゴリ重複")
+    error = tool_error(
+        "set_company_industries",
+        {
+            "payload": {
+                "company_id": item.company_id,
+                "industries": [
+                    {"industry": "小売・流通", "sector": "EC"},
+                    {"industry": "小売・流通", "sector": "専門店"},
+                ],
+                "request_id": "mcp-company-industries-duplicate-0001",
+            }
+        },
+    )
+
+    assert error["error"] == "validation_failed"
+    assert error["errors"][0]["field"] == "業界"
+    assert "重複" in error["errors"][0]["reason"]
+    assert [row.industry.name for row in item.company.industries] == ["IT・通信"]
 
 
 def test_mcp_merges_a_confirmed_duplicate_company(tools, db):
@@ -1254,6 +1311,17 @@ def test_collection_target_schema_is_actionable_for_mcp_clients():
     check_payload = schemas["record_collection_check"]["properties"]["payload"]
     assert {"result", "source_url", "request_id"}.issubset(check_payload["required"])
     assert "実際に確認" in check_payload["properties"]["source_url"]["description"]
+
+
+def test_company_industry_schema_documents_multiple_categories():
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    payload = {tool.name: tool.inputSchema for tool in listed}["set_company_industries"]["properties"]["payload"]
+
+    industries = payload["properties"]["industries"]
+    assert industries["minItems"] == 1
+    assert industries["maxItems"] == 14
+    assert "複数指定" in industries["description"]
+    assert payload["properties"]["company_id"]["minimum"] == 1
 
 
 def test_mcp_lists_unmonitored_companies_and_adds_one_by_id(tools, db):

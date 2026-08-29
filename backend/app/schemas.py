@@ -430,13 +430,22 @@ CompanyIndustries = Annotated[
     list[CompanyIndustryInput],
     Field(
         min_length=1,
-        max_length=5,
+        max_length=14,
         description=(
             "企業が属する業界と業種。事業が複数業界にまたがる企業は複数指定します"
             "（例: Ubieは IT・通信/AI と 医療・製薬/ヘルスケア）。先頭が代表の業界として扱われます。"
         ),
     ),
 ]
+
+
+class CompanyIndustryUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    company_id: Annotated[int, Field(ge=1, description="カテゴリを設定する既存CompanyのID。resolve_companyで確認します。")]
+    industries: CompanyIndustries
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
 
 
 class CollectionTargetCreateRequest(BaseModel):
@@ -634,6 +643,11 @@ CollectionTargetCreatePayload = Annotated[
     WithJsonSchema(_inline_model_schema(CollectionTargetCreateRequest)),
     Field(description="追加する収集対象の企業、所属業界、公式情報源、冪等化情報。"),
 ]
+CompanyIndustryUpdatePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_inline_model_schema(CompanyIndustryUpdateRequest)),
+    Field(description="既存企業へ登録する業界・業種カテゴリの一覧。指定した内容で全置換します。"),
+]
 CollectionTargetUpdatePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(_inline_model_schema(CollectionTargetUpdateRequest)),
@@ -828,11 +842,21 @@ class CompanyAliasResponse(BaseModel):
     normalized_alias: str
 
 
+class CompanyIndustryItem(BaseModel):
+    industry: MasterItem
+    sector: MasterItem | None
+    is_primary: bool
+
+
 class CompanyIdentityResponse(BaseModel):
     id: int
     canonical_name: str
     normalized_name: str
     aliases: list[CompanyAliasResponse]
+    industries: list[CompanyIndustryItem] = Field(
+        default_factory=list,
+        description="企業に登録された業界・業種カテゴリ。先頭のis_primary=trueが代表カテゴリです。",
+    )
 
 
 class CompanyCandidateResponse(BaseModel):
@@ -855,6 +879,13 @@ class MCPCompanyAliasWriteResponse(BaseModel):
     success: bool
     idempotent_replay: bool
     changed: bool
+    message: str
+    company: CompanyIdentityResponse
+
+
+class MCPCompanyIndustryWriteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
     message: str
     company: CompanyIdentityResponse
 
@@ -968,12 +999,6 @@ class MCPCompanyMaintenanceContextResponse(BaseModel):
             "締切などの終了状態は含まず、各募集の一次情報URLと最終確認日時を含みます。"
         )
     )
-
-
-class CompanyIndustryItem(BaseModel):
-    industry: MasterItem
-    sector: MasterItem | None
-    is_primary: bool
 
 
 class CollectionTargetResponse(BaseModel):

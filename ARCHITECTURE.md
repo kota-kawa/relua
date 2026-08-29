@@ -90,7 +90,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | ツール群 | 主な処理 | 認証 |
 | --- | --- | --- |
 | 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応） |
-| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要、企業の候補確認・別名・物理統合の書き込みは必要。保守コンテキストは認証が必要 |
+| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `set_company_industries`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要、企業の候補確認・別名・カテゴリ設定・物理統合の書き込みは必要。保守コンテキストは認証が必要 |
 | 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status/verify | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
 | 収集キュー | target/source/check の一覧、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
@@ -103,7 +103,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | ファイル | 責務 |
 | --- | --- |
 | `services/opportunities.py` | 検索、関連度、カーソル、固定値解決、重複検出、書き込み、論理削除・復元、監査、MCP保守キューの対象状態判定 |
-| `services/companies.py` | 企業名の正規化、正式名・別名の完全一致、候補提示、別名の冪等書き込み |
+| `services/companies.py` | 企業名の正規化、正式名・別名の完全一致、候補提示、別名と複数カテゴリの冪等書き込み |
 | `services/company_industries.py` | 企業と複数業界・業種の分類を維持 |
 | `services/collection_targets.py` | 企業単位の収集対象、情報源、確認履歴、優先度・次回確認日 |
 | `services/masters.py` / `master_cache.py` | 固定値の解決とキャッシュ |
@@ -148,6 +148,7 @@ opportunities >──< job_categories / graduation_years / degrees / tags
 - `Industry`、`Sector`、職種、卒業年、学位、募集状況、イベント種別、形式は固定値マスタ。募集書き込み時は指定業界に属する業種だけを受け付ける。
 - 企業同一性は正規化正式名または明示登録した別名の完全一致を正本にする。部分一致・`pg_trgm` は候補提示と検索補助だけで、企業を自動統合しない。
 - 企業は複数業界に属せる。`company_industries.is_primary` は1社につき高々1件で、単一分類表示用である。
+- `set_company_industries` は既存企業の業界・業種カテゴリを指定一覧で全置換する。カテゴリは1件以上、現在の業界マスタ数まで指定でき、先頭を `is_primary` として監査・冪等化する。
 - `source_url` は正規化した `normalized_source_url` と共に保存する。短縮URL、IP/localhost、求人集約・口コミサイトを情報源として拒否し、同じ一次情報URLは登録拒否ではなく確認用警告とする。収集対象がある企業では、有効な `collection_sources` を企業別公式source allowlistとし、別の公式ホストは収集元へ明示登録してから使う。
 
 ### 4.2 企業単位の収集
@@ -158,6 +159,7 @@ companies ──1:1── collection_targets ──< collection_sources
 ```
 
 - `collection_targets` は1企業につき1件。複数業界の分類は `company_industries` に置き、同じ企業を二重巡回・二重計上しない。
+- 企業カテゴリの直接設定は収集対象の作成を必要としない。`resolve_company` で確認した `company_id` に対して `set_company_industries` を使い、収集対象を後から追加できる。
 - `list_unmonitored_companies` はCompanyを起点に、収集対象がない企業を返す。`add_collection_target` は既存CompanyのIDを明示指定でき、名前の再入力による重複Company作成を防ぐ。
 - `collection_targets.is_active` と各 source の `is_active` は無効化で保持する。削除ではなく運用状態を表す。
 - 募集の新規登録（`add_opportunity`／`upsert_opportunity`）へ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。既存募集の更新・部分更新はこの自動リンクを行わない（4.3参照）。

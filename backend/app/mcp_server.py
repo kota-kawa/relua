@@ -25,6 +25,8 @@ from app.schemas import (
     CollectionTargetResponse,
     CollectionTargetUpdatePayload,
     CollectionTargetUpdateRequest,
+    CompanyIndustryUpdatePayload,
+    CompanyIndustryUpdateRequest,
     DegreeValue,
     EventFormatValue,
     EventTypeValue,
@@ -39,6 +41,7 @@ from app.schemas import (
     MCPCollectionTargetListResponse,
     MCPCollectionWriteResponse,
     MCPCompanyAliasWriteResponse,
+    MCPCompanyIndustryWriteResponse,
     MCPCompanyMaintenanceContextResponse,
     MCPCompanyMergeResponse,
     MCPCompanyResolutionResponse,
@@ -94,6 +97,7 @@ from app.services.companies import (
     company_identity_dict,
     delete_company_alias,
     merge_company,
+    replace_company_industries,
     resolve_company_candidates,
 )
 from app.services.errors import pydantic_errors
@@ -167,6 +171,7 @@ mcp = FastMCP(
         "情報源URLが既存募集と重ならないかfind_opportunities_by_source_urlでも確認してください。"
         "企業名が略称・英語名・誤記かもしれない場合はresolve_companyで候補を確認し、"
         "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
+        "企業の業界・業種カテゴリを管理する場合はset_company_industriesでcompany_idとカテゴリ一覧を指定してください。"
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "公式ページを確認して内容が変わっていない場合はverify_opportunityを使って確認だけを記録してください。"
@@ -294,6 +299,26 @@ def _parse_collection_payload(raw: dict[str, Any], model: type[Any], action: str
                 source_url=None,
                 errors=errors,
                 entity_type="collection_target",
+            )
+        raise _validation_error(client_name, request_id, errors) from exc
+
+
+def _parse_company_payload(raw: dict[str, Any], model: type[Any], action: str) -> Any:
+    request_id = raw.get("request_id") if isinstance(raw, dict) else None
+    client_name = (raw.get("client_name") if isinstance(raw, dict) else None) or "mcp-client"
+    try:
+        return model.model_validate(raw)
+    except ValidationError as exc:
+        errors = pydantic_errors(exc, raw)
+        with SessionLocal() as db:
+            record_failed_attempt(
+                db,
+                action=action,
+                request_id=request_id,
+                client_name=client_name,
+                source_url=None,
+                errors=errors,
+                entity_type="company",
             )
         raise _validation_error(client_name, request_id, errors) from exc
 
@@ -637,6 +662,48 @@ def add_company_alias_tool(
     except CompanyIdentityValidationError as exc:
         raise _company_domain_error(
             client_name=client_name, request_id=request_id, action="company_alias_add", exc=exc
+        ) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="set_company_industries",
+    title="企業のカテゴリを一括設定",
+    description=(
+        "既存企業に紐づく業界・業種カテゴリを、指定した一覧で全置換します。"
+        "小売・流通とIT・通信のように複数業界を登録でき、一覧の先頭が代表カテゴリになります。"
+        "収集対象が未作成の企業にも設定できます。resolve_companyまたはlist_unmonitored_companiesで企業IDを確認し、"
+        "業界ごとに1件、必要な場合はその業界に属する業種を指定してください。"
+        "既存カテゴリを残して追加する場合は、現在のカテゴリも一覧に含めてください。認証が必要です。"
+    ),
+    annotations=REPLACING,
+)
+def set_company_industries_tool(payload: CompanyIndustryUpdatePayload) -> MCPCompanyIndustryWriteResponse:
+    request = _parse_company_payload(payload, CompanyIndustryUpdateRequest, "company_industries_update")
+    try:
+        with SessionLocal() as db:
+            company, replayed = replace_company_industries(
+                db,
+                company_id=request.company_id,
+                entries=request.industries,
+                request_id=request.request_id,
+                client_name=request.client_name,
+            )
+            return MCPCompanyIndustryWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "message": "同じ企業カテゴリ設定は処理済みです" if replayed else "企業カテゴリを設定しました",
+                    "company": company_identity_dict(company),
+                }
+            )
+    except CompanyIdentityValidationError as exc:
+        raise _company_domain_error(
+            client_name=request.client_name,
+            request_id=request.request_id,
+            action="company_industries_update",
+            exc=exc,
         ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"}) from exc

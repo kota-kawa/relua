@@ -13,6 +13,7 @@ from pydantic import Field, ValidationError
 from app.config import get_settings
 from app.db import SessionLocal
 from app.schemas import (
+    DESCRIPTION_GUIDANCE,
     ClientName,
     CollectionCheckPayload,
     CollectionCheckRequest,
@@ -181,6 +182,7 @@ mcp = FastMCP(
         "誤登録を削除する場合はpreview_delete_opportunityで影響を確認してからdelete_opportunityを使ってください。"
         "誤って削除した募集はrestore_opportunityで同じIDと公開コードのまま復元できます。"
         "日付はYYYY-MM-DD、URLはhttpsを使用し、推測できない任意項目はnullにしてください。"
+        f"募集のdescriptionは{DESCRIPTION_GUIDANCE}"
         "自由記述には出典の文章を転記せず、日程・対象・報酬などの事実だけを自分の言葉で書いてください。"
         "出典独自の言い回しやキャッチコピー、担当者名などの個人名、個人宛の連絡先は登録しないでください。"
         "情報源には企業自身の採用ページなど一次情報を指定し、求人サイトや口コミサイトの掲載ページは使用しないでください。"
@@ -863,6 +865,7 @@ def find_opportunities_by_source_url_tool(
     description=(
         "payloadを保存せずに検証し、固定値の誤りと重複の疑いを返します。"
         "検証に失敗しても登録は行われないため、内容に自信がないときは先にこのツールを使ってください。"
+        f"{DESCRIPTION_GUIDANCE}"
     ),
     annotations=READ_ONLY,
 )
@@ -916,6 +919,7 @@ def validate_opportunity(
         "同じ企業・同名イベントで、対象学年・実施日・対象職種も一致する場合だけ登録を拒否し、既存の登録を返します。"
         "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば「同名だが別募集」として登録し、"
         "warningsで既存の登録を知らせます（会社が28卒・29卒で同じイベント名を使い回す場合など）。"
+        f"{DESCRIPTION_GUIDANCE}"
         "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
     ),
     annotations=APPEND_ONLY,
@@ -978,6 +982,7 @@ def add_opportunity(
         "find_similar_opportunitiesとadd_opportunityを毎回2回呼ぶ手間を1回にまとめたツールです。"
         "対象学年・実施日・対象職種まで一致する完全な重複を意図的に複数登録したい場合は、"
         "代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
+        f"{DESCRIPTION_GUIDANCE}"
     ),
     annotations=APPEND_ONLY,
 )
@@ -1040,6 +1045,7 @@ def upsert_opportunity(
         "既存の募集情報を全項目置換で更新します。部分更新は行わないため、"
         "get_opportunityで現在値を取得し、変更しない項目もそのまま含めた完全なpayloadを送ってください。"
         "状況や締切だけを直す場合はupdate_recruitment_statusを使ってください。"
+        f"descriptionを変更する場合は、{DESCRIPTION_GUIDANCE}"
         "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
         "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
         "更新にあたって一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
@@ -1136,6 +1142,7 @@ def preview_opportunity_patch_tool(
     description=(
         "指定した項目だけを更新し、サーバー側で現在値とマージして全項目を再検証します。"
         "expected_updated_atが現在値と違う場合は上書きせず拒否します。先にpreview_opportunity_patchを実行してください。"
+        f"descriptionを変更する場合は、{DESCRIPTION_GUIDANCE}"
         "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
         "タグや分類だけの修正のように、一次情報を読み直していない修正でも安全に使えます。"
         "一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"

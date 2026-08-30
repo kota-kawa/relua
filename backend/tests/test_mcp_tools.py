@@ -175,13 +175,29 @@ def test_search_filters_publish_their_allowed_values():
 
 def test_write_payload_schema_documents_its_fixed_values_and_rules():
     listed = asyncio.run(mcp_server.mcp.list_tools())
-    payload = {tool.name: tool.inputSchema for tool in listed}["add_opportunity"]["properties"]["payload"]
+    schemas = {tool.name: tool.inputSchema for tool in listed}
+    payload = schemas["add_opportunity"]["properties"]["payload"]
 
     assert payload["properties"]["industry"]["enum"][0] == "IT・通信"
     assert "get_sectors" in payload["properties"]["sector"]["description"]
     assert payload["properties"]["request_id"]["minLength"] == 8
     assert payload["required"] == sorted(payload["required"], key=payload["required"].index)
     assert all("description" in field for field in payload["properties"].values())
+
+
+def test_write_description_schema_asks_for_a_concrete_informative_summary():
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    tools = {tool.name: tool for tool in listed}
+    description = tools["add_opportunity"].inputSchema["properties"]["payload"]["properties"]["description"]
+
+    assert "2〜4文" in description["description"]
+    assert "100〜300文字" in description["description"]
+    assert "主な業務・プログラム内容" in description["description"]
+    assert "推測せず省略" in description["description"]
+    assert description["examples"][0].count("。") >= 3
+
+    for name in ("add_opportunity", "upsert_opportunity", "update_opportunity", "patch_opportunity"):
+        assert "2〜4文" in tools[name].description
 
 
 def test_search_returns_summaries_with_a_citable_url(tools, db):

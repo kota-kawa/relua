@@ -112,6 +112,13 @@ NO_VERBATIM = (
 #: Postings often name a recruiter or give a direct contact. Neither is needed to describe an
 #: opportunity, and no other field in this service identifies an individual.
 NO_PERSONAL_DATA = "担当者名などの個人名と、個人宛のメールアドレス・電話番号は含めません。"
+#: A short prompt is easy for an MCP client to follow and keeps descriptions informative without
+#: asking it to invent facts that are absent from the primary source.
+DESCRIPTION_GUIDANCE = (
+    "一言で終わらせず、出典で確認できる範囲で2〜4文（目安100〜300文字）を使って具体的にまとめてください。"
+    "「何をする募集か」「主な業務・プログラム内容」「対象者」「実施形式・期間」「経験できること・特徴」から、"
+    "確認できた情報をできるだけ含めます。情報がない項目は推測せず省略し、日程・場所・選考・応募要件・報酬は各専用項目にも入力してください。"
+)
 
 
 class OpportunityInput(BaseModel):
@@ -156,10 +163,14 @@ class OpportunityInput(BaseModel):
         StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
         Field(
             description=(
-                f"募集内容の説明。{NO_VERBATIM}{NO_PERSONAL_DATA}"
+                f"募集内容の説明。{DESCRIPTION_GUIDANCE}{NO_VERBATIM}{NO_PERSONAL_DATA}"
                 "HTMLタグ、Markdown画像、Markdownリンクは使用できません。"
             ),
-            examples=["プロダクト開発を2週間体験する実務型インターンです。"],
+            examples=[
+                "Webサービスの企画・開発課題に取り組む2週間の実務型インターンです。"
+                "社員のサポートを受けながらチームで要件整理から実装、成果発表まで行い、"
+                "現場の開発プロセスを体験できます。対象は情報系を学ぶ学生です。"
+            ],
         ),
     ]
     event_format: Annotated[EventFormatValue, Field(description="開催形式。", examples=["オンライン"])]
@@ -687,12 +698,22 @@ class MCPUpdateRequest(OpportunityUpdate):
 WritePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(MCPWriteRequest.model_json_schema()),
-    Field(description="登録する募集情報の全項目。固定値はget_master_values／get_sectorsのnameを指定します。"),
+    Field(
+        description=(
+            "登録する募集情報の全項目。固定値はget_master_values／get_sectorsのnameを指定します。"
+            f"{DESCRIPTION_GUIDANCE}"
+        )
+    ),
 ]
 UpdatePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(MCPUpdateRequest.model_json_schema()),
-    Field(description="更新後の全項目。部分更新ではないため、変更しない項目も現在値を必ず含めてください。"),
+    Field(
+        description=(
+            "更新後の全項目。部分更新ではないため、変更しない項目も現在値を必ず含めてください。"
+            f"descriptionを変更する場合は、{DESCRIPTION_GUIDANCE}"
+        )
+    ),
 ]
 
 _opportunity_patch_schema = OpportunityInput.model_json_schema()
@@ -701,7 +722,12 @@ _opportunity_patch_schema["title"] = "OpportunityPatch"
 OpportunityPatchPayload = Annotated[
     dict[str, Any],
     WithJsonSchema(_opportunity_patch_schema),
-    Field(description="変更する募集情報の項目だけを指定します。省略した項目は現在値を維持します。"),
+    Field(
+        description=(
+            "変更する募集情報の項目だけを指定します。省略した項目は現在値を維持します。"
+            f"descriptionを変更する場合は、{DESCRIPTION_GUIDANCE}"
+        )
+    ),
 ]
 
 

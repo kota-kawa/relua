@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { BackLink } from "@/components/back-link";
 import { BookmarkButton } from "@/components/bookmark-button";
-import { CalendarDays, ExternalLink, Flag, MapPin } from "@/components/icons";
+import { ArrowRight, CalendarDays, ExternalLink, Flag, MapPin } from "@/components/icons";
 import { OpportunityActions } from "@/components/opportunity-actions";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { RecentTracker } from "@/components/recent-tracker";
@@ -100,9 +100,16 @@ export default async function OpportunityDetail({ params }: Props) {
                 <section className="prose-section">
                   <h2>選考フロー</h2>
                   <div className="process-flow">
-                    {item.selection_process.split("→").map((step, index) => (
-                      <span key={`${step}-${index}`}><i>{index + 1}</i>{step}</span>
-                    ))}
+                    {item.selection_process
+                      .split("→")
+                      .map((step) => step.trim())
+                      .filter(Boolean)
+                      .map((step, index) => (
+                        <div className="process-node" key={`${step}-${index}`}>
+                          {index > 0 && <ArrowRight className="process-arrow" size={18} strokeWidth={2.5} />}
+                          <span className="process-step"><i>{index + 1}</i>{step}</span>
+                        </div>
+                      ))}
                   </div>
                 </section>
               )}

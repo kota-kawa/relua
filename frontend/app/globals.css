@@ -606,10 +606,13 @@ button, summary, select { cursor: pointer; }
 /* Cap the measure: the content column runs ~1160px wide on a large desktop,
    which is roughly 80 Japanese characters per line — far past comfortable. */
 .prose-section > p { max-width: 46em; margin: 0; color: #434b56; font-size: 14px; line-height: 2.05; white-space: pre-wrap; }
-.process-flow { display: flex; flex-wrap: wrap; gap: 10px; }
-.process-flow span { display: inline-flex; align-items: center; gap: 8px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 4px; background: var(--white); font-size: 13px; }
-.process-flow span:not(:last-child)::after { content: "→"; position: relative; right: -19px; color: var(--orange); }
-.process-flow i { display: grid; place-items: center; width: 20px; height: 20px; color: white; background: var(--ink); border-radius: 50%; font-family: Georgia, serif; font-size: 11px; font-style: normal; }
+/* A step and the arrow that leads into it travel as one unit, so an arrow is
+   never stranded at the end of a wrapped row. */
+.process-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 8px; }
+.process-node { display: inline-flex; align-items: center; gap: 8px; }
+.process-arrow { flex: none; color: var(--orange); }
+.process-step { display: inline-flex; align-items: center; gap: 8px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 4px; background: var(--white); font-size: 13px; }
+.process-step i { display: grid; place-items: center; width: 20px; height: 20px; color: white; background: var(--ink); border-radius: 50%; font-family: Georgia, serif; font-size: 11px; font-style: normal; }
 .note-box { margin-top: 18px !important; padding: 15px 18px; border-left: 3px solid var(--orange); background: var(--orange-soft); }
 .detail-sidebar { position: sticky; top: 28px; padding: 27px; border: 1px solid var(--line); border-radius: 8px; background: var(--white); }
 .detail-sidebar h2 { margin: 0 0 22px; font-family: Georgia, "Yu Mincho", serif; font-size: 18px; }
@@ -1089,8 +1092,9 @@ button, summary, select { cursor: pointer; }
   .detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .detail-actions > .secondary-action:last-child { grid-column: 1 / -1; }
   .prose-section { padding-left: 16px; }
-  .process-flow { display: grid; }
-  .process-flow span:not(:last-child)::after { content: "↓"; position: absolute; right: auto; margin-top: 38px; margin-left: 3px; }
+  .process-flow { flex-direction: column; align-items: stretch; gap: 4px; }
+  .process-node { flex-direction: column; align-items: stretch; gap: 4px; }
+  .process-arrow { align-self: center; margin: 2px 0; transform: rotate(90deg); }
   .footer-inner { display: grid; gap: 28px; }
   .footer-links { justify-content: flex-start; max-width: none; gap: 12px 18px; }
   .footer-caution { text-align: left; }

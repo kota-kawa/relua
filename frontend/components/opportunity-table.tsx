@@ -2,6 +2,7 @@ import { ArrowRight, MapPin } from "@/components/icons";
 import { NavLink } from "@/components/nav-link";
 import { deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 import { stagger } from "@/lib/motion";
+import { opportunityPath } from "@/lib/site";
 import type { Opportunity } from "@/lib/types";
 
 export function OpportunityTable({ items }: { items: Opportunity[] }) {
@@ -26,7 +27,7 @@ export function OpportunityTable({ items }: { items: Opportunity[] }) {
               </td>
               <td className="table-opportunity" data-label="募集">
                 <span>{item.company.name}</span>
-                <NavLink href={`/opportunities/${item.id}`}>{item.event_name}</NavLink>
+                <NavLink href={opportunityPath(item.public_code)}>{item.event_name}</NavLink>
                 <small>{item.industry.name}・{item.sector.name}</small>
               </td>
               <td className="table-deadline" data-label="締切">
@@ -44,7 +45,7 @@ export function OpportunityTable({ items }: { items: Opportunity[] }) {
                 {!!item.tags.length && <small className="table-tech">{item.tags.slice(0, 3).join(" / ")}</small>}
               </td>
               <td className="table-action">
-                <NavLink href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={17} /></NavLink>
+                <NavLink href={opportunityPath(item.public_code)} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={17} /></NavLink>
               </td>
             </tr>
           ))}

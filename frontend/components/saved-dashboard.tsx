@@ -29,6 +29,7 @@ import {
   removeBookmarks,
   urlFitsTransferLimit,
 } from "@/lib/local-data";
+import { opportunityPath } from "@/lib/site";
 import type { Opportunity } from "@/lib/types";
 
 function subscribe(callback: () => void) {
@@ -326,7 +327,7 @@ export function SavedDashboard() {
             <ul className="recent-list">
               {recentItems.map((item) => {
                 const entry = recentEntries.find((recent) => recent.id === item.id);
-                return <li key={item.id}><Link href={`/opportunities/${item.id}`}><span>{item.company.name}</span><strong>{item.event_name}</strong></Link><time>{entry ? new Date(entry.viewedAt).toLocaleString("ja-JP") : ""}</time></li>;
+                return <li key={item.id}><Link href={opportunityPath(item.public_code)}><span>{item.company.name}</span><strong>{item.event_name}</strong></Link><time>{entry ? new Date(entry.viewedAt).toLocaleString("ja-JP") : ""}</time></li>;
               })}
             </ul>
           ) : <p className="local-empty">閲覧履歴はありません。</p>}

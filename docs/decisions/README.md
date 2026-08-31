@@ -20,5 +20,6 @@
 | [`0012-mcp-maintenance-eligibility.md`](./0012-mcp-maintenance-eligibility.md) | MCPの定期保守対象を募集予定・募集中・通年募集に限定する | Accepted |
 | [`0013-official-source-allowlist-and-check-evidence.md`](./0013-official-source-allowlist-and-check-evidence.md) | 企業公式sourceをallowlistと確認URLの一致で保護する | Accepted |
 | [`0014-scheduled-expiry-cleanup.md`](./0014-scheduled-expiry-cleanup.md) | 論理削除の完全削除を監視可能な日次workflowで実行する | Accepted |
+| [`0015-canonical-public-urls-and-indexable-facets.md`](./0015-canonical-public-urls-and-indexable-facets.md) | 公開URLを正規化し、単一意図のカテゴリだけをindex対象にする | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

@@ -8,6 +8,10 @@
   --paper-deep: #efede4;
   --white: #fffefa;
   --orange: #f59120;
+  /* The display orange stays true to the mark. Smaller text and white-on-orange
+     controls need darker companions to maintain WCAG AA contrast. */
+  --orange-action: #b45a00;
+  --orange-text: #9b4b00;
   --orange-soft: #fdefda;
   --sage: #8fa3bd;
   --line: #ddd9d4;
@@ -195,7 +199,7 @@ button, summary, select { cursor: pointer; }
 .hero-search input { flex: 1; min-width: 0; height: 100%; padding: 0 16px; border: 0; outline: 0; color: var(--ink-deep); background: transparent; font-size: 15px; }
 .hero-search input::placeholder { color: #888d94; }
 .hero-search button {
-  height: 48px; padding: 0 28px; border: 0; border-radius: 7px; color: white; background: var(--orange);
+  height: 48px; padding: 0 28px; border: 0; border-radius: 7px; color: white; background: var(--orange-action);
   font-weight: 750; transition: transform .2s, background .2s;
 }
 .hero-meta { margin: 14px 0 0; color: #aeb5be; font-size: 13px; letter-spacing: .04em; }
@@ -210,6 +214,15 @@ button, summary, select { cursor: pointer; }
 }
 .quick-filters a.active { color: var(--ink-deep); border-color: var(--white); background: var(--white); }
 .quick-filters a.active svg { color: var(--orange); }
+
+/* Indexable category pages explain the intent and the value of the result set
+   instead of presenting a bare, mechanically filtered list. */
+.category-overview { border-bottom: 1px solid var(--line); background: #f6f2e9; }
+.category-overview-inner { display: grid; grid-template-columns: minmax(220px,.75fr) minmax(0,1.6fr); gap: 48px; align-items: center; padding-top: 25px; padding-bottom: 25px; }
+.category-overview .eyebrow { margin-bottom: 7px; color: var(--orange-text); font-size: 10px; }
+.category-overview h2 { margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: 20px; font-weight: 600; }
+.category-overview-inner > p { margin: 0; color: #555e69; font-size: 13px; line-height: 1.85; }
+.category-overview-inner > p strong { color: var(--ink); }
 
 /* Discovery navigation */
 /* Zero-height target for `#listings`, sitting in normal flow immediately above
@@ -236,7 +249,7 @@ button, summary, select { cursor: pointer; }
 }
 /* Invisible hit-area extension keeps the small chips comfortably tappable. */
 .active-filters li a::before { content: ""; position: absolute; inset: -7px 0; }
-.active-filters li a b { color: #9a6a12; font-size: 11px; font-weight: 800; }
+.active-filters li a b { color: #805400; font-size: 11px; font-weight: 800; }
 .active-filters li a svg { color: #a7825a; }
 .active-filters .clear-all { flex: none; color: var(--muted); font-size: 12px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 /* One highlight slides between the three views instead of each tab painting its
@@ -550,7 +563,7 @@ button, summary, select { cursor: pointer; }
 .card-link:focus-visible { outline: none; }
 .opportunity-card:has(.card-link:focus-visible) { outline: 3px solid rgba(245,145,32,.45); outline-offset: 2px; }
 .card-audience { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.card-audience .primary-tag { padding: 5px 8px; border: 1px solid #edcba2; border-radius: 3px; color: #a2661a; background: #fff7ee; font-size: 11px; font-weight: 700; }
+.card-audience .primary-tag { padding: 5px 8px; border: 1px solid #edcba2; border-radius: 3px; color: #955900; background: #fff7ee; font-size: 11px; font-weight: 700; }
 .card-facts { display: grid; gap: 7px; margin: 14px 0 0; color: #535a64; font-size: 12px; }
 .card-facts span { display: flex; align-items: center; gap: 7px; }
 .card-facts svg { color: #808791; }
@@ -558,7 +571,7 @@ button, summary, select { cursor: pointer; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag-list span { padding: 5px 8px; border: 1px solid #dcdee2; border-radius: 3px; color: #656a71; background: #faf9f5; font-size: 11px; }
 .tag-list .primary-tag { border-color: #edcba2; color: #c27920; background: #fff7ee; }
-.card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding-top: 18px; border-top: 1px solid #e9e9e3; color: #89928e; font-size: 12px; }
+.card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding-top: 18px; border-top: 1px solid #e9e9e3; color: #626b67; font-size: 12px; }
 .card-cta { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-size: 12px; font-weight: 800; }
 .card-cta svg { transition: transform .2s; }
 
@@ -582,7 +595,7 @@ button, summary, select { cursor: pointer; }
 
 /* Detail */
 .detail-page { padding: 35px 0 100px; }
-.back-link { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; margin-bottom: 20px; color: var(--muted); font-size: 13px; font-weight: 700; }
+.back-link { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; margin-bottom: 20px; color: #586477; font-size: 13px; font-weight: 700; }
 .detail-hero { display: grid; grid-template-columns: minmax(0,1fr) 255px; gap: 55px; padding: 48px 52px; color: white; background: var(--ink); border-radius: 12px; box-shadow: var(--shadow); }
 .detail-hero .company-name { margin-top: 28px; }
 .detail-hero h1 { max-width: 700px; margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: clamp(27px, 4vw, 42px); font-weight: 500; line-height: 1.42; }
@@ -590,10 +603,10 @@ button, summary, select { cursor: pointer; }
 .detail-tags span { border-color: rgba(255,255,255,.18); color: #dce0e6; background: rgba(255,255,255,.06); }
 .detail-tags .primary-tag { border-color: rgba(255,196,125,.45); color: #ffd6a3; background: rgba(239,153,49,.13); }
 .deadline-box { align-self: center; padding: 24px; color: var(--ink-deep); background: var(--paper); border-radius: 8px; }
-.deadline-box > span { display: block; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; }
-.deadline-box strong { display: block; margin: 10px 0 2px; color: var(--orange); font-family: Georgia, "Yu Mincho", serif; font-size: 23px; }
+.deadline-box > span { display: block; color: #586477; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+.deadline-box strong { display: block; margin: 10px 0 2px; color: var(--orange-text); font-family: Georgia, "Yu Mincho", serif; font-size: 23px; }
 .deadline-box small { color: #777c84; font-size: 12px; }
-.entry-button { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 20px; padding: 13px; color: white; background: var(--orange); border-radius: 5px; font-size: 13px; font-weight: 800; transition: transform .15s, background .2s, color .2s; }
+.entry-button { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 20px; padding: 13px; color: white; background: var(--orange-action); border-radius: 5px; font-size: 13px; font-weight: 800; transition: transform .15s, background .2s, color .2s; }
 .entry-button-secondary { color: var(--ink); background: transparent; border: 1px solid var(--ink); }
 .detail-layout { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 70px; align-items: start; margin-top: 66px; }
 .detail-actions { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
@@ -618,20 +631,31 @@ button, summary, select { cursor: pointer; }
 .detail-sidebar h2 { margin: 0 0 22px; font-family: Georgia, "Yu Mincho", serif; font-size: 18px; }
 .detail-sidebar dl { margin: 0; }
 .detail-row { padding: 15px 0; border-top: 1px solid #e7e8e2; }
-.detail-row dt { margin-bottom: 7px; color: #848990; font-size: 11px; font-weight: 800; letter-spacing: .07em; }
+.detail-row dt { margin-bottom: 7px; color: #5f6874; font-size: 11px; font-weight: 800; letter-spacing: .07em; }
 .detail-row dd { margin: 0; color: #353e4b; font-size: 13px; line-height: 1.6; }
 .detail-row dd span { display: flex; align-items: center; gap: 7px; }
 .detail-row dd small { display: block; margin: 5px 0 0 23px; color: var(--muted); }
 .source-links { display: grid; gap: 8px; margin-top: 20px; }
 .source-links a { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; font-weight: 750; }
-.updated-note { margin: 18px 0 0; color: #929b97; font-size: 12px; text-align: center; }
-.correction-link { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 8px 0 0; color: #929b97; font-size: 11px; }
+.updated-note { margin: 18px 0 0; color: #626b67; font-size: 12px; text-align: center; }
+.correction-link { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 8px 0 0; color: #626b67; font-size: 11px; }
 .same-company-opportunities { margin-top: 88px; padding-top: 48px; border-top: 1px solid var(--line); }
 .same-company-heading { display: flex; align-items: end; justify-content: space-between; gap: 32px; margin-bottom: 25px; }
 .same-company-heading .eyebrow { margin-bottom: 9px; font-size: 11px; }
 .same-company-heading h2 { margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: 27px; font-weight: 600; }
 .same-company-heading > p { max-width: 390px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; text-align: right; }
 .same-company-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* A crawlable, human-facing directory complements form controls, which search
+   crawlers do not submit to discover every useful single-facet landing page. */
+.category-directory { padding: 72px 0 82px; border-top: 1px solid var(--line); background: #f3f0e8; }
+.category-directory .eyebrow { color: var(--orange-text); }
+.category-directory > .shell > h2 { margin: 7px 0 8px; font-family: Georgia, "Yu Mincho", serif; font-size: 27px; font-weight: 600; }
+.category-directory-lead { margin: 0; color: #5d665f; font-size: 13px; }
+.category-directory-groups { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 34px 48px; margin-top: 36px; }
+.category-directory-groups h3 { margin: 0 0 13px; padding-bottom: 9px; border-bottom: 1px solid #d8d7d0; font-size: 13px; }
+.category-directory-groups ul { display: flex; flex-wrap: wrap; gap: 7px 8px; margin: 0; padding: 0; list-style: none; }
+.category-directory-groups a { display: inline-flex; padding: 7px 10px; border: 1px solid #ddddd7; border-radius: 99px; color: #4a535f; background: rgba(255,255,255,.62); font-size: 11px; font-weight: 700; }
 
 /* About — Why Relua? */
 .hex-field {
@@ -701,7 +725,7 @@ button, summary, select { cursor: pointer; }
 .closing-motto span { display: block; color: #ffc47d; }
 .closing-cta {
   display: inline-flex; align-items: center; gap: 9px; margin-top: 26px; padding: 15px 30px;
-  border-radius: 6px; color: white; background: var(--orange); font-size: 14px; font-weight: 800;
+  border-radius: 6px; color: white; background: var(--orange-action); font-size: 14px; font-weight: 800;
   transition: transform .2s, background .2s;
 }
 
@@ -847,7 +871,7 @@ button, summary, select { cursor: pointer; }
 .confirm-card > .transfer-paste-form { margin-top: 24px; }
 .import-back-link { display: inline-block; margin-top: 22px; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
 
-/* Footer & loading */
+/* Footer */
 .site-footer { padding: 48px 0; color: #b7bdc6; background: var(--ink-deep); }
 .footer-inner { display: flex; align-items: flex-end; justify-content: space-between; }
 .footer-brand { margin: 0 0 8px; color: white; font-family: Georgia, serif; font-size: 21px; font-style: italic; letter-spacing: .02em; }
@@ -877,7 +901,7 @@ button, summary, select { cursor: pointer; }
 /* Hover styling is opt-in so touch devices don't get stuck hover states. */
 @media (hover: hover) {
   .header-navigation > a:hover { color: var(--orange); }
-  .hero-search button:hover { background: #de8a23; transform: translateY(-1px); }
+  .hero-search button:hover { background: #954b00; transform: translateY(-1px); }
   .quick-filters a:hover { border-color: rgba(255,255,255,.85); color: white; }
   .quick-filters a.active:hover { border-color: var(--white); color: var(--ink-deep); }
   .active-filters li a:hover { border-color: var(--orange); background: #fbe5c4; }
@@ -913,34 +937,6 @@ button, summary, select { cursor: pointer; }
 .bookmark-button:active, .secondary-action:active, .local-tools button:active, .file-import:active,
 .shared-list-action button:active, .table-action a:active, .calendar-arrow:active, .panel-close:active { transform: scale(.94); transition-duration: .08s; }
 .active-filters li a:active, .quick-filters a:active { transform: scale(.96); transition-duration: .08s; }
-/* The skeleton only reaches the screen on a cold load — client navigations keep
-   the previous page up instead. Holding it back for a moment means a load that
-   was nearly done never shows a placeholder at all. */
-.loading-page { animation: fade-in var(--dur-base) var(--ease-standard) .12s both; }
-.loading-filter, .loading-card, .loading-back, .loading-detail-actions, .loading-detail-block, .loading-detail-side { background: linear-gradient(100deg,#e7e5de 30%,#f3f1eb 50%,#e7e5de 70%); background-size: 400%; animation: shimmer 1.4s infinite; }
-/* The two headers the site actually has are navy, so their placeholders are
-   navy: a grey block in their place makes the moment the page arrives read as a
-   different page rather than the same one filling in. */
-.loading-hero, .loading-detail-hero { background: linear-gradient(100deg,#1d3251 30%,#2b4468 50%,#1d3251 70%); background-size: 400%; animation: shimmer 1.4s infinite; }
-.loading-hero { height: 246px; }
-.loading-tabs { height: 62px; border-bottom: 1px solid var(--line); background: var(--white); }
-.loading-layout { display: grid; grid-template-columns: 230px 1fr; gap: 48px; padding: 65px 0; }
-.loading-filter { height: 570px; border-radius: 7px; }
-.loading-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.loading-card { height: 370px; border-radius: 9px; }
-/* The bar is thinner than the real link, so the margins make up the rest of
-   its 44px tap target and the navy block below starts where it will land. */
-.loading-back { width: 132px; height: 20px; margin: 12px 0 32px; border-radius: 4px; }
-.loading-detail-hero { height: 298px; border-radius: 12px; box-shadow: var(--shadow); }
-/* Stands in for the save / share / calendar row, which sets how far down the
-   page the reading column starts. */
-.loading-detail-actions { width: 430px; max-width: 100%; height: 44px; margin-top: 18px; border-radius: 5px; }
-.loading-detail-layout { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 70px; align-items: start; margin: 66px 0 100px; }
-.loading-detail-main { display: grid; gap: 48px; }
-.loading-detail-block { height: 168px; border-radius: 7px; }
-.loading-detail-side { height: 430px; border-radius: 8px; }
-@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
-
 @media (max-width: 920px) {
   .shell { width: min(100% - 32px, 760px); }
   .view-list .shell, .view-calendar .shell { width: min(100% - 32px, 860px); }
@@ -960,11 +956,10 @@ button, summary, select { cursor: pointer; }
   .mobile-filter-body .filter-submit { grid-column: 1/-1; }
   .detail-hero { grid-template-columns: 1fr; gap: 32px; padding: 40px; }
   .deadline-box { width: 100%; }
-  .detail-layout, .loading-detail-layout { grid-template-columns: 1fr; gap: 45px; }
+  .detail-layout { grid-template-columns: 1fr; gap: 45px; }
   .detail-sidebar { position: static; }
-  .loading-detail-hero { height: 320px; }
-  .loading-detail-side { height: 300px; }
   .same-company-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .category-directory-groups { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .concept-pair { grid-template-columns: 1fr; gap: 18px; }
   .honeycomb-section { grid-template-columns: 1fr; gap: 32px; }
   .honeycomb-figure { padding: 26px; }
@@ -1017,6 +1012,7 @@ button, summary, select { cursor: pointer; }
   .quick-filters { flex-wrap: nowrap; overflow-x: auto; margin: 14px -13px 0; padding: 2px 13px; scrollbar-width: none; }
   .quick-filters::-webkit-scrollbar { display: none; }
   .quick-filters a { flex: none; }
+  .category-overview-inner { grid-template-columns: 1fr; gap: 12px; padding-top: 20px; padding-bottom: 20px; }
   :root { --discovery-bar-h: 57px; }
   .discovery-inner { width: calc(100% - 18px); gap: 10px; }
   /* With chips present the bar becomes two rows: sharing one line clipped the
@@ -1077,7 +1073,7 @@ button, summary, select { cursor: pointer; }
   }
   .cta-deadline { flex: none; min-width: 0; }
   .cta-deadline span { display: block; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; }
-  .cta-deadline strong { display: block; margin-top: 2px; color: var(--orange); font-family: Georgia, "Yu Mincho", serif; font-size: 15px; white-space: nowrap; }
+  .cta-deadline strong { display: block; margin-top: 2px; color: var(--orange-text); font-family: Georgia, "Yu Mincho", serif; font-size: 15px; white-space: nowrap; }
   .detail-cta-bar .bookmark-button.compact { flex: none; width: 44px; min-height: 44px; border: 1px solid var(--line); box-shadow: none; }
   .detail-cta-bar .entry-button { flex: 1; margin-top: 0; min-height: 48px; padding: 0 12px; white-space: nowrap; }
   .detail-hero { margin-inline: -3px; padding: 30px 24px; border-radius: 8px; }
@@ -1087,6 +1083,8 @@ button, summary, select { cursor: pointer; }
   .same-company-heading { display: block; }
   .same-company-heading > p { margin-top: 12px; text-align: left; }
   .same-company-grid { grid-template-columns: 1fr; }
+  .category-directory { padding: 52px 0 60px; }
+  .category-directory-groups { grid-template-columns: 1fr; gap: 28px; margin-top: 30px; }
   /* 保存 / 共有 share a row; the calendar button takes the full width so
      "デバイスのカレンダーに追加" stops wrapping onto three lines. */
   .detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -1125,14 +1123,6 @@ button, summary, select { cursor: pointer; }
   .confirm-actions { display: grid; }
   .transfer-paste-actions { display: grid; }
   .import-summary { grid-template-columns: 1fr; }
-  .loading-layout { display: block; }
-  .loading-filter { display: none; }
-  .loading-grid { grid-template-columns: 1fr; }
-  /* Matched to the real hero and discovery bar at this width so swapping the
-     skeleton for the loaded page does not shift what is already on screen. */
-  .loading-hero { height: 256px; }
-  .loading-tabs { height: 70px; }
-  .loading-detail-hero { height: 300px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1148,7 +1138,7 @@ button, summary, select { cursor: pointer; }
      `opacity: 0`, and anything that keeps them from running — a stylesheet that
      arrives late, an extension that stops animations — would leave the page
      blank. With no motion to reduce there is nothing to gain by keeping them. */
-  .page-enter, .loading-page,
+  .page-enter,
   .results-flow .opportunity-card, .results-flow .calendar-item, .results-flow .opportunity-table tbody tr,
   .results-flow .empty-state, .results-flow .calendar-intro, .results-flow .pagination { animation: none !important; }
   /* The blanket reset leaves iteration-count alone, so looping animations would

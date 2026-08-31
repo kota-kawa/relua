@@ -2,6 +2,7 @@ import { ArrowRight, CalendarDays, MapPin } from "@/components/icons";
 import { NavLink } from "@/components/nav-link";
 import { deadlineIsRelative, deadlineLabel } from "@/lib/format";
 import { stagger } from "@/lib/motion";
+import { opportunityPath } from "@/lib/site";
 import type { Opportunity } from "@/lib/types";
 
 const monthFormatter = new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "long", timeZone: "Asia/Tokyo" });
@@ -52,10 +53,10 @@ export function DeadlineCalendar({ items }: { items: Opportunity[] }) {
                       {deadlineIsRelative(item.deadline) && <b>{deadlineLabel(item.deadline)}</b>}
                     </div>
                     <p>{item.company.name}</p>
-                    <h3><NavLink href={`/opportunities/${item.id}`}>{item.event_name}</NavLink></h3>
+                    <h3><NavLink href={opportunityPath(item.public_code)}>{item.event_name}</NavLink></h3>
                     <small><MapPin size={13} /> {item.event_format.name}{item.location ? `・${item.location}` : ""}</small>
                   </div>
-                  <NavLink className="calendar-arrow" href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></NavLink>
+                  <NavLink className="calendar-arrow" href={opportunityPath(item.public_code)} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></NavLink>
                 </article>
               );
             })}
@@ -72,9 +73,9 @@ export function DeadlineCalendar({ items }: { items: Opportunity[] }) {
                 <div className="calendar-content">
                   <div className="calendar-badges"><span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span><span>{item.event_type.name}</span></div>
                   <p>{item.company.name}</p>
-                  <h3><NavLink href={`/opportunities/${item.id}`}>{item.event_name}</NavLink></h3>
+                  <h3><NavLink href={opportunityPath(item.public_code)}>{item.event_name}</NavLink></h3>
                 </div>
-                <NavLink className="calendar-arrow" href={`/opportunities/${item.id}`} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></NavLink>
+                <NavLink className="calendar-arrow" href={opportunityPath(item.public_code)} aria-label={`${item.event_name}の詳細を見る`}><ArrowRight size={18} /></NavLink>
               </article>
             ))}
           </div>

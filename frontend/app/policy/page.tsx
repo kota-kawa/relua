@@ -12,6 +12,7 @@ export const metadata: Metadata = {
     title: "掲載ポリシー — 権利者の方へ",
     description: "情報の収集方針、掲載しないもの、訂正・削除のご依頼について。",
   },
+  alternates: { canonical: "/policy" },
 };
 
 export default function Policy() {

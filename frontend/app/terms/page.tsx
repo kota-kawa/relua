@@ -12,6 +12,7 @@ export const metadata: Metadata = {
     title: "利用規約・免責事項",
     description: "reluaの利用条件、掲載情報の位置づけ、免責事項について。",
   },
+  alternates: { canonical: "/terms" },
 };
 
 export default function Terms() {

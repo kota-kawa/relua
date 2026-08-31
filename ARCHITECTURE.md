@@ -35,6 +35,7 @@ Next.js frontend              FastAPI backend
 - [`frontend/app/api/opportunities/[id]/route.ts`](./frontend/app/api/opportunities/[id]/route.ts) は、保存データを復元する画面が同一オリジンから1件ずつ取得するための薄いプロキシである。
 - [`frontend/lib/browser-api.ts`](./frontend/lib/browser-api.ts) はその route handler を最大8件ずつ呼び、見つからないIDと一時取得失敗を分ける。
 - 画面固有の操作・表示は `frontend/components/`、検索パラメータ・表示整形・SEOは `frontend/lib/` に置く。
+- [`frontend/lib/site.ts`](./frontend/lib/site.ts) が公開originと公開コード詳細pathの正本で、[`frontend/proxy.ts`](./frontend/proxy.ts) が`www`と旧UUID詳細を描画前にcanonical URLへ308転送する。
 - `next.config.ts` は standalone 出力を使う。Docker build 時の `API_INTERNAL_URL` と `NEXT_PUBLIC_SITE_URL` は `frontend/Dockerfile` の build args から埋め込まれる。
 
 ### 2.2 画面と責務
@@ -42,19 +43,21 @@ Next.js frontend              FastAPI backend
 | URL | 主なファイル | 責務 |
 | --- | --- | --- |
 | `/` | `frontend/app/page.tsx` | 公開一覧、検索、絞り込み、並び替え、カード／リスト／カレンダー表示 |
-| `/opportunities/[id]` | `frontend/app/opportunities/[id]/page.tsx` | 詳細、SEOメタデータ、保存、カレンダー登録 |
+| `/opportunities/[id]` | `frontend/app/opportunities/[id]/page.tsx` | 公開コードをcanonicalとする詳細、SEOメタデータ、構造化データ、保存、カレンダー登録。旧UUIDはproxyで転送 |
 | `/saved` | `frontend/app/saved/page.tsx`, `components/saved-dashboard.tsx` | ブックマーク、最近見た募集、JSON/CSV、共有・QR |
 | `/import` | `frontend/app/import/page.tsx`, `components/import-bookmarks.tsx` | 引き継ぎリンクの確認と localStorage へのマージ |
 | `/list` | `frontend/app/list/page.tsx`, `components/shared-opportunity-list.tsx` | 共有リンクから募集を読み込む |
 | `/about`, `/terms`, `/policy` | 各 `page.tsx` | サービス説明、利用規約、プライバシー説明 |
-| `/sitemap.xml`, `/robots.txt` | `sitemap.ts`, `robots.ts` | SEO用の公開URL |
+| `/sitemap.xml`, `/robots.txt` | `sitemap.ts`, `robots.ts` | 実行時の募集中データとindex可能カテゴリから作るcanonical公開URL |
+
+一覧の自由検索、並び替え、複合ファセット、範囲外ページは`noindex, follow`とする。業界、業種、職種、募集種別、開催形式、卒業年度は、単一条件で最低件数を満たす場合だけindex対象にし、説明とカテゴリディレクトリをSSRする。詳細は募集予定・募集中・通年募集かつ締切前／未定だけをindex対象にする。
 
 ### 2.3 遷移中の表示とモーション
 
-遷移のあいだ何が見えているかは、`loading.tsx` の有無で決まります。
+遷移中はルート直下に`loading.tsx`を置かず、routerが現在の画面を保持したままサーバー応答を待つ。詳細・範囲外ページで先にskeletonをストリーミングすると、ページ内の308／404がHTTP 200に変わるためである。フィードバックはroot layoutの進捗バーで示す。
 
-- 同じ画面のURLだけを変える遷移（絞り込み・並び替え・表示切替・ページ送り）では、routerは新しい結果が揃うまで今の画面を出したままにする。`app/loading.tsx` は表示されない。押した瞬間に何も起きないように見えるため、フィードバックは自前で出す。
-- 別ルートへの遷移（詳細ページなど）では、そのルート直近の `loading.tsx` が即座に出る。skeleton自体がフィードバックなので、進捗表示は重ねない。
+- 同じ画面のURLだけを変える遷移（絞り込み・並び替え・表示切替・ページ送り）では、routerは新しい結果が揃うまで今の画面を出したままにする。押した側の状態と`RouteProgress`で反応を示す。
+- 別ルートへの遷移（詳細ページなど）でも、現在の画面を出したまま応答を待つ。成功時は新しいページを表示し、旧UUIDの308や存在しないページの404はストリーミング前に確定させる。
 
 | ファイル | 役割 |
 | --- | --- |
@@ -271,7 +274,7 @@ MCP client
 | `redis` | `docker-compose.yml` | Redis 7、レート制限、永続 volume `redis_data` |
 | `api` | `backend/Dockerfile` | Alembic後に Uvicorn/FastAPI を8000番で起動 |
 | `frontend` | `frontend/Dockerfile` | Next standalone を3000番で起動 |
-| Nginx | `relua.conf` | TLS、公開MCP/OAuth、Next.jsへのルーティング、MCPストリーミングの非バッファリング |
+| Nginx | `relua.conf` | TLS、`www`からapexへの308、公開MCP/OAuth、Next.jsへのルーティング、MCPストリーミングの非バッファリング |
 
 環境変数の一覧と開発値は [`.env.example`](./.env.example)、起動手順は [`README.md`](./README.md) を正本とします。実際の秘密値は `.env` に置き、コミットしません。
 
@@ -289,6 +292,7 @@ MCP client
 | 変更したいもの | 最初に読むコード | 同時に確認するもの |
 | --- | --- | --- |
 | 公開一覧・詳細 | `frontend/app/`, `frontend/components/`, `frontend/lib/api.ts` | `backend/app/api/opportunities.py`, frontend tests |
+| canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/app/sitemap.ts` | `relua.conf`, SEO tests、ADR-0015 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py` |

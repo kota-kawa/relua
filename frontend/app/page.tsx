@@ -1,11 +1,15 @@
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 
+import { CategoryDirectory } from "@/components/category-directory";
+import { CategoryOverview } from "@/components/category-overview";
 import { DeadlineCalendar } from "@/components/deadline-calendar";
 import { DiscoveryNav, type ViewMode } from "@/components/discovery-nav";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { FilterPanel } from "@/components/filter-panel";
 import { Hero } from "@/components/hero";
+import { JsonLd } from "@/components/json-ld";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { OpportunityTable } from "@/components/opportunity-table";
 import { Pagination } from "@/components/pagination";
@@ -14,6 +18,7 @@ import { SortForm } from "@/components/sort-form";
 import { getMasters, getOpportunities } from "@/lib/api";
 import { withDefaultOpenStatus } from "@/lib/format";
 import { getListingSeo, getSeoFacetCatalog, listingMetadata } from "@/lib/seo";
+import { listingStructuredData } from "@/lib/structured-data";
 import type { SearchParams } from "@/lib/types";
 
 function first(params: SearchParams, key: string) {
@@ -24,22 +29,28 @@ function first(params: SearchParams, key: string) {
 export async function generateMetadata({ searchParams }: { searchParams: Promise<SearchParams> }): Promise<Metadata> {
   const params = await searchParams;
   const initial = listingMetadata(params);
-  if (!getListingSeo(params).facet) return initial;
+  const preliminary = getListingSeo(params);
+  const requestedPage = Number(first(params, "page") ?? 1);
+  if (!preliminary.index || (!preliminary.facet && requestedPage <= 1)) return initial;
 
+  let data;
   try {
-    const [masters, result] = await Promise.all([
+    data = await Promise.all([
       getMasters(),
       getOpportunities(withDefaultOpenStatus(params)),
     ]);
-    return listingMetadata(params, {
-      catalog: getSeoFacetCatalog(masters),
-      resultTotal: result.total,
-    });
   } catch {
     // Do not leave an unverified category URL indexable if the catalog or
     // result count cannot be checked during metadata generation.
     return { robots: { index: false, follow: true } };
   }
+  const [masters, result] = data;
+  if (Number.isSafeInteger(requestedPage) && requestedPage > 1 && requestedPage > result.total_pages) notFound();
+  return listingMetadata(params, {
+    catalog: getSeoFacetCatalog(masters),
+    resultTotal: result.total,
+    totalPages: result.total_pages,
+  });
 }
 
 export default async function Home({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -53,9 +64,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
     return <ErrorState />;
   }
   const [masters, result] = data;
+  if (result.page > 1 && result.page > result.total_pages) notFound();
   const listingSeo = getListingSeo(params, {
     catalog: getSeoFacetCatalog(masters),
     resultTotal: result.total,
+    totalPages: result.total_pages,
   });
   const categoryLabel = listingSeo.facet?.label;
   const categoryHeading = categoryLabel
@@ -74,9 +87,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
 
   return (
     <main className="page-enter">
+      {listingSeo.index && <JsonLd data={listingStructuredData(result.items, result.page, result.per_page)} />}
       <Hero defaultQuery={query} heading={categoryHeading}>
         <QuickFilters masters={masters} params={params} />
       </Hero>
+      {listingSeo.facet && result.page === 1 && (
+        <CategoryOverview facet={listingSeo.facet} total={result.total} />
+      )}
       <DiscoveryNav masters={masters} params={params} view={view} total={result.total} />
       <section className={`results-section view-${view}`}>
         <div className="shell result-layout">
@@ -110,6 +127,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
           </div>
         </div>
       </section>
+      {listingSeo.index && !listingSeo.facet && result.page === 1 && (
+        <CategoryDirectory masters={masters} />
+      )}
     </main>
   );
 }

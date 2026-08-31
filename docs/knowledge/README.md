@@ -8,6 +8,7 @@
 - 起動・運用コマンドを確認する: [`../../README.md`](../../README.md)
 - なぜその構成になっているかを確認する: [`../decisions/README.md`](../decisions/README.md)
 - 再現・切り分け方法を確認する: [`debugging.md`](./debugging.md)
+- 検索流入、canonical、index対象の回帰を確認する: [`seo-debugging.md`](./seo-debugging.md)
 
 ## 文書追加の基準
 

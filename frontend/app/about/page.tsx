@@ -12,6 +12,7 @@ export const metadata: Metadata = {
     title: "Why Relua? — 名前の由来",
     description: "Relay information. Reveal possibilities. 名前とシンボルに込めた意味。",
   },
+  alternates: { canonical: "/about" },
 };
 
 /** Two interlocking hexagons — the "relay" half of the mark, used as a section marker. */

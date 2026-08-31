@@ -40,12 +40,15 @@ export async function getOpportunities(params: SearchParams): Promise<Opportunit
 }
 
 /** Fetch every opportunity for routes that need a complete site-wide listing. */
-export async function getAllOpportunities(): Promise<Opportunity[]> {
+export async function getAllOpportunities(statuses = ["status-02"]): Promise<Opportunity[]> {
   const perPage = 100;
-  const firstPage = await apiFetch<OpportunityList>(`/opportunities?per_page=${perPage}&sort=updated`);
+  const common = new URLSearchParams({ per_page: String(perPage), sort: "updated" });
+  statuses.forEach((status) => common.append("status", status));
+  const commonQuery = common.toString();
+  const firstPage = await apiFetch<OpportunityList>(`/opportunities?${commonQuery}`);
   const remainingPages = await Promise.all(
     Array.from({ length: firstPage.total_pages - 1 }, (_, index) =>
-      apiFetch<OpportunityList>(`/opportunities?per_page=${perPage}&sort=updated&page=${index + 2}`),
+      apiFetch<OpportunityList>(`/opportunities?${commonQuery}&page=${index + 2}`),
     ),
   );
 

@@ -123,15 +123,14 @@ MCPの公開エンドポイントは `/mcp` と `/mcp/` を同じ意味として
 - `html { scroll-behavior: smooth }` を置くと、App Routerは `<html data-scroll-behavior="smooth">` が無いかぎり遷移中にそれを止められない（devのconsoleに警告が出る）。差し替え中の内容の上を長距離スクロールするので、document のスクローラーは `auto` のままにする。この指定はbrowserのback/forward位置復元も遅延アニメーション化する。
 - ハッシュの飛び先が `position: sticky` / `fixed` だと、routerはその要素を読み飛ばして次の兄弟要素へ落ちる。sticky barそのものにidを付けると、結果セクションの先頭がbarの裏に潜る。飛び先はflow内に置いた高さ0の要素にする。
 - URLに残ったハッシュは、そのhistory entryへ戻るたび再適用され、読み手が実際にいたスクロール位置の復元を上書きする。一度きりの移動はクリック時に `scrollIntoView` し、リンクは `scroll={false}` にしてURLにハッシュを残さない。
-- 遷移が `loading.tsx` の表示中に確定すると、ハッシュの飛び先要素がまだDOMに無く、documentの先頭へ落ちる。skeleton側にも同じidを同じ位置で持たせる。
-- skeletonと実際のheader/hero/barの高さがずれていると、差し替えの瞬間にその差だけ画面が跳ねる。幅ごとに実測して合わせる。
+- 現在はroot/detailに `loading.tsx` を置いていないため、ハッシュの飛び先は実ページのDOMに対して解決される。placeholderを追加する場合は、同じidと高さを持たせたうえで、404／308のHTTP statusを壊さないか確認する。
 
 ## 8. 遷移中に何が表示されるか
 
-「押しても反応がない」「一瞬別の画面が挟まる」を切り分けるときは、まず `loading.tsx` が出ているかどうかを確定させます。dev serverはHMRのwebsocketが張れないとリンクがfull reloadに落ちることがあり、遷移の観察には向きません。`npm run build && npx next start` で確認します。
+「押しても反応がない」「一瞬別の画面が挟まる」を切り分けるときは、`RouteProgress`の表示と実HTTP statusを確認します。現在はroot/detailに `loading.tsx` を置かず、routerが現在のDOMを保持したまま応答を待つ構成です。dev serverはHMRのwebsocketが張れないとリンクがfull reloadに落ちることがあり、遷移の観察には向きません。`npm run build && npx next start` で確認します。
 
-- 同一ルート内の遷移（`/?view=list` など）では `loading.tsx` は出ない。routerは新しい結果が揃うまで今のDOMを保持する。`window.__probe = 1` を置いてから遷移し、遷移後も残っていればclient遷移、消えていればfull reloadである。
-- 別ルートへの遷移では、そのルートに最も近い `loading.tsx` が出る。ルート直下にしか置かないと、詳細ページへ移るあいだ一覧のskeletonが挟まる。
+- 同一ルート内の遷移（`/?view=list` など）は、新しい結果が揃うまで今のDOMを保持し、`RouteProgress`と押した側のpending状態を表示する。`window.__probe = 1` を置いてから遷移し、遷移後も残っていればclient遷移、消えていればfull reloadである。
+- 別ルートへの遷移でも現在の画面を保持する。旧UUIDは308、存在しない詳細は404になり、placeholderの200に置き換わらないことを`curl -I`で確認する。
 - Playwrightで遅い遷移を再現するときは、prefetchまで遅らせないこと。`next-router-prefetch` ヘッダのあるリクエストは素通しし、それ以外の `_rsc=` だけ遅らせる。両方遅らせるとクリックがprefetch待ちになり、遷移そのものが始まらない。
 - 登場アニメーションが再生されないときは、要素が作り直されているかを見る。keyが同じなら React はDOMを再利用し、CSS animationは再実行されない。
 - `prefers-reduced-motion: reduce` の一括リセットは `animation-duration` しか縮めない。`animation-delay` と `animation-fill-mode` は残るので、`opacity: 0` から始まる登場は明示的に `animation: none` で止める。止め忘れると内容が見えないまま残りうる。

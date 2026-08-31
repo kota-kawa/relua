@@ -1,9 +1,17 @@
 import type { Metadata } from "next";
 
-import { currentGraduationYears, FILTER_KEYS, OPEN_STATUS_SLUG, valuesOf } from "@/lib/format";
-import type { Masters, SearchParams } from "@/lib/types";
+import { currentGraduationYears, daysUntil, FILTER_KEYS, OPEN_STATUS_SLUG, valuesOf } from "@/lib/format";
+import { opportunityPath } from "@/lib/site";
+import type { Masters, Opportunity, SearchParams } from "@/lib/types";
 
-export const INDEXABLE_FACET_KEYS = ["industry", "event_type", "graduation_year"] as const;
+export const INDEXABLE_FACET_KEYS = [
+  "industry",
+  "sector",
+  "job_category",
+  "event_type",
+  "event_format",
+  "graduation_year",
+] as const;
 export type IndexableFacetKey = typeof INDEXABLE_FACET_KEYS[number];
 
 export type ListingFacet = {
@@ -14,8 +22,19 @@ export type ListingFacet = {
 
 export type SeoFacetCatalog = Record<IndexableFacetKey, ReadonlyMap<string, string>>;
 
-/** Avoid creating landing pages that have too little useful listing content. */
-export const MIN_INDEXABLE_CATEGORY_RESULTS = 5;
+/** Narrower intents need more inventory before they deserve a search landing page. */
+const MIN_INDEXABLE_RESULTS: Record<IndexableFacetKey, number> = {
+  industry: 5,
+  sector: 8,
+  job_category: 8,
+  event_type: 5,
+  event_format: 8,
+  graduation_year: 5,
+};
+
+export function minimumIndexableResults(key: IndexableFacetKey) {
+  return MIN_INDEXABLE_RESULTS[key];
+}
 
 const LISTING_QUERY_KEYS = new Set([
   "q",
@@ -39,6 +58,7 @@ export type ListingSeo = {
 export type ListingSeoOptions = {
   catalog?: SeoFacetCatalog;
   resultTotal?: number;
+  totalPages?: number;
 };
 
 function noindex(): ListingSeo {
@@ -75,7 +95,10 @@ function usableLabel(label: string) {
 export function getSeoFacetCatalog(masters: Masters): SeoFacetCatalog {
   return {
     industry: new Map(masters.industries.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
+    sector: new Map(masters.sectors.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
+    job_category: new Map(masters.job_categories.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
     event_type: new Map(masters.event_types.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
+    event_format: new Map(masters.event_formats.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
     graduation_year: new Map(
       currentGraduationYears(masters.graduation_years, [])
         .filter((item) => usableLabel(item.name))
@@ -98,7 +121,7 @@ function getIndexableFacet(params: SearchParams, catalog?: SeoFacetCatalog): Lis
   const values = valuesOf(params, key);
   if (values.length !== 1 || !values[0]) return null;
 
-  const label = catalog?.[key].get(values[0]);
+  const label = catalog?.[key]?.get(values[0]);
   if (catalog && !label) return null;
   return { key, slug: values[0], label };
 }
@@ -135,7 +158,7 @@ export function getListingSeo(params: SearchParams, options: ListingSeoOptions =
     return noindex();
   }
 
-  if (facet && options.resultTotal !== undefined && options.resultTotal < MIN_INDEXABLE_CATEGORY_RESULTS) {
+  if (facet && options.resultTotal !== undefined && options.resultTotal < minimumIndexableResults(facet.key)) {
     return noindex();
   }
 
@@ -145,6 +168,7 @@ export function getListingSeo(params: SearchParams, options: ListingSeoOptions =
 
   const page = pageNumber(params);
   if (page === null) return noindex();
+  if (options.totalPages !== undefined && page > Math.max(options.totalPages, 1)) return noindex();
   if (page > 1 && (view === "list" || view === "calendar")) return noindex();
 
   return {
@@ -155,15 +179,20 @@ export function getListingSeo(params: SearchParams, options: ListingSeoOptions =
   };
 }
 
-function categoryMetadata(facet: ListingFacet) {
+function categoryMetadata(facet: ListingFacet, page: number) {
   if (!facet.label) return null;
-  const descriptionPrefix = facet.key === "graduation_year" ? "向け" : "の";
-  const title = facet.key === "event_type"
-    ? `${facet.label}募集情報`
-    : `${facet.label}${descriptionPrefix}インターン・本選考情報`;
+  const subject = facet.key === "graduation_year"
+    ? `${facet.label}向け`
+    : facet.key === "event_format"
+      ? `${facet.label}で参加できる`
+      : `${facet.label}の`;
+  const baseTitle = facet.key === "event_type"
+    ? `${facet.label}の募集情報`
+    : `${subject}インターン・新卒採用情報`;
+  const title = page > 1 ? `${baseTitle}（${page}ページ目）` : baseTitle;
   const description = facet.key === "event_type"
-    ? `${facet.label}の募集情報を検索できます。締切や応募条件を確認して、公式サイトから応募できます。`
-    : `${facet.label}${descriptionPrefix}インターン・本選考・イベントの募集情報を検索できます。締切や応募条件を確認して、公式サイトから応募できます。`;
+    ? `${facet.label}の募集情報を比較できます。応募締切、対象学年、開催形式を確認し、企業の公式サイトから応募できます。${page > 1 ? `${page}ページ目です。` : ""}`
+    : `${subject}インターン・本選考・イベントを比較できます。応募締切、対象学年、開催形式を確認し、企業の公式サイトから応募できます。${page > 1 ? `${page}ページ目です。` : ""}`;
   return {
     title,
     description,
@@ -172,17 +201,77 @@ function categoryMetadata(facet: ListingFacet) {
 
 export function listingMetadata(params: SearchParams, options: ListingSeoOptions = {}): Metadata {
   const seo = getListingSeo(params, options);
-  const category = seo.facet ? categoryMetadata(seo.facet) : null;
+  const page = pageNumber(params) ?? 1;
+  const category = seo.facet ? categoryMetadata(seo.facet, page) : null;
+  const listingPage = !category && seo.index && page > 1
+    ? {
+        title: `インターン・本選考 募集一覧（${page}ページ目）`,
+        description: `現在応募できるインターン・本選考・イベントの募集一覧、${page}ページ目です。締切や応募条件を比較できます。`,
+      }
+    : null;
+  const appearance = category ?? listingPage;
   return {
-    ...(category
+    ...(appearance
       ? {
-          title: category.title,
-          description: category.description,
-          openGraph: { title: category.title, description: category.description },
-          twitter: { title: category.title, description: category.description },
+          title: { absolute: `${appearance.title} | relua` },
+          description: appearance.description,
+          openGraph: { title: appearance.title, description: appearance.description, url: seo.canonical },
+          twitter: { title: appearance.title, description: appearance.description },
         }
       : {}),
     alternates: seo.canonical ? { canonical: seo.canonical } : undefined,
-    robots: { index: seo.index, follow: seo.follow },
+    robots: {
+      index: seo.index,
+      follow: seo.follow,
+      googleBot: {
+        index: seo.index,
+        follow: seo.follow,
+        "max-image-preview": "large",
+        "max-snippet": -1,
+        "max-video-preview": -1,
+      },
+    },
+  };
+}
+
+const INDEXABLE_OPPORTUNITY_STATUS_SLUGS = new Set(["status-01", "status-02", "status-04"]);
+
+export function opportunityIsIndexable(item: Opportunity) {
+  const remaining = daysUntil(item.deadline);
+  return INDEXABLE_OPPORTUNITY_STATUS_SLUGS.has(item.recruitment_status.slug)
+    && (remaining === null || remaining >= 0);
+}
+
+export function opportunityMetadata(item: Opportunity): Metadata {
+  const path = opportunityPath(item.public_code);
+  const index = opportunityIsIndexable(item);
+  const audience = item.graduation_years.map((value) => value.name).join("・");
+  const deadline = item.deadline ? `応募締切は${item.deadline}。` : "応募締切は企業の公式情報をご確認ください。";
+  const summary = item.description.replace(/\s+/g, " ").trim();
+  const description = `${summary.slice(0, 105)}${summary.length > 105 ? "…" : ""} ${audience ? `${audience}対象。` : ""}${deadline}`.slice(0, 160);
+  const title = `${item.company.name} ${item.event_name}`;
+
+  return {
+    title,
+    description,
+    alternates: { canonical: path },
+    openGraph: {
+      title,
+      description,
+      url: path,
+      type: "website",
+    },
+    twitter: { title, description },
+    robots: {
+      index,
+      follow: true,
+      googleBot: {
+        index,
+        follow: true,
+        "max-image-preview": "large",
+        "max-snippet": -1,
+        "max-video-preview": -1,
+      },
+    },
   };
 }

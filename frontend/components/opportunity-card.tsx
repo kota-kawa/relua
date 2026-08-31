@@ -3,6 +3,7 @@ import { ArrowRight, CalendarDays, MapPin } from "@/components/icons";
 import { NavLink } from "@/components/nav-link";
 import { daysUntil, deadlineChipLabel, formatDate } from "@/lib/format";
 import { stagger } from "@/lib/motion";
+import { opportunityPath } from "@/lib/site";
 import type { Opportunity } from "@/lib/types";
 
 function urgencyClass(deadline: string | null) {
@@ -32,7 +33,7 @@ export function OpportunityCard({ item, index = 0 }: { item: Opportunity; index?
           the event name stays the heading the page outline and search rely on. */}
       <p className="company-name">{item.company.name}</p>
       {/* The link is stretched over the whole card, so the card itself is the target. */}
-      <h2><NavLink className="card-link" href={`/opportunities/${item.id}`}>{item.event_name}</NavLink></h2>
+      <h2><NavLink className="card-link" href={opportunityPath(item.public_code)}>{item.event_name}</NavLink></h2>
 
       {/* Eligibility is the first thing a student checks, so it sits with the title. */}
       <div className="card-audience">

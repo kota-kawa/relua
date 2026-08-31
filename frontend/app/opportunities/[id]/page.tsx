@@ -1,24 +1,29 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 
 import { BackLink } from "@/components/back-link";
 import { BookmarkButton } from "@/components/bookmark-button";
 import { ArrowRight, CalendarDays, ExternalLink, Flag, MapPin } from "@/components/icons";
+import { JsonLd } from "@/components/json-ld";
 import { OpportunityActions } from "@/components/opportunity-actions";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { RecentTracker } from "@/components/recent-tracker";
 import { ApiError, getOpportunity, getSameCompanyOpportunities } from "@/lib/api";
 import { CONTACT_FORM_URL } from "@/lib/constants";
 import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
+import { opportunityMetadata } from "@/lib/seo";
+import { opportunityPath } from "@/lib/site";
+import { opportunityStructuredData } from "@/lib/structured-data";
 
 type Props = { params: Promise<{ id: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const item = await getOpportunity((await params).id);
-    return { title: `${item.company.name} ${item.event_name}`, description: item.description.slice(0, 120) };
-  } catch {
-    return { title: "募集情報" };
+    return opportunityMetadata(item);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) notFound();
+    return { title: "募集情報", robots: { index: false, follow: true } };
   }
 }
 
@@ -47,11 +52,16 @@ export default async function OpportunityDetail({ params }: Props) {
     throw error;
   }
 
+  // UUIDs remain accepted by the API and old bookmarks, but search and public
+  // navigation use one stable URL so ranking signals cannot split in two.
+  if (id !== item.public_code) permanentRedirect(opportunityPath(item.public_code));
+
   const entryHref = item.entry_url ?? item.homepage_url ?? item.source_url;
   const sourceCheckedAt = item.source_checked_at ?? item.updated_at;
 
   return (
     <main className="detail-page page-enter">
+      <JsonLd data={opportunityStructuredData(item)} />
       <RecentTracker id={item.id} />
       <div className="shell">
         <BackLink>募集一覧に戻る</BackLink>

@@ -42,6 +42,7 @@
 | --- | --- |
 | [`docs/knowledge/README.md`](./docs/knowledge/README.md) | knowledge文書の追加基準と索引 |
 | [`docs/knowledge/debugging.md`](./docs/knowledge/debugging.md) | Python/DB/Next.js/MCPの環境差異、認証・検索・移行の切り分け |
+| [`docs/knowledge/seo-debugging.md`](./docs/knowledge/seo-debugging.md) | canonical、index対象、Search Console急変の切り分け |
 | [`docs/decisions/README.md`](./docs/decisions/README.md) | ADRの一覧と更新ルール |
 | [`docs/decisions/0001-private-api-and-next-bff.md`](./docs/decisions/0001-private-api-and-next-bff.md) | Next.js BFFとFastAPI内部APIの採用理由 |
 | [`docs/decisions/0002-mcp-write-safety.md`](./docs/decisions/0002-mcp-write-safety.md) | MCP書き込みの検証・冪等化・監査・ロックの理由 |
@@ -50,6 +51,7 @@
 | [`docs/decisions/0012-mcp-maintenance-eligibility.md`](./docs/decisions/0012-mcp-maintenance-eligibility.md) | MCPの定期保守対象を現行募集の状態に限定する理由 |
 | [`docs/decisions/0013-official-source-allowlist-and-check-evidence.md`](./docs/decisions/0013-official-source-allowlist-and-check-evidence.md) | 企業公式source allowlistと確認証跡の理由 |
 | [`docs/decisions/0014-scheduled-expiry-cleanup.md`](./docs/decisions/0014-scheduled-expiry-cleanup.md) | 完全削除を日次schedule化し監視する理由 |
+| [`docs/decisions/0015-canonical-public-urls-and-indexable-facets.md`](./docs/decisions/0015-canonical-public-urls-and-indexable-facets.md) | 公開URL正規化とindex対象カテゴリの理由 |
 
 ## 変更時のルール
 

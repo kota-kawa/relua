@@ -1,8 +1,12 @@
 import type { MetadataRoute } from "next";
 
+import { siteOrigin } from "@/lib/site";
+
 export default function robots(): MetadataRoute.Robots {
+  const base = siteOrigin();
   return {
     rules: { userAgent: "*", allow: "/", disallow: ["/api/"] },
-    sitemap: `${process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3100"}/sitemap.xml`,
+    sitemap: `${base}/sitemap.xml`,
+    host: base,
   };
 }

@@ -281,8 +281,10 @@ Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止�
 - `.env` のDBパスワードを本番固有値へ変更する
 - `API_INTERNAL_TOKEN`と`MCP_API_TOKEN`に、それぞれ異なる十分に長いランダム値を設定する
 - `ENVIRONMENT=production`を設定する（開発用トークンのままではAPIが起動しない）
+- `NEXT_PUBLIC_SITE_URL`をcanonicalのapex origin（本番は`https://relua.net`、末尾pathなし）にする
 - PostgreSQLとRedisの公開ポートを追加しない
 - FastAPIとNext.jsの前段でTLS、CDN、リクエストサイズ制限を設定する
+- `relua.conf`をNginxへ反映して`nginx -t`後にreloadし、`www`とHTTPが同じpath/queryのapex HTTPSへ308になることを確認する
 - OAuthを使わない場合は、MCP接続にSSHポートフォワードまたは運営者専用VPNを使用する
 - OAuthを使う場合は、`MCP_PUBLIC_URL`をhttpsの実ホスト名にし、`MCP_OPERATOR_PASSWORD`を推測できない値にする（開発用の値のままではAPIが起動しない）
 - OAuthを使う場合は、リバースプロキシで `/mcp`、`/oauth`、`/.well-known` だけを公開し、`/api/v1` は公開しない

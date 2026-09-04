@@ -492,13 +492,24 @@ def search_opportunities(
                     )
                 )
 
-    total = int(db.scalar(count_stmt) or 0)
     if not cursor_mode:
         assert page is not None
         stmt = stmt.offset((page - 1) * per_page).limit(per_page)
-        return SearchResult(items=list(db.scalars(stmt).unique()), total=total, page=page, per_page=per_page)
+        items = list(db.scalars(stmt).unique())
+        # A first-page miss proves that the complete filtered result is empty. Return immediately
+        # instead of making PostgreSQL evaluate the same wide keyword/facet predicates again for
+        # COUNT(*), which is particularly expensive when every search branch has to prove a miss.
+        if page == 1 and not items:
+            return SearchResult(items=[], total=0, page=page, per_page=per_page)
+        total = int(db.scalar(count_stmt) or 0)
+        return SearchResult(items=items, total=total, page=page, per_page=per_page)
 
     items = list(db.scalars(stmt.limit(per_page + 1)).unique())
+    # The initial cursor request has no preceding rows, so an empty page also proves total=0. A
+    # later cursor can legitimately be exhausted while the complete result remains non-empty and
+    # must still run the count below to preserve the response contract.
+    if cursor is None and not items:
+        return SearchResult(items=[], total=0, page=1, per_page=per_page)
     has_more = len(items) > per_page
     items = items[:per_page]
     last_relevance_score = None
@@ -521,6 +532,7 @@ def search_opportunities(
             snapshot_at=snapshot_at,
             relevance_score=last_relevance_score,
         )
+    total = int(db.scalar(count_stmt) or 0)
     return SearchResult(items=items, total=total, page=1, per_page=per_page, next_cursor=next_cursor)
 
 

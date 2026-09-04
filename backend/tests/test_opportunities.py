@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import event, insert
 from sqlalchemy.exc import IntegrityError
 
 from app.dates import today_in_tokyo
@@ -47,6 +47,29 @@ def test_create_search_and_idempotent_replay(db):
     assert result.items[0].company.name == "株式会社テスト"
     assert search_opportunities(db, degree=["degree-01"]).total == 1
     assert search_opportunities(db, degree=["degree-06"]).total == 0
+
+
+@pytest.mark.parametrize("cursor_mode", [False, True])
+def test_empty_first_page_skips_count_query(db, cursor_mode):
+    statements = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        result = search_opportunities(
+            db,
+            q="存在しない企業名",
+            page=None if cursor_mode else 1,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert result.items == []
+    assert result.total == 0
+    assert not any("count(distinct(opportunities.id))" in statement.lower() for statement in statements)
 
 
 def test_keyword_search_defaults_to_weighted_relevance(db):

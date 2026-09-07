@@ -8,23 +8,19 @@ import { JsonLd } from "@/components/json-ld";
 import { OpportunityActions } from "@/components/opportunity-actions";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { RecentTracker } from "@/components/recent-tracker";
-import { ApiError, getOpportunity, getSameCompanyOpportunities } from "@/lib/api";
 import { CONTACT_FORM_URL } from "@/lib/constants";
 import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 import { opportunityMetadata } from "@/lib/seo";
+import { loadOpportunitySnapshot } from "@/lib/seo-data";
 import { opportunityPath } from "@/lib/site";
 import { opportunityStructuredData } from "@/lib/structured-data";
 
 type Props = { params: Promise<{ id: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  try {
-    const item = await getOpportunity((await params).id);
-    return opportunityMetadata(item);
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) notFound();
-    return { title: "募集情報", robots: { index: false, follow: true } };
-  }
+  const snapshot = await loadOpportunitySnapshot((await params).id);
+  if (!snapshot.item) notFound();
+  return opportunityMetadata(snapshot.item);
 }
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -38,19 +34,10 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 
 export default async function OpportunityDetail({ params }: Props) {
-  let item;
-  let sameCompanyOpportunities;
   const id = (await params).id;
-  try {
-    [item, sameCompanyOpportunities] = await Promise.all([
-      getOpportunity(id),
-      // This secondary path must never take the primary detail page down.
-      getSameCompanyOpportunities(id).catch(() => []),
-    ]);
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) notFound();
-    throw error;
-  }
+  const snapshot = await loadOpportunitySnapshot(id);
+  if (!snapshot.item) notFound();
+  const { item, sameCompanyOpportunities } = snapshot;
 
   // UUIDs remain accepted by the API and old bookmarks, but search and public
   // navigation use one stable URL so ranking signals cannot split in two.

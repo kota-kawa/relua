@@ -1,6 +1,6 @@
 # ADR-0015: 公開URLを正規化し、単一意図のカテゴリだけをindex対象にする
 
-- Status: Accepted
+- Status: Superseded by ADR-0016
 - Scope: 公開ホスト、募集詳細URL、一覧の検索インデックス、サイトマップ
 
 ## Context

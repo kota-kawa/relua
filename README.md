@@ -284,7 +284,9 @@ Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止�
 - `NEXT_PUBLIC_SITE_URL`をcanonicalのapex origin（本番は`https://relua.net`、末尾pathなし）にする
 - PostgreSQLとRedisの公開ポートを追加しない
 - FastAPIとNext.jsの前段でTLS、CDN、リクエストサイズ制限を設定する
-- `relua.conf`をNginxへ反映して`nginx -t`後にreloadし、`www`とHTTPが同じpath/queryのapex HTTPSへ308になることを確認する
+- `relua.conf`をNginxへ反映して`nginx -t`後にreloadし、通常URLは`www`とHTTPから同じpath/queryを保ったapex HTTPSへ308になることを確認する。旧UUID詳細はNextへ渡し、queryを除去して公開コード詳細へ1回の308で到達することを確認する
+- SEO用の一覧・詳細データは最後の正常取得から最大1時間だけ再利用し、API障害時は200＋`noindex`やErrorStateへ縮退せず5xxにする。`/sitemap.xml`も募集APIまたはmaster取得の部分失敗時は503（`Retry-After: 300`）を返し、静的4ページへの縮退は正常な0件の場合だけ許可する
+- カテゴリのSEO対象は`frontend/lib/seo.ts`の固定allowlistで管理する。新しいカテゴリや卒年を追加した場合は、正常なデータとページ内容を確認してallowlistを明示的に更新し、サイトマップ件数と代表URLを確認する
 - OAuthを使わない場合は、MCP接続にSSHポートフォワードまたは運営者専用VPNを使用する
 - OAuthを使う場合は、`MCP_PUBLIC_URL`をhttpsの実ホスト名にし、`MCP_OPERATOR_PASSWORD`を推測できない値にする（開発用の値のままではAPIが起動しない）
 - OAuthを使う場合は、リバースプロキシで `/mcp`、`/oauth`、`/.well-known` だけを公開し、`/api/v1` は公開しない

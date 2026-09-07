@@ -56,6 +56,7 @@ services:
     environment:
       API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
       API_INTERNAL_TOKEN: ${API_INTERNAL_TOKEN:-local-development-internal-token}
+      API_INTERNAL_TIMEOUT_MS: ${API_INTERNAL_TIMEOUT_MS:-10000}
     depends_on:
       - api
     ports:

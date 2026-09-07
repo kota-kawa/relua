@@ -35,12 +35,13 @@ curl -sS https://relua.net/sitemap.xml | rg -o '<loc>[^<]+'
 
 ## 3. サイトマップとビルド時API
 
-frontend imageのbuild時は、同じComposeで起動するAPIがまだ到達不能な場合があります。サイトマップを静的生成すると、その時のfallbackがデプロイ後も残り得ます。`/sitemap.xml`は実行時生成を維持し、次を確認します。
+frontend imageのbuild時は、同じComposeで起動するAPIがまだ到達不能な場合があります。サイトマップを静的生成すると、その時のfallbackがデプロイ後も残り得ます。`/sitemap.xml`は`app/sitemap.xml/route.ts`の実行時生成を維持し、次を確認します。
 
-- `<loc>`件数が現在の募集予定・募集中・通年募集の詳細＋静的ページ＋基準を満たすカテゴリになる。
+- `<loc>`件数が現在の募集予定・募集中・通年募集の詳細＋静的ページ＋固定allowlist内で正常1件以上のカテゴリになる。
 - 詳細URLは公開コードだけになる。
 - `lastmod`は内容更新と公式情報確認日時の新しい方になる。
 - カテゴリ件数をカテゴリごとのAPI呼び出しで数えず、取得済み全件から集計する。
+- 募集APIまたはmaster APIの取得に失敗したときは、4ページだけの200ではなく503、`Retry-After: 300`、`Cache-Control: no-store`になる。正常な0件のときだけ静的4ページの200になる。
 
 ## 4. Search Consoleでの確認
 

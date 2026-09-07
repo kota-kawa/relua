@@ -36,6 +36,7 @@ Next.js frontend              FastAPI backend
 - [`frontend/lib/browser-api.ts`](./frontend/lib/browser-api.ts) はその route handler を最大8件ずつ呼び、見つからないIDと一時取得失敗を分ける。
 - 画面固有の操作・表示は `frontend/components/`、検索パラメータ・表示整形・SEOは `frontend/lib/` に置く。
 - [`frontend/lib/site.ts`](./frontend/lib/site.ts) が公開originと公開コード詳細pathの正本で、[`frontend/proxy.ts`](./frontend/proxy.ts) が`www`と旧UUID詳細を描画前にcanonical URLへ308転送する。
+- [`frontend/lib/seo-data.ts`](./frontend/lib/seo-data.ts) が一覧・詳細のmetadataと本文で共有する完全成功スナップショットを管理する。60秒で再検証し、最後の正常取得から1時間まで利用できる。API fetchは`no-store`で、冷たいキャッシュの失敗や期限超過は5xxへ伝播する。
 - `next.config.ts` は standalone 出力を使う。Docker build 時の `API_INTERNAL_URL` と `NEXT_PUBLIC_SITE_URL` は `frontend/Dockerfile` の build args から埋め込まれる。
 
 ### 2.2 画面と責務
@@ -48,9 +49,9 @@ Next.js frontend              FastAPI backend
 | `/import` | `frontend/app/import/page.tsx`, `components/import-bookmarks.tsx` | 引き継ぎリンクの確認と localStorage へのマージ |
 | `/list` | `frontend/app/list/page.tsx`, `components/shared-opportunity-list.tsx` | 共有リンクから募集を読み込む |
 | `/about`, `/terms`, `/policy` | 各 `page.tsx` | サービス説明、利用規約、プライバシー説明 |
-| `/sitemap.xml`, `/robots.txt` | `sitemap.ts`, `robots.ts` | 実行時の募集中データとindex可能カテゴリから作るcanonical公開URL |
+| `/sitemap.xml`, `/robots.txt` | `app/sitemap.xml/route.ts`, `lib/sitemap.ts`, `robots.ts` | 実行時の募集データと固定allowlistカテゴリから作るcanonical公開URL。部分失敗は503 |
 
-一覧の自由検索、並び替え、複合ファセット、範囲外ページは`noindex, follow`とする。業界、業種、職種、募集種別、開催形式、卒業年度は、単一条件で最低件数を満たす場合だけindex対象にし、説明とカテゴリディレクトリをSSRする。詳細は募集予定・募集中・通年募集かつ締切前／未定だけをindex対象にする。
+一覧の自由検索、並び替え、複合ファセットは`noindex, follow`とし、範囲外ページは404とする。業界、業種、職種、募集種別、開催形式、卒業年度は、`frontend/lib/seo.ts`のレビュー済みallowlistにある単一条件だけをindex対象にし、正常結果が0件なら404とする。件数の5／8閾値は使わず、説明とカテゴリディレクトリをSSRする。詳細は募集予定・募集中・通年募集かつ締切前／未定だけをindex対象にする。
 
 ### 2.3 遷移中の表示とモーション
 
@@ -292,7 +293,7 @@ MCP client
 | 変更したいもの | 最初に読むコード | 同時に確認するもの |
 | --- | --- | --- |
 | 公開一覧・詳細 | `frontend/app/`, `frontend/components/`, `frontend/lib/api.ts` | `backend/app/api/opportunities.py`, frontend tests |
-| canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/app/sitemap.ts` | `relua.conf`, SEO tests、ADR-0015 |
+| canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/lib/seo-data.ts`, `frontend/lib/sitemap.ts`, `frontend/app/sitemap.xml/route.ts` | `relua.conf`, SEO/sitemap tests、ADR-0016 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py` |

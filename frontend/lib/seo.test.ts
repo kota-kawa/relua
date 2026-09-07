@@ -56,19 +56,26 @@ describe("getListingSeo", () => {
       });
   });
 
-  it("noindexes thin and arbitrary category URLs", () => {
-    expect(getListingSeo({ industry: "industry-01" }, { catalog, resultTotal: 4 }))
-      .toEqual({ index: false, follow: true });
+  it("keeps allowlisted categories stable regardless of inventory fluctuations", () => {
+    expect(getListingSeo({ industry: "industry-01" }, { catalog, resultTotal: 1 }).index).toBe(true);
+    expect(getListingSeo({ industry: "industry-01" }, { catalog, resultTotal: 4 }).index).toBe(true);
+    expect(getListingSeo({ industry: "industry-01" }, { catalog, resultTotal: 7 }).index).toBe(true);
     expect(getListingSeo({ industry: "industry-01", event_type: "type-01" }, { catalog, resultTotal: 10 }))
       .toEqual({ index: false, follow: true });
-    expect(getListingSeo({ sector: "sector-1-01" }, { catalog, resultTotal: 7 }))
+    expect(getListingSeo({ industry: "industry-99" }, { catalog, resultTotal: 10 }))
       .toEqual({ index: false, follow: true });
   });
 
-  it("indexes sufficiently populated sector, role, and format intents", () => {
-    expect(getListingSeo({ sector: "sector-1-01" }, { catalog, resultTotal: 8 }).index).toBe(true);
-    expect(getListingSeo({ job_category: "job-01" }, { catalog, resultTotal: 8 }).index).toBe(true);
-    expect(getListingSeo({ event_format: "format-01" }, { catalog, resultTotal: 8 }).index).toBe(true);
+  it("keeps unknown and duplicate query parameters out of the index", () => {
+    expect(getListingSeo({ unknown: "value" })).toEqual({ index: false, follow: true });
+    expect(getListingSeo({ industry: ["industry-01", "industry-01"] }, { catalog, resultTotal: 10 }))
+      .toEqual({ index: false, follow: true });
+  });
+
+  it("indexes allowlisted sector, role, and format intents with one result", () => {
+    expect(getListingSeo({ sector: "sector-1-01" }, { catalog, resultTotal: 1 }).index).toBe(true);
+    expect(getListingSeo({ job_category: "job-01" }, { catalog, resultTotal: 1 }).index).toBe(true);
+    expect(getListingSeo({ event_format: "format-01" }, { catalog, resultTotal: 1 }).index).toBe(true);
   });
 
   it("noindexes search and sorting URLs", () => {

@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
+import type { CompanyDetail, CompanyList, CompanySummary, Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
 
 const baseUrl = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 const configuredTimeout = Number(process.env.API_INTERNAL_TIMEOUT_MS ?? "10000");
@@ -74,4 +74,25 @@ export async function getSameCompanyOpportunities(id: string): Promise<Opportuni
 
 export async function getMasters(): Promise<Masters> {
   return apiFetch<Masters>("/masters");
+}
+
+export async function getCompany(publicCode: string): Promise<CompanyDetail> {
+  return apiFetch<CompanyDetail>(`/companies/${encodeURIComponent(publicCode)}`);
+}
+
+/**
+ * Every company whose page carries its own content: a description plus at least
+ * one current opening. The API decides that, so the sitemap and the pages cannot
+ * disagree about which companies belong in search.
+ */
+export async function getAllIndexableCompanies(): Promise<CompanySummary[]> {
+  const perPage = 100;
+  const firstPage = await apiFetch<CompanyList>(`/companies?indexable=true&per_page=${perPage}`);
+  const remainingPages = await Promise.all(
+    Array.from({ length: Math.max(firstPage.total_pages - 1, 0) }, (_, index) =>
+      apiFetch<CompanyList>(`/companies?indexable=true&per_page=${perPage}&page=${index + 2}`),
+    ),
+  );
+
+  return [firstPage, ...remainingPages].flatMap((page) => page.items);
 }

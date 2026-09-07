@@ -53,6 +53,7 @@
 | [`docs/decisions/0014-scheduled-expiry-cleanup.md`](./docs/decisions/0014-scheduled-expiry-cleanup.md) | 完全削除を日次schedule化し監視する理由 |
 | [`docs/decisions/0015-canonical-public-urls-and-indexable-facets.md`](./docs/decisions/0015-canonical-public-urls-and-indexable-facets.md) | 公開URL正規化とindex対象カテゴリの理由 |
 | [`docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md`](./docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md) | SEOデータの障害耐性、レビュー済みカテゴリallowlist、サイトマップ503の理由 |
+| [`docs/decisions/0017-company-profile-and-public-company-page.md`](./docs/decisions/0017-company-profile-and-public-company-page.md) | 企業プロフィールをMCP限定で書く理由と、企業ページのURL・index条件 |
 
 ## 変更時のルール
 

@@ -1,14 +1,21 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getAllOpportunities = vi.hoisted(() => vi.fn());
 const getMasters = vi.hoisted(() => vi.fn());
+const getAllIndexableCompanies = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/api", () => ({ getAllOpportunities, getMasters }));
+vi.mock("@/lib/api", () => ({ getAllOpportunities, getMasters, getAllIndexableCompanies }));
 
 import { getSitemapEntries, sitemapXml } from "@/lib/sitemap";
 import { GET } from "@/app/sitemap.xml/route";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+
+beforeEach(() => {
+  // Most tests are about opportunities and categories; the company list only
+  // matters where a test sets it explicitly.
+  getAllIndexableCompanies.mockResolvedValue([]);
+});
 
 afterEach(() => {
   vi.resetAllMocks();
@@ -119,6 +126,46 @@ describe("sitemap", () => {
     ]);
 
     await expect(getSitemapEntries()).rejects.toThrow("catalog unavailable");
+  });
+
+  it("includes indexable company pages with the newer of profile and opening updates", async () => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
+    getMasters.mockResolvedValue({
+      industries: [], sectors: [], event_types: [], event_formats: [],
+      job_categories: [], graduation_years: [], degrees: [], recruitment_statuses: [],
+    });
+    getAllOpportunities.mockResolvedValue([]);
+    getAllIndexableCompanies.mockResolvedValue([
+      { public_code: "CMPNY001", updated_at: "2026-08-01T00:00:00Z", openings_updated_at: "2026-08-09T00:00:00Z" },
+      { public_code: "CMPNY002", updated_at: "2026-08-05T00:00:00Z", openings_updated_at: null },
+    ]);
+
+    await expect(getSitemapEntries()).resolves.toEqual(expect.arrayContaining([
+      {
+        url: "https://relua.example/companies/CMPNY001",
+        lastModified: "2026-08-09T00:00:00Z",
+        changeFrequency: "weekly",
+        priority: 0.6,
+      },
+      {
+        url: "https://relua.example/companies/CMPNY002",
+        lastModified: "2026-08-05T00:00:00Z",
+        changeFrequency: "weekly",
+        priority: 0.6,
+      },
+    ]));
+  });
+
+  it("fails the whole sitemap when the company list is unavailable", async () => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
+    getMasters.mockResolvedValue({
+      industries: [], sectors: [], event_types: [], event_formats: [],
+      job_categories: [], graduation_years: [], degrees: [], recruitment_statuses: [],
+    });
+    getAllOpportunities.mockResolvedValue([]);
+    getAllIndexableCompanies.mockRejectedValue(new Error("companies unavailable"));
+
+    await expect(getSitemapEntries()).rejects.toThrow("companies unavailable");
   });
 
   it("escapes XML values and serializes metadata", () => {

@@ -5,6 +5,7 @@ import { BackLink } from "@/components/back-link";
 import { BookmarkButton } from "@/components/bookmark-button";
 import { ArrowRight, CalendarDays, ExternalLink, Flag, MapPin } from "@/components/icons";
 import { JsonLd } from "@/components/json-ld";
+import { NavLink } from "@/components/nav-link";
 import { OpportunityActions } from "@/components/opportunity-actions";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { RecentTracker } from "@/components/recent-tracker";
@@ -12,7 +13,7 @@ import { CONTACT_FORM_URL } from "@/lib/constants";
 import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
 import { opportunityMetadata } from "@/lib/seo";
 import { loadOpportunitySnapshot } from "@/lib/seo-data";
-import { opportunityPath } from "@/lib/site";
+import { companyPath, opportunityPath } from "@/lib/site";
 import { opportunityStructuredData } from "@/lib/structured-data";
 
 type Props = { params: Promise<{ id: string }> };
@@ -59,7 +60,13 @@ export default async function OpportunityDetail({ params }: Props) {
                 <span className={`status ${item.recruitment_status.slug}`}>{item.recruitment_status.name}</span>
                 <span className="type-badge">{item.event_type.name}</span>
               </div>
-              <p className="company-name">{item.company.name}</p>
+              {/* The company name is the way into everything else this company runs, which is
+                  why it links rather than the surrounding badge row. */}
+              <p className="company-name">
+                <NavLink className="company-link" href={companyPath(item.company.public_code)}>
+                  {item.company.name}
+                </NavLink>
+              </p>
               <h1>{item.event_name}</h1>
               <div className="detail-tags tag-list">
                 {item.graduation_years.map((value) => <span key={value.id} className="primary-tag">{value.name}</span>)}
@@ -153,7 +160,12 @@ export default async function OpportunityDetail({ params }: Props) {
                   <p className="eyebrow">MORE FROM THIS COMPANY</p>
                   <h2 id="same-company-heading">同じ企業の他の募集</h2>
                 </div>
-                <p>{item.company.name}が現在掲載している、その他の募集です。</p>
+                <div className="same-company-lead">
+                  <p>{item.company.name}が現在掲載している、その他の募集です。</p>
+                  <NavLink className="company-page-link" href={companyPath(item.company.public_code)}>
+                    企業ページで全ての募集を見る <ArrowRight size={15} />
+                  </NavLink>
+                </div>
               </div>
               <div className="card-grid same-company-grid">
                 {sameCompanyOpportunities.map((opportunity, index) => (

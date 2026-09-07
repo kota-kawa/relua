@@ -645,6 +645,56 @@ button, summary, select { cursor: pointer; }
 .same-company-heading h2 { margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: 27px; font-weight: 600; }
 .same-company-heading > p { max-width: 390px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; text-align: right; }
 .same-company-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.same-company-lead { display: grid; gap: 10px; justify-items: end; }
+.company-page-link { display: inline-flex; align-items: center; gap: 6px; color: var(--orange-text); font-size: 12px; font-weight: 800; }
+.company-page-link svg { transition: transform .2s; }
+.company-page-link:hover svg { transform: translateX(3px); }
+/* The company name on a detail page is a link, but it must keep reading as the
+   hero's own kicker rather than turning into a second call to action. The
+   underline only appears on interaction. */
+.detail-hero .company-link {
+  color: inherit;
+  background: linear-gradient(currentColor, currentColor) 0 100%/0 1px no-repeat;
+  transition: background-size .25s;
+}
+.detail-hero .company-link:hover, .detail-hero .company-link:focus-visible { background-size: 100% 1px; }
+
+/* Company page. Reuses the detail hero and prose rhythm: the two pages are the
+   same kind of document, one about a posting and one about the employer. */
+.company-hero { align-items: center; }
+.company-hero .eyebrow { margin-bottom: 14px; color: #ffd6a3; font-size: 11px; }
+.company-hero h1 { max-width: 700px; margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: clamp(26px, 3.6vw, 38px); font-weight: 500; line-height: 1.4; }
+/* The lead is one or two sentences and is the first thing read on the page, so it
+   sits between title and body sizes: larger than the body, quieter than the h1. */
+.company-hero .company-lead { max-width: 40em; margin: 20px 0 0; color: #dce0e6; font-size: 15px; line-height: 1.95; }
+.company-summary-box { align-self: center; padding: 24px; color: var(--ink-deep); background: var(--paper); border-radius: 8px; text-align: center; }
+.company-summary-box > span { display: block; color: #586477; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+.company-summary-box strong { display: block; margin: 10px 0 2px; color: var(--orange-text); font-family: Georgia, "Yu Mincho", serif; font-size: 27px; }
+.company-body { display: grid; gap: 58px; margin-top: 60px; }
+/* A profile body runs several hundred characters, so the paragraph gap is what
+   keeps it readable. .prose-section > p already caps the measure at 46em. */
+.company-about > p + p { margin-top: 1.5em; }
+.business-area-list { display: grid; gap: 22px; margin: 0; padding: 0; list-style: none; counter-reset: business-area; }
+.business-area-list > li { position: relative; padding-left: 40px; counter-increment: business-area; }
+/* The number is the scanning aid: a reader counts the businesses before reading
+   any of them. Georgia matches the numbering in the detail page's process flow. */
+.business-area-list > li::before {
+  content: counter(business-area); position: absolute; top: 1px; left: 0;
+  display: grid; place-items: center; width: 26px; height: 26px;
+  border: 1px solid #e4d3bb; border-radius: 50%; color: var(--orange-text); background: #fff7ee;
+  font-family: Georgia, serif; font-size: 13px;
+}
+.business-area-list h3 { margin: 0 0 8px; color: var(--ink-deep); font-family: Georgia, "Yu Mincho", serif; font-size: 17px; font-weight: 600; }
+.business-area-list p { max-width: 44em; margin: 0; color: #4d545e; font-size: 13px; line-height: 1.95; }
+/* The openings sections hold a card grid rather than prose, so the measure cap
+   that .prose-section puts on paragraphs must not apply to them. */
+.company-openings > .card-grid { max-width: none; margin-top: 4px; }
+/* The openings keep the listing's two-column grid rather than the three-column
+   related-postings grid: a company usually has one or two openings, and at a
+   third of the width the card's deadline chip collides with its bookmark. */
+.company-openings-note { margin: -8px 0 18px !important; color: var(--muted); font-size: 12px; }
+.company-empty { max-width: 46em; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.9; }
+.company-footer { margin-top: 66px; padding-top: 26px; border-top: 1px solid var(--line); }
 
 /* A crawlable, human-facing directory complements form controls, which search
    crawlers do not submit to discover every useful single-facet landing page. */
@@ -959,6 +1009,11 @@ button, summary, select { cursor: pointer; }
   .detail-layout { grid-template-columns: 1fr; gap: 45px; }
   .detail-sidebar { position: static; }
   .same-company-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .company-summary-box { width: 100%; }
+  .company-hero .company-lead { font-size: 14px; }
+  .business-area-list > li { padding-left: 34px; }
+  .same-company-lead { justify-items: start; }
+  .same-company-heading > p { text-align: left; }
   .category-directory-groups { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .concept-pair { grid-template-columns: 1fr; gap: 18px; }
   .honeycomb-section { grid-template-columns: 1fr; gap: 32px; }

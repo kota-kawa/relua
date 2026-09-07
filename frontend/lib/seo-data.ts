@@ -5,13 +5,14 @@ import { cache } from "react";
 
 import {
   ApiError,
+  getCompany,
   getMasters,
   getOpportunity,
   getOpportunities,
   getSameCompanyOpportunities,
 } from "@/lib/api";
 import { withDefaultOpenStatus } from "@/lib/format";
-import type { Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
+import type { CompanyDetail, Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
 
 export const SEO_DATA_REVALIDATE_SECONDS = 60;
 export const SEO_DATA_MAX_STALE_MS = 60 * 60 * 1000;
@@ -32,6 +33,11 @@ export type ListingSnapshot = {
 export type OpportunitySnapshot = {
   item: Opportunity | null;
   sameCompanyOpportunities: Opportunity[];
+  fetchedAt: number;
+};
+
+export type CompanySnapshot = {
+  company: CompanyDetail | null;
   fetchedAt: number;
 };
 
@@ -147,4 +153,32 @@ const loadOpportunitySnapshotById = cache(async (id: string): Promise<Opportunit
 
 export async function loadOpportunitySnapshot(id: string): Promise<OpportunitySnapshot> {
   return loadOpportunitySnapshotById(id);
+}
+
+/**
+ * A company page carries its whole content in one response, so unlike the
+ * opportunity detail there is no best-effort secondary fetch here: a 404 is a
+ * cacheable null and every other failure propagates.
+ */
+const cachedCompanySnapshot = unstable_cache(
+  async (publicCode: string): Promise<CompanySnapshot> => {
+    const company = await getCompany(publicCode).catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    });
+    return { company, fetchedAt: Date.now() };
+  },
+  ["seo-company-snapshot-v1"],
+  { revalidate: SEO_DATA_REVALIDATE_SECONDS },
+);
+
+const loadCompanySnapshotByCode = cache(async (publicCode: string): Promise<CompanySnapshot> => {
+  return assertFresh(await cachedCompanySnapshot(publicCode));
+});
+
+/** Metadata and the page body call this with the same normalized code. */
+export async function loadCompanySnapshot(publicCode: string): Promise<CompanySnapshot> {
+  // The API stores codes uppercase; normalizing here means a lowercase link is
+  // one cache entry with the page's own redirect, not a miss on every request.
+  return loadCompanySnapshotByCode(publicCode.toUpperCase());
 }

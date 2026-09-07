@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import re
+import secrets
 import unicodedata
 import zlib
 
@@ -72,6 +73,30 @@ PAYLOAD = (
 def _entries() -> list[list[str]]:
     raw = zlib.decompress(base64.b64decode(PAYLOAD)).decode("utf-8")
     return json.loads(raw)
+
+
+# Kept in sync with app.models on purpose: a migration must not depend on today's application code.
+PUBLIC_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+PUBLIC_CODE_LENGTH = 8
+
+
+def _company_public_code(bind: sa.Connection) -> str:
+    """A free public code for a company row this seed creates.
+
+    companies.public_code is added by revision 20260907_0014 and has only a Python-side default, so
+    a fresh database - where revision 0001 already built the column from live metadata - needs the
+    code supplied here. An upgraded database reaches this revision before the column exists and
+    skips it; see _has_company_public_code.
+    """
+    for _ in range(10):
+        code = "".join(secrets.choice(PUBLIC_CODE_ALPHABET) for _ in range(PUBLIC_CODE_LENGTH))
+        if _scalar(bind, "SELECT id FROM companies WHERE public_code=:code", code=code) is None:
+            return code
+    raise RuntimeError("failed to generate a company public code")
+
+
+def _has_company_public_code(bind: sa.Connection) -> bool:
+    return "public_code" in {column["name"] for column in sa.inspect(bind).get_columns("companies")}
 
 
 def _normalize(value: str) -> str:
@@ -180,6 +205,7 @@ def _record(
 def upgrade() -> None:
     bind = op.get_bind()
     legacy = _classification_on_targets(bind)
+    with_public_code = _has_company_public_code(bind)
     industry_id = _scalar(bind, "SELECT id FROM industries WHERE name='メーカー'")
     if industry_id is None:
         raise RuntimeError("メーカー industry master is missing")
@@ -211,10 +237,23 @@ def upgrade() -> None:
             name=company_name,
         )
         if company_id is None:
-            bind.execute(
-                sa.text("INSERT INTO companies (name, normalized_name) VALUES (:name, :normalized)"),
-                {"name": company_name, "normalized": normalized},
-            )
+            if with_public_code:
+                bind.execute(
+                    sa.text(
+                        "INSERT INTO companies (name, normalized_name, public_code) "
+                        "VALUES (:name, :normalized, :public_code)"
+                    ),
+                    {
+                        "name": company_name,
+                        "normalized": normalized,
+                        "public_code": _company_public_code(bind),
+                    },
+                )
+            else:
+                bind.execute(
+                    sa.text("INSERT INTO companies (name, normalized_name) VALUES (:name, :normalized)"),
+                    {"name": company_name, "normalized": normalized},
+                )
             company_id = _scalar(
                 bind,
                 "SELECT id FROM companies WHERE normalized_name=:normalized",

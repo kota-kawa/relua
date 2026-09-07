@@ -121,6 +121,38 @@ DESCRIPTION_GUIDANCE = (
 )
 
 
+#: The company profile answers "what does this company do", which a student needs before deciding
+#: whether a posting is worth reading. It is deliberately about the business, not a recommendation:
+#: relua does not rate companies.
+#:
+#: Stated per field rather than only in the server instructions, because a client that skips the
+#: instructions still reads the payload schema. The minimum lengths below are enforced, so a
+#: one-line profile is rejected at the boundary instead of producing a page with nothing on it.
+COMPANY_NO_EVALUATION = (
+    "将来性・成長性・働きやすさ・優良かどうかなどの評価や見通しは書かないでください。"
+    "事業の内容そのものだけを、公式情報で確認できた範囲で書きます。"
+)
+COMPANY_SUMMARY_GUIDANCE = (
+    "この企業が何をしている会社かを1〜2文（30〜200文字）で言い切ってください。"
+    "業界名だけ、社名の言い換え、「総合サービス企業です」のような内容のない一文は避け、"
+    "扱う製品・サービスと主な顧客が分かる書き方にします（例:「小売業向けにPOSレジと在庫管理システムを"
+    "開発・販売し、全国の小売チェーンへ導入している。」）。"
+)
+COMPANY_DESCRIPTION_GUIDANCE = (
+    "企業の事業内容の本文です。一言で終わらせず、300〜1200文字を使って具体的にまとめてください。"
+    "「主力事業と収益の源泉」「主な製品・サービスと提供先」「顧客・市場（BtoB／BtoCや業界）」"
+    "「事業の規模（売上・従業員数・拠点・シェアなど）」「技術や体制の特徴」「近年の事業展開」から、"
+    "公式サイトの会社概要・事業紹介・IR資料などで確認できた情報をできるだけ多く含めます。"
+    "確認できない項目は推測せず省略します。"
+    "話題が変わるところで空行を入れて段落に分けてください。段落は企業ページでそのまま段落として表示されます。"
+)
+COMPANY_BUSINESS_AREA_GUIDANCE = (
+    "主な事業を事業ごとに分けて登録します。企業ページでは事業ごとの見出し付きブロックとして表示され、"
+    "本文を読まなくても事業の全体像が分かる部分になります。"
+    "売上や従業員の大きい主要事業から順に並べ、単一事業の企業は1件だけ指定します。"
+)
+
+
 class OpportunityInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -326,6 +358,8 @@ class SectorItem(MasterItem):
 class CompanyItem(BaseModel):
     id: int
     name: str
+    public_code: str
+    url: str = Field(description="企業ページの公開URL。")
 
 
 class MastersResponse(BaseModel):
@@ -457,6 +491,144 @@ class CompanyIndustryUpdateRequest(BaseModel):
     industries: CompanyIndustries
     request_id: RequestId
     client_name: ClientName = "mcp-client"
+
+
+#: The profile fields a caller may write. Shared with the write service so the tool, the schema and
+#: the audit snapshot cannot drift apart on what counts as profile content.
+COMPANY_PROFILE_FIELD_NAMES = frozenset({"business_summary", "description", "business_areas", "website_url"})
+
+
+class CompanyBusinessAreaInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=2, max_length=60),
+        Field(
+            description="事業の名称。公式サイトの事業区分に合わせます（例:「産業用センサー事業」）。",
+            examples=["産業用センサー事業"],
+        ),
+    ]
+    description: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=60, max_length=400),
+        Field(
+            description=(
+                "その事業が何を作り、誰に提供しているかを60〜400文字で説明します。"
+                "製品・サービス名、提供先、規模のうち確認できたものを含めます。"
+            )
+        ),
+    ]
+
+    @field_validator("name", "description")
+    @classmethod
+    def plain_text(cls, value: str) -> str:
+        return validate_plain_text(value) or value
+
+
+#: A profile carries the company's main businesses; more than six reads as a list of every product
+#: line rather than an overview of the company.
+CompanyBusinessAreas = Annotated[
+    list[CompanyBusinessAreaInput],
+    Field(min_length=1, max_length=6, description=COMPANY_BUSINESS_AREA_GUIDANCE),
+]
+
+
+class CompanyProfileUpdateRequest(BaseModel):
+    """A patch: an omitted field keeps its stored value, an explicit null clears it.
+
+    Every text field has an enforced minimum length, so the profile a company page shows is either
+    absent or substantial. business_areas is the one exception to patching: like a company's industry
+    list, the value given replaces the stored set completely.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    company_id: Annotated[
+        int, Field(ge=1, description="プロフィールを更新する既存CompanyのID。resolve_companyで確認します。")
+    ]
+    business_summary: Annotated[
+        str | None,
+        Field(
+            default=None,
+            min_length=30,
+            max_length=200,
+            description=(
+                f"企業の一言説明。{COMPANY_SUMMARY_GUIDANCE}{COMPANY_NO_EVALUATION}{NO_VERBATIM}"
+                "削除する場合だけnullを明示し、変更しない場合は項目自体を省略してください。"
+            ),
+        ),
+    ] = None
+    description: Annotated[
+        str | None,
+        Field(
+            default=None,
+            min_length=300,
+            max_length=4000,
+            description=(
+                f"企業の事業内容。{COMPANY_DESCRIPTION_GUIDANCE}{COMPANY_NO_EVALUATION}"
+                f"{NO_VERBATIM}{NO_PERSONAL_DATA}"
+                "削除する場合だけnullを明示し、変更しない場合は項目自体を省略してください。"
+            ),
+        ),
+    ] = None
+    business_areas: Annotated[
+        CompanyBusinessAreas | None,
+        Field(
+            default=None,
+            description=(
+                f"主な事業の一覧。{COMPANY_BUSINESS_AREA_GUIDANCE}"
+                "指定した内容で全置換します。削除する場合だけnullを明示し、変更しない場合は項目自体を省略してください。"
+            ),
+        ),
+    ] = None
+    website_url: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "企業の公式サイトURL（https必須）。"
+                "削除する場合だけnullを明示し、変更しない場合は項目自体を省略してください。"
+            ),
+        ),
+    ] = None
+    source_url: Annotated[
+        str,
+        Field(
+            description=(
+                "この内容を確認した企業自身のページURL（会社概要・事業紹介など）。"
+                "求人サイト・口コミサイトは指定できません。"
+            ),
+        ),
+    ]
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+    @field_validator("business_summary", "description")
+    @classmethod
+    def plain_profile_text(cls, value: str | None) -> str | None:
+        # str_strip_whitespace has already run, so a whitespace-only value arrives as "".
+        return validate_plain_text(value) or None
+
+    @field_validator("website_url")
+    @classmethod
+    def official_website_url(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        return validate_source_host(validate_https_url(value) or value)
+
+    @field_validator("source_url")
+    @classmethod
+    def official_source_url(cls, value: str) -> str:
+        return validate_source_host(validate_https_url(value) or value)
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "CompanyProfileUpdateRequest":
+        if not COMPANY_PROFILE_FIELD_NAMES & self.model_fields_set:
+            raise ValueError(
+                "business_summary、description、business_areas、website_urlのいずれかを指定してください"
+            )
+        return self
 
 
 class CollectionTargetCreateRequest(BaseModel):
@@ -658,6 +830,11 @@ CompanyIndustryUpdatePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(_inline_model_schema(CompanyIndustryUpdateRequest)),
     Field(description="既存企業へ登録する業界・業種カテゴリの一覧。指定した内容で全置換します。"),
+]
+CompanyProfileUpdatePayload = Annotated[
+    dict[str, Any],
+    WithJsonSchema(_inline_model_schema(CompanyProfileUpdateRequest)),
+    Field(description="既存企業の事業内容・公式サイトURLと、それを確認した公式ページ。指定した項目だけを更新します。"),
 ]
 CollectionTargetUpdatePayload = Annotated[
     dict[str, Any],
@@ -862,6 +1039,11 @@ class MCPValidationResponse(BaseModel):
     warnings: list[ErrorItem] = []
 
 
+class CompanyBusinessAreaItem(BaseModel):
+    name: str
+    description: str
+
+
 class CompanyAliasResponse(BaseModel):
     id: int
     alias: str
@@ -876,8 +1058,19 @@ class CompanyIndustryItem(BaseModel):
 
 class CompanyIdentityResponse(BaseModel):
     id: int
+    public_code: str
+    url: str = Field(description="企業ページの公開URL。")
     canonical_name: str
     normalized_name: str
+    business_summary: str | None = Field(
+        default=None, description="この企業が何をしている会社かを1〜2文でまとめたもの。未登録はnull。"
+    )
+    description: str | None = Field(default=None, description="運営者が公式情報から記録した事業内容の本文。未登録はnull。")
+    business_areas: list[CompanyBusinessAreaItem] = Field(
+        default_factory=list, description="主な事業。売上や規模の大きい順。未登録は空配列。"
+    )
+    website_url: str | None = None
+    updated_at: datetime | None = None
     aliases: list[CompanyAliasResponse]
     industries: list[CompanyIndustryItem] = Field(
         default_factory=list,
@@ -912,6 +1105,14 @@ class MCPCompanyAliasWriteResponse(BaseModel):
 class MCPCompanyIndustryWriteResponse(BaseModel):
     success: bool
     idempotent_replay: bool
+    message: str
+    company: CompanyIdentityResponse
+
+
+class MCPCompanyProfileWriteResponse(BaseModel):
+    success: bool
+    idempotent_replay: bool
+    changed: bool
     message: str
     company: CompanyIdentityResponse
 
@@ -1118,3 +1319,36 @@ class MCPCollectionCheckWriteResponse(BaseModel):
 
 class MCPCollectionCheckListResponse(BaseModel):
     items: list[CollectionCheckResponse]
+
+
+class CompanySummaryResponse(BaseModel):
+    """A company as the public company pages and their listing need it."""
+
+    id: int
+    public_code: str
+    url: str
+    name: str
+    business_summary: str | None
+    description: str | None
+    business_areas: list[CompanyBusinessAreaItem]
+    website_url: str | None
+    industries: list[CompanyIndustryItem]
+    current_opportunity_count: int
+    #: Newest update among the company's current openings. Company.updated_at only moves when the
+    #: profile itself is edited, so this is what tells a sitemap the page content changed.
+    openings_updated_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CompanyDetailResponse(CompanySummaryResponse):
+    current_opportunities: list[OpportunityResponse]
+    past_opportunities: list[OpportunityResponse]
+
+
+class CompanyListResponse(BaseModel):
+    items: list[CompanySummaryResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int

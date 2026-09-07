@@ -13,3 +13,8 @@ export function absoluteUrl(path: string) {
 export function opportunityPath(publicCode: string) {
   return `/opportunities/${encodeURIComponent(publicCode)}`;
 }
+
+/** Companies follow the same policy: the public code, never the internal row id. */
+export function companyPath(publicCode: string) {
+  return `/companies/${encodeURIComponent(publicCode)}`;
+}

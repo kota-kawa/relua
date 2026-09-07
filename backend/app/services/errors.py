@@ -40,16 +40,48 @@ FIELD_LABELS = {
     "opportunity_id": "募集情報ID",
     "note": "確認メモ",
     "is_active": "有効状態",
+    "business_summary": "企業の一言説明",
+    "business_areas": "主な事業",
+    "website_url": "公式サイトURL",
+    "name": "名称",
 }
 
 DATE_FIELDS = {"deadline", "event_start_date", "event_end_date", "recruitment_start_date"}
 URL_FIELDS = {"homepage_url", "entry_url", "source_url", "url"}
 
 
+def _nested_field(loc: tuple[Any, ...]) -> str:
+    """Name a value inside a list or object so a caller can find the one item to fix.
+
+    Reporting only the outer key ("主な事業") with the whole list echoed back leaves an agent
+    guessing which entry was rejected, so the path keeps the index and the inner field.
+    """
+    rendered = FIELD_LABELS.get(str(loc[0]), str(loc[0]))
+    for part in loc[1:]:
+        if isinstance(part, int):
+            rendered += f"[{part}]"
+        else:
+            rendered += f".{FIELD_LABELS.get(str(part), str(part))}"
+    return rendered
+
+
+def _nested_value(raw: Any, loc: tuple[Any, ...]) -> Any:
+    current = raw
+    for part in loc:
+        if isinstance(part, int) and isinstance(current, list) and part < len(current):
+            current = current[part]
+        elif isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
 def pydantic_errors(exc: ValidationError, raw: dict[str, Any]) -> list[dict[str, Any]]:
     formatted: list[dict[str, Any]] = []
     for error in exc.errors(include_url=False):
-        key = str(error["loc"][0]) if error["loc"] and error["loc"][0] != "__root__" else "入力全体"
+        loc = tuple(error["loc"] or ())
+        key = str(loc[0]) if loc and loc[0] != "__root__" else "入力全体"
         expected: str | None = None
         example: Any = None
         alternative: str | None = None
@@ -63,10 +95,11 @@ def pydantic_errors(exc: ValidationError, raw: dict[str, Any]) -> list[dict[str,
             if key == "source_url":
                 expected = "https形式の一次情報URL（求人サイト・短縮URL・IP直指定不可）"
                 alternative = "企業自身の採用ページが見つからない場合は登録を見送ってください"
+        nested = len(loc) > 1
         formatted.append(
             {
-                "field": FIELD_LABELS.get(key, key),
-                "received": raw.get(key) if key != "入力全体" else None,
+                "field": _nested_field(loc) if nested else FIELD_LABELS.get(key, key),
+                "received": _nested_value(raw, loc) if nested else (raw.get(key) if key != "入力全体" else None),
                 "reason": error["msg"],
                 "expected": expected,
                 "example": example,

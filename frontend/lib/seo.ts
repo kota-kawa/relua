@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 
 import { currentGraduationYears, daysUntil, FILTER_KEYS, OPEN_STATUS_SLUG, valuesOf } from "@/lib/format";
-import { opportunityPath } from "@/lib/site";
-import type { Masters, Opportunity, SearchParams } from "@/lib/types";
+import { companyPath, opportunityPath } from "@/lib/site";
+import type { CompanyDetail, CompanySummary, Masters, Opportunity, SearchParams } from "@/lib/types";
 
 export const INDEXABLE_FACET_KEYS = [
   "industry",
@@ -282,6 +282,59 @@ export function opportunityMetadata(item: Opportunity): Metadata {
   const summary = item.description.replace(/\s+/g, " ").trim();
   const description = `${summary.slice(0, 105)}${summary.length > 105 ? "…" : ""} ${audience ? `${audience}対象。` : ""}${deadline}`.slice(0, 160);
   const title = `${item.company.name} ${item.event_name}`;
+
+  return {
+    title,
+    description,
+    alternates: { canonical: path },
+    openGraph: {
+      title,
+      description,
+      url: path,
+      type: "website",
+    },
+    twitter: { title, description },
+    robots: {
+      index,
+      follow: true,
+      googleBot: {
+        index,
+        follow: true,
+        "max-image-preview": "large",
+        "max-snippet": -1,
+        "max-video-preview": -1,
+      },
+    },
+  };
+}
+
+
+/**
+ * A company page earns a place in search only when it says something a listing
+ * page does not: a written profile, plus at least one opening a visitor can
+ * still act on. Both halves of the profile are required because either alone
+ * renders as a heading with almost nothing under it. The API applies the same
+ * rule when it lists companies for the sitemap.
+ */
+export function companyProfileIsComplete(company: CompanySummary) {
+  return Boolean(company.business_summary?.trim()) && Boolean(company.description?.trim());
+}
+
+export function companyIsIndexable(company: CompanyDetail) {
+  return companyProfileIsComplete(company) && company.current_opportunities.some(opportunityIsIndexable);
+}
+
+export function companyMetadata(company: CompanyDetail): Metadata {
+  const path = companyPath(company.public_code);
+  const index = companyIsIndexable(company);
+  // business_summary is written as the one-or-two-sentence answer to "what is this
+  // company", which is exactly what a search result needs; the body is the fallback.
+  const summary = (company.business_summary ?? company.description ?? "").replace(/\s+/g, " ").trim();
+  const openings = company.current_opportunity_count > 0
+    ? `現在${company.current_opportunity_count}件の募集を掲載中。`
+    : "現在掲載中の募集はありません。";
+  const description = `${summary.slice(0, 110)}${summary.length > 110 ? "…" : ""} ${openings}`.trim().slice(0, 160);
+  const title = `${company.name}のインターン・本選考情報`;
 
   return {
     title,

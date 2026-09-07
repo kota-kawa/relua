@@ -1,9 +1,9 @@
 import type { MetadataRoute } from "next";
 
-import { getAllOpportunities, getMasters } from "@/lib/api";
+import { getAllIndexableCompanies, getAllOpportunities, getMasters } from "@/lib/api";
 import { indexableFacetValues, listingPath, opportunityIsIndexable } from "@/lib/seo";
-import { opportunityPath, siteOrigin } from "@/lib/site";
-import type { Opportunity } from "@/lib/types";
+import { companyPath, opportunityPath, siteOrigin } from "@/lib/site";
+import type { CompanySummary, Opportunity } from "@/lib/types";
 
 const staticPages: MetadataRoute.Sitemap = [
   { url: "", changeFrequency: "daily", priority: 1 },
@@ -53,12 +53,26 @@ function latestUpdate(opportunity: Opportunity) {
     .at(-1) ?? opportunity.updated_at;
 }
 
+/**
+ * A company page changes whenever its openings do, not only when its profile is
+ * edited, so the newer of the two timestamps is the honest last-modified date.
+ */
+function companyLastModified(company: CompanySummary) {
+  return [company.updated_at, company.openings_updated_at]
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? company.updated_at;
+}
+
 /** Fetch a complete, internally consistent sitemap dataset. */
 export async function getSitemapEntries(): Promise<MetadataRoute.Sitemap> {
   const base = siteOrigin();
-  const [opportunities, masters] = await Promise.all([
+  const [opportunities, masters, companies] = await Promise.all([
     getAllOpportunities(["status-01", "status-02", "status-04"]),
     getMasters(),
+    // The API applies the same "described and currently hiring" rule the pages
+    // use for robots, so this list and companyIsIndexable cannot disagree.
+    getAllIndexableCompanies(),
   ]);
   const indexableOpportunities = opportunities.filter(opportunityIsIndexable);
   const activeOpportunities = indexableOpportunities.filter(
@@ -69,6 +83,12 @@ export async function getSitemapEntries(): Promise<MetadataRoute.Sitemap> {
   return [
     ...staticPages.map((page) => ({ ...page, url: `${base}${page.url}` })),
     ...categoryPages,
+    ...companies.map((company) => ({
+      url: `${base}${companyPath(company.public_code)}`,
+      lastModified: companyLastModified(company),
+      changeFrequency: "weekly" as const,
+      priority: 0.6,
+    })),
     ...indexableOpportunities.map((opportunity) => ({
       url: `${base}${opportunityPath(opportunity.public_code)}`,
       lastModified: latestUpdate(opportunity),

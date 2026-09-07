@@ -2,6 +2,8 @@ import pytest
 from sqlalchemy import select
 
 from app.models import (
+    PUBLIC_CODE_ALPHABET,
+    PUBLIC_CODE_LENGTH,
     AuditLog,
     CollectionCheck,
     CollectionSource,
@@ -17,11 +19,14 @@ from app.schemas import OpportunityInput
 from app.services.companies import (
     CompanyIdentityValidationError,
     add_company_alias,
+    company_identity_dict,
     company_keyword_filter,
     delete_company_alias,
+    get_company_by_public_code,
     get_or_create_company,
     merge_company,
     resolve_company_candidates,
+    update_company_profile,
 )
 from app.services.opportunities import search_opportunities, write_opportunity
 from tests.test_validation import valid_payload
@@ -281,3 +286,247 @@ def test_merge_company_moves_references_keeps_old_names_and_is_idempotent(db):
     assert replayed is True
     assert replay.id == target.id
     assert replay_summary == summary
+
+
+def test_new_company_gets_a_unique_resolvable_public_code(db):
+    first = company(db, "株式会社アルファ")
+    second = company(db, "株式会社ベータ")
+
+    for item in (first, second):
+        assert len(item.public_code) == PUBLIC_CODE_LENGTH
+        assert set(item.public_code) <= set(PUBLIC_CODE_ALPHABET)
+    assert first.public_code != second.public_code
+
+    assert get_company_by_public_code(db, first.public_code).id == first.id
+    # A hand-typed lowercase URL still resolves; the page then redirects to the canonical casing.
+    assert get_company_by_public_code(db, first.public_code.lower()).id == first.id
+    assert get_company_by_public_code(db, "TOOLONGCODE") is None
+
+
+#: The service is given values the input schema already length-checked, so these only need to be
+#: distinguishable. The enforced minimums are covered by the schema tests in test_mcp_tools.py.
+GAMMA_PROFILE = {
+    "business_summary": "産業用センサーを設計・製造し、国内の製造業へ販売している。",
+    "description": "自社工場でセンサーを設計から製造まで手がけ、制御ソフトウェアと組み合わせて提供しています。",
+    "business_areas": [
+        {"name": "センサー事業", "description": "工場設備向けの各種センサーを開発・製造しています。"},
+        {"name": "ソフトウェア事業", "description": "センサーの計測データを可視化する制御ソフトウェアを提供しています。"},
+    ],
+    "website_url": "https://gamma.example.com/",
+}
+
+
+def test_update_company_profile_is_audited_idempotent_and_records_the_confirmed_page(db):
+    target = company(db, "株式会社ガンマ")
+
+    updated, changed, replayed = update_company_profile(
+        db,
+        company_id=target.id,
+        changes=dict(GAMMA_PROFILE),
+        source_url="https://gamma.example.com/company/",
+        request_id="company-profile-0001",
+        client_name="pytest",
+    )
+    assert (changed, replayed) == (True, False)
+    assert updated.business_summary == GAMMA_PROFILE["business_summary"]
+    assert updated.description == GAMMA_PROFILE["description"]
+    assert [area["name"] for area in updated.business_areas] == ["センサー事業", "ソフトウェア事業"]
+    assert updated.website_url == "https://gamma.example.com/"
+
+    replay, changed_again, replayed_again = update_company_profile(
+        db,
+        company_id=target.id,
+        changes=dict(GAMMA_PROFILE),
+        source_url="https://gamma.example.com/company/",
+        request_id="company-profile-0001",
+        client_name="pytest",
+    )
+    assert (replay.id, changed_again, replayed_again) == (target.id, False, True)
+    assert len(list(db.scalars(select(CompanyRequestRecord)))) == 1
+
+    audit = db.scalar(select(AuditLog).where(AuditLog.action == "company_profile_update"))
+    assert audit.entity_type == "company"
+    assert audit.entity_id == str(target.id)
+    # The page the text was confirmed on is evidence, kept in the log rather than on the row.
+    assert audit.source_url == "https://gamma.example.com/company/"
+    assert audit.changes["before"]["business_summary"] is None
+    assert audit.changes["before"]["business_areas"] == []
+    assert audit.changes["after"]["business_summary"] == GAMMA_PROFILE["business_summary"]
+    assert len(audit.changes["after"]["business_areas"]) == 2
+
+    # The profile travels with every company response, so resolve_company shows it too.
+    identity = company_identity_dict(updated)
+    assert identity["business_summary"] == GAMMA_PROFILE["business_summary"]
+    assert identity["business_areas"][0]["name"] == "センサー事業"
+
+
+def test_company_profile_business_areas_are_replaced_as_a_whole_set(db):
+    target = company(db, "株式会社シータ")
+    update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"business_areas": GAMMA_PROFILE["business_areas"]},
+        source_url="https://theta.example.com/company/",
+        request_id="company-profile-theta-1",
+        client_name="pytest",
+    )
+
+    replaced, changed, _ = update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"business_areas": [{"name": "計測受託事業", "description": "設備の計測と分析を受託しています。"}]},
+        source_url="https://theta.example.com/company/",
+        request_id="company-profile-theta-2",
+        client_name="pytest",
+    )
+    assert changed is True
+    assert [area["name"] for area in replaced.business_areas] == ["計測受託事業"]
+
+    cleared, changed, _ = update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"business_areas": None},
+        source_url="https://theta.example.com/company/",
+        request_id="company-profile-theta-3",
+        client_name="pytest",
+    )
+    assert changed is True
+    assert cleared.business_areas is None
+    assert company_identity_dict(cleared)["business_areas"] == []
+
+
+def test_company_profile_patch_keeps_omitted_fields_and_clears_explicit_nulls(db):
+    target = company(db, "株式会社デルタ")
+    update_company_profile(
+        db,
+        company_id=target.id,
+        changes={
+            "business_summary": "物流倉庫の自動化システムを提供している。",
+            "description": "倉庫内の搬送機器と管理システムを組み合わせて納入しています。",
+            "website_url": "https://delta.example.com/",
+        },
+        source_url="https://delta.example.com/about/",
+        request_id="company-profile-delta-1",
+        client_name="pytest",
+    )
+
+    # Only description is sent, so the summary and the website must survive untouched.
+    updated, changed, _ = update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"description": "倉庫と工場の搬送機器、管理システム、保守サービスを提供しています。"},
+        source_url="https://delta.example.com/about/",
+        request_id="company-profile-delta-2",
+        client_name="pytest",
+    )
+    assert changed is True
+    assert updated.description == "倉庫と工場の搬送機器、管理システム、保守サービスを提供しています。"
+    assert updated.business_summary == "物流倉庫の自動化システムを提供している。"
+    assert updated.website_url == "https://delta.example.com/"
+
+    cleared, changed, _ = update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"description": None},
+        source_url="https://delta.example.com/about/",
+        request_id="company-profile-delta-3",
+        client_name="pytest",
+    )
+    assert changed is True
+    assert cleared.description is None
+    assert cleared.website_url == "https://delta.example.com/"
+
+    # Re-sending the same clear is a real no-op rather than a replay of a stored result.
+    unchanged, changed, replayed = update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"description": None},
+        source_url="https://delta.example.com/about/",
+        request_id="company-profile-delta-4",
+        client_name="pytest",
+    )
+    assert (changed, replayed) == (False, False)
+    assert unchanged.description is None
+
+
+def test_company_profile_request_id_cannot_be_reused_for_another_change(db):
+    target = company(db, "株式会社イプシロン")
+    update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"description": "半導体検査装置を製造する。"},
+        source_url="https://epsilon.example.com/company/",
+        request_id="company-profile-epsilon",
+        client_name="pytest",
+    )
+
+    with pytest.raises(CompanyIdentityValidationError) as error:
+        update_company_profile(
+            db,
+            company_id=target.id,
+            changes={"description": "別の内容に差し替える。"},
+            source_url="https://epsilon.example.com/company/",
+            request_id="company-profile-epsilon",
+            client_name="pytest",
+        )
+    assert error.value.errors[0]["field"] == "request_id"
+
+
+def test_update_company_profile_rejects_unknown_fields_and_missing_companies(db):
+    target = company(db, "株式会社ゼータ")
+    with pytest.raises(CompanyIdentityValidationError):
+        update_company_profile(
+            db,
+            company_id=target.id,
+            changes={"name": "改名"},
+            source_url="https://zeta.example.com/company/",
+            request_id="company-profile-zeta-1",
+            client_name="pytest",
+        )
+    with pytest.raises(LookupError):
+        update_company_profile(
+            db,
+            company_id=target.id + 9999,
+            changes={"description": "存在しない企業。"},
+            source_url="https://zeta.example.com/company/",
+            request_id="company-profile-zeta-2",
+            client_name="pytest",
+        )
+
+
+def test_merge_company_keeps_the_target_profile_and_inherits_only_missing_fields(db):
+    source = company(db, "株式会社旧イータ")
+    target = company(db, "イータ株式会社")
+    update_company_profile(
+        db,
+        company_id=source.id,
+        changes={
+            "business_summary": "統合元が持つ一言説明。",
+            "description": "統合元が持つ説明。",
+            "website_url": "https://old-eta.example.com/",
+        },
+        source_url="https://old-eta.example.com/company/",
+        request_id="company-merge-profile-source",
+        client_name="pytest",
+    )
+    # The target has its own description but no website: only the gap should be filled.
+    update_company_profile(
+        db,
+        company_id=target.id,
+        changes={"business_summary": "統合先が確認済みの一言説明。", "description": "統合先が確認済みの説明。"},
+        source_url="https://eta.example.com/company/",
+        request_id="company-merge-profile-target",
+        client_name="pytest",
+    )
+
+    merged, _, _ = merge_company(
+        db,
+        source_company_id=source.id,
+        target_company_id=target.id,
+        request_id="company-merge-profile-0001",
+        client_name="pytest",
+    )
+
+    assert merged.business_summary == "統合先が確認済みの一言説明。"
+    assert merged.description == "統合先が確認済みの説明。"
+    assert merged.website_url == "https://old-eta.example.com/"

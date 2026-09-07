@@ -45,11 +45,14 @@ Next.js frontend              FastAPI backend
 | --- | --- | --- |
 | `/` | `frontend/app/page.tsx` | 公開一覧、検索、絞り込み、並び替え、カード／リスト／カレンダー表示 |
 | `/opportunities/[id]` | `frontend/app/opportunities/[id]/page.tsx` | 公開コードをcanonicalとする詳細、SEOメタデータ、構造化データ、保存、カレンダー登録。旧UUIDはproxyで転送 |
+| `/companies/[code]` | `frontend/app/companies/[code]/page.tsx` | 公開コードをcanonicalとする企業ページ。一言説明、事業内容の本文、主な事業、現在の募集、過去の募集、SEOメタデータ、構造化データ |
 | `/saved` | `frontend/app/saved/page.tsx`, `components/saved-dashboard.tsx` | ブックマーク、最近見た募集、JSON/CSV、共有・QR |
 | `/import` | `frontend/app/import/page.tsx`, `components/import-bookmarks.tsx` | 引き継ぎリンクの確認と localStorage へのマージ |
 | `/list` | `frontend/app/list/page.tsx`, `components/shared-opportunity-list.tsx` | 共有リンクから募集を読み込む |
 | `/about`, `/terms`, `/policy` | 各 `page.tsx` | サービス説明、利用規約、プライバシー説明 |
 | `/sitemap.xml`, `/robots.txt` | `app/sitemap.xml/route.ts`, `lib/sitemap.ts`, `robots.ts` | 実行時の募集データと固定allowlistカテゴリから作るcanonical公開URL。部分失敗は503 |
+
+企業ページは、一言説明（`business_summary`）と事業内容の本文（`description`）の両方が登録済みで、かつ現在の募集（募集予定・募集中・通年募集で締切前／未定）が1件以上ある企業だけをindex対象にし、それ以外は`noindex, follow`とする。
 
 一覧の自由検索、並び替え、複合ファセットは`noindex, follow`とし、範囲外ページは404とする。業界、業種、職種、募集種別、開催形式、卒業年度は、`frontend/lib/seo.ts`のレビュー済みallowlistにある単一条件だけをindex対象にし、正常結果が0件なら404とする。件数の5／8閾値は使わず、説明とカテゴリディレクトリをSSRする。詳細は募集予定・募集中・通年募集かつ締切前／未定だけをindex対象にする。
 
@@ -112,6 +115,8 @@ PC幅（921px以上）の一覧画面には独立したスクローラーが2つ
 | `GET /api/v1/opportunities` | `backend/app/api/opportunities.py` | 内部トークン | 公開対象の検索・ページング |
 | `GET /api/v1/opportunities/{id}` | 同上 | 内部トークン | UUIDまたは公開コードによる詳細 |
 | `GET /api/v1/opportunities/{id}/same-company` | 同上 | 内部トークン | 同じ企業の公開募集 |
+| `GET /api/v1/companies` | `backend/app/api/companies.py` | 内部トークン | index対象企業（一言説明と本文あり・現在の募集あり）の一覧 |
+| `GET /api/v1/companies/{public_code}` | 同上 | 内部トークン | 公開コードによる企業と、現在／過去の募集 |
 
 RESTの検索はページ番号を返します。既定では公開中かつ東京時間の当日以降が対象で、`q` がある場合は関連度、ない場合は締切順が基本です。MCPの検索は同じドメインサービスを使い、条件シグネチャとスナップショットを含む opaque cursor を返します。
 
@@ -122,7 +127,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | ツール群 | 主な処理 | 認証 |
 | --- | --- | --- |
 | 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応） |
-| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `set_company_industries`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要、企業の候補確認・別名・カテゴリ設定・物理統合の書き込みは必要。保守コンテキストは認証が必要 |
+| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `set_company_industries`, `update_company_profile`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要、企業の候補確認・別名・カテゴリ設定・プロフィール更新・物理統合の書き込みは必要。保守コンテキストは認証が必要 |
 | 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status/verify | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
 | 収集キュー | target/source/check の一覧、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
@@ -135,7 +140,8 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | ファイル | 責務 |
 | --- | --- |
 | `services/opportunities.py` | 検索、関連度、カーソル、固定値解決、重複検出、書き込み、論理削除・復元、監査、MCP保守キューの対象状態判定 |
-| `services/companies.py` | 企業名の正規化、正式名・別名の完全一致、候補提示、別名と複数カテゴリの冪等書き込み |
+| `services/companies.py` | 企業名の正規化、正式名・別名の完全一致、候補提示、公開コードの発行と解決、別名・複数カテゴリ・プロフィールの冪等書き込み |
+| `services/company_pages.py` | 企業ページの読み取り。現在／過去の募集の分割、index対象企業の一覧と現行募集件数の集計 |
 | `services/company_industries.py` | 企業と複数業界・業種の分類を維持 |
 | `services/collection_targets.py` | 企業単位の収集対象、情報源、確認履歴、優先度・次回確認日 |
 | `services/masters.py` / `master_cache.py` | 固定値の解決とキャッシュ |
@@ -177,9 +183,11 @@ opportunities >──< job_categories / graduation_years / degrees / tags
 ```
 
 - `opportunities.id` は内部UUID、`public_code` は8文字のCrockford base32で、公開URL・共有リンクに使う。
+- `companies.public_code` も同じ8文字のCrockford base32で、企業ページのcanonical URLに使う。内部の整数IDは公開URLに出さない。
 - `Industry`、`Sector`、職種、卒業年、学位、募集状況、イベント種別、形式は固定値マスタ。募集書き込み時は指定業界に属する業種だけを受け付ける。
 - 企業同一性は正規化正式名または明示登録した別名の完全一致を正本にする。部分一致・`pg_trgm` は候補提示と検索補助だけで、企業を自動統合しない。
 - 企業は複数業界に属せる。`company_industries.is_primary` は1社につき高々1件で、単一分類表示用である。
+- 企業プロフィールは `companies.business_summary`（1〜2文の一言説明）、`description`（300文字以上の本文）、`business_areas`（主な事業のJSON配列）、`website_url` の4項目で、運営者がMCPの `update_company_profile` だけで書く。各項目には最小文字数があり、一言だけの登録は入力検証で拒否する。省略した項目は維持し、`null` の明示だけが削除である。`business_areas` だけは指定内容で全置換する。確認した公式ページは列ではなく監査ログの `source_url` に残す。企業統合では統合先のプロフィールを優先し、統合先が未登録の項目だけ統合元から引き継ぐ。
 - `set_company_industries` は既存企業の業界・業種カテゴリを指定一覧で全置換する。カテゴリは1件以上、現在の業界マスタ数まで指定でき、先頭を `is_primary` として監査・冪等化する。
 - `source_url` は正規化した `normalized_source_url` と共に保存する。短縮URL、IP/localhost、求人集約・口コミサイトを情報源として拒否し、同じ一次情報URLは登録拒否ではなく確認用警告とする。収集対象がある企業では、有効な `collection_sources` を企業別公式source allowlistとし、別の公式ホストは収集元へ明示登録してから使う。
 
@@ -293,6 +301,7 @@ MCP client
 | 変更したいもの | 最初に読むコード | 同時に確認するもの |
 | --- | --- | --- |
 | 公開一覧・詳細 | `frontend/app/`, `frontend/components/`, `frontend/lib/api.ts` | `backend/app/api/opportunities.py`, frontend tests |
+| 企業ページ・企業プロフィール | `frontend/app/companies/[code]/page.tsx`, `backend/app/services/company_pages.py`, `backend/app/api/companies.py` | `services/companies.py` の `update_company_profile`, `test_company_pages.py`, ADR-0017 |
 | canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/lib/seo-data.ts`, `frontend/lib/sitemap.ts`, `frontend/app/sitemap.xml/route.ts` | `relua.conf`, SEO/sitemap tests、ADR-0016 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |

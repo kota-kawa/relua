@@ -17,6 +17,16 @@ export type Masters = {
   degrees: MasterItem[];
 };
 
+/** A company as it appears inside a posting: enough to name it and link to its page. */
+export type CompanyRef = {
+  id: number;
+  name: string;
+  /** Short identifier used in the company page URL. */
+  public_code: string;
+  /** Absolute link to the public company page. */
+  url: string;
+};
+
 export type Opportunity = {
   id: string;
   /** Short identifier used in transfer and share links. */
@@ -24,7 +34,7 @@ export type Opportunity = {
   /** Absolute link to the public detail page, so API consumers can cite an entry. */
   url: string;
   recruitment_status: MasterItem;
-  company: { id: number; name: string };
+  company: CompanyRef;
   industry: MasterItem;
   sector: MasterItem;
   event_name: string;
@@ -56,6 +66,50 @@ export type Opportunity = {
 
 export type OpportunityList = {
   items: Opportunity[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+};
+
+export type CompanyIndustry = {
+  industry: MasterItem;
+  sector: MasterItem | null;
+  is_primary: boolean;
+};
+
+/** One of a company's main businesses, shown as its own block on the company page. */
+export type CompanyBusinessArea = {
+  name: string;
+  description: string;
+};
+
+export type CompanySummary = {
+  id: number;
+  public_code: string;
+  url: string;
+  name: string;
+  /** One or two sentences naming the business. Doubles as the page's meta description. */
+  business_summary: string | null;
+  /** The body of the profile. Blank lines separate paragraphs. */
+  description: string | null;
+  business_areas: CompanyBusinessArea[];
+  website_url: string | null;
+  industries: CompanyIndustry[];
+  current_opportunity_count: number;
+  /** Newest update among the current openings, so a page's own freshness is visible. */
+  openings_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CompanyDetail = CompanySummary & {
+  current_opportunities: Opportunity[];
+  past_opportunities: Opportunity[];
+};
+
+export type CompanyList = {
+  items: CompanySummary[];
   total: number;
   page: number;
   per_page: number;

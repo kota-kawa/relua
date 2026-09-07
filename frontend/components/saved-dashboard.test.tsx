@@ -26,7 +26,7 @@ const savedItem = {
   public_code: "A1B2C3D4",
   url: "http://localhost:3100/opportunities/A1B2C3D4",
   recruitment_status: master,
-  company: { id: 1, name: "株式会社テスト" },
+  company: { id: 1, name: "株式会社テスト", public_code: "CMPNY001", url: "https://relua.example/companies/CMPNY001" },
   industry: master,
   sector: master,
   event_name: "テストインターン",

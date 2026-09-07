@@ -11,6 +11,7 @@ from app import mcp_server
 from app.dates import today_in_tokyo
 from app.models import AuditLog, Opportunity
 from app.schemas import OpportunityInput
+from app.services.errors import FIELD_LABELS
 from app.services.opportunities import write_opportunity
 from tests.test_validation import valid_payload
 
@@ -81,6 +82,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "resolve_company",
         "add_company_alias",
         "set_company_industries",
+        "update_company_profile",
         "delete_company_alias",
         "merge_company",
         "validate_opportunity",
@@ -144,6 +146,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["resolve_company"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["add_company_alias"]["annotations"]["destructiveHint"] is False
     assert tools["set_company_industries"]["annotations"]["destructiveHint"] is True
+    assert tools["update_company_profile"]["annotations"]["destructiveHint"] is False
+    assert tools["update_company_profile"]["annotations"]["idempotentHint"] is True
     assert tools["set_company_industries"]["annotations"]["idempotentHint"] is True
     assert tools["delete_company_alias"]["annotations"]["destructiveHint"] is True
     assert tools["merge_company"]["annotations"]["destructiveHint"] is True
@@ -339,6 +343,160 @@ def test_find_similar_opportunities_sees_through_company_name_variants(tools, db
     assert len(narrowed["matches"]) == 1
     assert missed["matches"] == []
     assert "新規登録できます" in missed["message"]
+
+
+COMPANY_SUMMARY = "国内の中堅企業向けに業務システムの受託開発を行い、在庫管理と実績集計の自社SaaSも提供している架空企業です。"
+COMPANY_DESCRIPTION = (
+    "国内の中堅企業向けに、業務システムの受託開発と自社SaaSの提供を行っています。"
+    "受託開発では販売管理と生産管理の領域を中心に、要件定義から設計・開発・運用保守までを一貫して担当します。"
+    "顧客は製造業と卸売業が中心で、売上の約7割を受託開発が占めています。\n\n"
+    "自社SaaSは在庫管理と実績集計の2製品です。月額課金で提供し、導入企業は約400社です。"
+    "受託開発で得た業務知識を製品仕様へ反映する体制をとっており、両事業が同じ開発部門で運営されています。"
+    "開発拠点は東京と福岡の2か所で、エンジニアが全社員の6割を占めます。"
+    "近年は既存顧客向けにデータ活用の支援業務も始めており、受託開発の周辺領域を広げています。"
+)
+AREA_RECEIVED_DEVELOPMENT = (
+    "販売管理・生産管理システムを個別に開発し、要件定義から設計・開発・運用保守までを担当しています。"
+    "製造業と卸売業の中堅企業が主な顧客です。"
+)
+AREA_SAAS = (
+    "在庫管理と実績集計の2製品を月額課金で提供しています。製造業と卸売業を中心に約400社が導入しており、"
+    "受託開発で得た業務知識を製品仕様へ反映しています。"
+)
+
+
+def company_profile_payload(**overrides):
+    payload = {
+        "company_id": None,
+        "business_summary": COMPANY_SUMMARY,
+        "description": COMPANY_DESCRIPTION,
+        "business_areas": [
+            {"name": "受託開発事業", "description": AREA_RECEIVED_DEVELOPMENT},
+            {"name": "自社SaaS事業", "description": AREA_SAAS},
+        ],
+        "website_url": "https://profile.example.com/",
+        "source_url": "https://profile.example.com/company/",
+        "request_id": "mcp-company-profile-0001",
+    }
+    payload.update(overrides)
+    return {"payload": payload}
+
+
+def test_mcp_writes_a_company_profile_and_replays_the_same_request(tools, db):
+    item = seed(db, company_name="株式会社プロフィール")
+
+    written = call("update_company_profile", company_profile_payload(company_id=item.company_id))
+    assert written["success"] is True
+    assert written["changed"] is True
+    assert written["company"]["business_summary"] == COMPANY_SUMMARY
+    assert written["company"]["description"] == COMPANY_DESCRIPTION
+    assert [area["name"] for area in written["company"]["business_areas"]] == ["受託開発事業", "自社SaaS事業"]
+    assert written["company"]["website_url"] == "https://profile.example.com/"
+    assert written["company"]["public_code"]
+    assert written["company"]["url"].endswith(f"/companies/{written['company']['public_code']}")
+
+    # The profile travels with every company response, not only this tool's own reply.
+    resolved = call("resolve_company", {"company_name": "株式会社プロフィール"})["candidates"][0]["company"]
+    assert resolved["business_summary"] == COMPANY_SUMMARY
+    assert len(resolved["business_areas"]) == 2
+
+    replay = call("update_company_profile", company_profile_payload(company_id=item.company_id))
+    assert replay["idempotent_replay"] is True
+    assert replay["changed"] is False
+
+    # Omitting a field leaves it alone; business_areas replaces the stored set as a whole.
+    patched = call(
+        "update_company_profile",
+        {
+            "payload": {
+                "company_id": item.company_id,
+                "business_areas": [{"name": "自社SaaS事業", "description": AREA_SAAS}],
+                "source_url": "https://profile.example.com/company/",
+                "request_id": "mcp-company-profile-0002",
+            }
+        },
+    )
+    assert [area["name"] for area in patched["company"]["business_areas"]] == ["自社SaaS事業"]
+    assert patched["company"]["business_summary"] == COMPANY_SUMMARY
+    assert patched["company"]["website_url"] == "https://profile.example.com/"
+
+
+def test_mcp_company_profile_refuses_a_thin_profile(tools, db):
+    item = seed(db, company_name="株式会社ウスイ")
+
+    # A one-line "profile" is the case this tool exists to prevent: the company page would carry a
+    # heading and nothing under it.
+    thin = tool_error(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=item.company_id,
+            business_summary="IT企業です。",
+            description="システムを開発しています。",
+            business_areas=None,
+        ),
+    )
+    assert thin["error"] == "validation_failed"
+    assert {error["field"] for error in thin["errors"]} == {
+        FIELD_LABELS["business_summary"],
+        FIELD_LABELS["description"],
+    }
+
+    short_area = tool_error(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=item.company_id,
+            business_areas=[{"name": "受託開発事業", "description": "開発します。"}],
+        ),
+    )
+    assert short_area["error"] == "validation_failed"
+
+    too_many_areas = tool_error(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=item.company_id,
+            business_areas=[
+                {"name": f"第{index}事業", "description": "製品を開発し、国内の企業向けに提供しています。" * 3}
+                for index in range(7)
+            ],
+        ),
+    )
+    assert too_many_areas["error"] == "validation_failed"
+
+
+def test_mcp_company_profile_rejects_aggregator_urls_missing_fields_and_unknown_companies(tools, db):
+    item = seed(db, company_name="株式会社リジェクト")
+
+    aggregator = tool_error(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=item.company_id,
+            source_url="https://www.rikunabi.com/company/1",
+            request_id="mcp-company-profile-reject-1",
+        ),
+    )
+    assert aggregator["error"] == "validation_failed"
+    assert aggregator["errors"][0]["field"] == FIELD_LABELS["source_url"]
+
+    empty = tool_error(
+        "update_company_profile",
+        {
+            "payload": {
+                "company_id": item.company_id,
+                "source_url": "https://reject.example.com/company/",
+                "request_id": "mcp-company-profile-reject-2",
+            }
+        },
+    )
+    assert empty["error"] == "validation_failed"
+
+    missing = tool_error(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=item.company_id + 9999,
+            request_id="mcp-company-profile-reject-3",
+        ),
+    )
+    assert missing["error"] == "not_found"
 
 
 def test_mcp_can_resolve_register_use_and_remove_a_company_alias(tools, db):
@@ -1551,4 +1709,4 @@ def test_collection_targets_reject_bad_classification_and_non_primary_sources(to
     )
 
     assert classification["errors"][0]["field"] == "業種"
-    assert source["errors"][0]["field"] == "公式情報源"
+    assert source["errors"][0]["field"] == "公式情報源[0].公式情報源URL"

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { absoluteUrl, opportunityPath, siteOrigin } from "./site";
+import { absoluteUrl, companyPath, opportunityPath, siteOrigin } from "./site";
 
 const originalSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
 
@@ -18,5 +18,10 @@ describe("canonical site URLs", () => {
 
   it("encodes public references in canonical opportunity paths", () => {
     expect(opportunityPath("x/y")).toBe("/opportunities/x%2Fy");
+  });
+
+  it("builds company paths from the public code, never the internal id", () => {
+    expect(companyPath("CMPNY001")).toBe("/companies/CMPNY001");
+    expect(companyPath("x/y")).toBe("/companies/x%2Fy");
   });
 });

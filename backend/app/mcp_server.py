@@ -13,6 +13,7 @@ from pydantic import Field, ValidationError
 from app.config import get_settings
 from app.db import SessionLocal
 from app.schemas import (
+    COMPANY_PROFILE_FIELD_NAMES,
     DESCRIPTION_GUIDANCE,
     ClientName,
     CollectionCheckPayload,
@@ -28,6 +29,8 @@ from app.schemas import (
     CollectionTargetUpdateRequest,
     CompanyIndustryUpdatePayload,
     CompanyIndustryUpdateRequest,
+    CompanyProfileUpdatePayload,
+    CompanyProfileUpdateRequest,
     DegreeValue,
     EventFormatValue,
     EventTypeValue,
@@ -45,6 +48,7 @@ from app.schemas import (
     MCPCompanyIndustryWriteResponse,
     MCPCompanyMaintenanceContextResponse,
     MCPCompanyMergeResponse,
+    MCPCompanyProfileWriteResponse,
     MCPCompanyResolutionResponse,
     MCPDeletePreviewResponse,
     MCPDeleteResponse,
@@ -100,6 +104,7 @@ from app.services.companies import (
     merge_company,
     replace_company_industries,
     resolve_company_candidates,
+    update_company_profile,
 )
 from app.services.errors import pydantic_errors
 from app.services.master_cache import master_payload
@@ -173,6 +178,9 @@ mcp = FastMCP(
         "企業名が略称・英語名・誤記かもしれない場合はresolve_companyで候補を確認し、"
         "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
         "企業の業界・業種カテゴリを管理する場合はset_company_industriesでcompany_idとカテゴリ一覧を指定してください。"
+        "企業の事業内容はupdate_company_profileで登録します。企業ページに表示され、就活生がその企業を理解する主な材料になるため、"
+        "一言説明・300文字以上の本文・主な事業ごとの説明をまとめて登録してください。"
+        "企業自身の会社概要・事業紹介・IR資料で確認できた事実だけを書き、source_urlにそのページを指定してください。"
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "公式ページを確認して内容が変わっていない場合はverify_opportunityを使って確認だけを記録してください。"
@@ -340,7 +348,12 @@ def _collection_domain_error(request: Any, action: str, exc: DomainValidationErr
 
 
 def _company_domain_error(
-    *, client_name: str, request_id: str | None, action: str, exc: CompanyIdentityValidationError
+    *,
+    client_name: str,
+    request_id: str | None,
+    action: str,
+    exc: CompanyIdentityValidationError,
+    source_url: str | None = None,
 ) -> ToolError:
     with SessionLocal() as db:
         record_failed_attempt(
@@ -348,7 +361,7 @@ def _company_domain_error(
             action=action,
             request_id=request_id,
             client_name=client_name,
-            source_url=None,
+            source_url=source_url,
             errors=exc.errors,
             entity_type="company",
         )
@@ -706,6 +719,62 @@ def set_company_industries_tool(payload: CompanyIndustryUpdatePayload) -> MCPCom
             request_id=request.request_id,
             action="company_industries_update",
             exc=exc,
+        ) from exc
+    except LookupError as exc:
+        raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="update_company_profile",
+    title="企業プロフィールを更新",
+    description=(
+        "企業ページに表示する事業内容を設定します。募集そのものの説明とは別に、その企業が何をしている会社かを"
+        "就活生が一目で判断できる分量で伝えるための項目です。"
+        "business_summary（1〜2文の一言説明）、description（300文字以上の本文）、business_areas（主な事業ごとの説明）、"
+        "website_url（公式サイト）を指定できます。企業ページを検索対象にするにはbusiness_summaryとdescriptionの両方が必要です。"
+        "resolve_companyで企業IDを確認し、company_idと、更新する項目だけを指定してください。"
+        "指定しなかった項目は現在の値を維持し、nullを明示した項目だけ削除されます。business_areasだけは指定した内容で全置換します。"
+        "各項目には最小文字数があり、一言だけの登録は受け付けません。事前に公式サイトの会社概要・事業紹介・IR資料などを読み、"
+        "確認できた事実をまとめてから呼んでください。"
+        "source_urlには、その内容を確認した企業自身のページを指定してください。"
+        "求人サイト・口コミサイトのURLは指定できません。認証が必要です。"
+    ),
+    annotations=PATCHING,
+)
+def update_company_profile_tool(payload: CompanyProfileUpdatePayload) -> MCPCompanyProfileWriteResponse:
+    request = _parse_company_payload(payload, CompanyProfileUpdateRequest, "company_profile_update")
+    # exclude_unset keeps "leave this field alone" distinguishable from "clear this field".
+    changes = request.model_dump(include=COMPANY_PROFILE_FIELD_NAMES, exclude_unset=True)
+    try:
+        with SessionLocal() as db:
+            company, changed, replayed = update_company_profile(
+                db,
+                company_id=request.company_id,
+                changes=changes,
+                source_url=request.source_url,
+                request_id=request.request_id,
+                client_name=request.client_name,
+            )
+            return MCPCompanyProfileWriteResponse.model_validate(
+                {
+                    "success": True,
+                    "idempotent_replay": replayed,
+                    "changed": changed,
+                    "message": (
+                        "同じ企業プロフィール更新は処理済みです"
+                        if replayed
+                        else ("企業プロフィールを更新しました" if changed else "指定された内容は既に登録済みです")
+                    ),
+                    "company": company_identity_dict(company),
+                }
+            )
+    except CompanyIdentityValidationError as exc:
+        raise _company_domain_error(
+            client_name=request.client_name,
+            request_id=request.request_id,
+            action="company_profile_update",
+            exc=exc,
+            source_url=request.source_url,
         ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"}) from exc

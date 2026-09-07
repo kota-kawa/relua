@@ -113,7 +113,27 @@ class Company(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
+    #: Public identity of the company page, mirroring Opportunity.public_code so no URL exposes an
+    #: internal row id.
+    public_code: Mapped[str] = mapped_column(
+        String(PUBLIC_CODE_LENGTH), unique=True, nullable=False, default=public_code_string
+    )
+    #: One or two sentences naming the business, shown as the company page's lead and used as the
+    #: page's meta description. Nullable because most companies exist only as a name attached to a
+    #: posting until someone profiles them.
+    business_summary: Mapped[str | None] = mapped_column(String(200))
+    #: The body of the profile: what the company does, in the operator's own words, read off the
+    #: company's own pages. Blank lines separate paragraphs on the page.
+    description: Mapped[str | None] = mapped_column(Text)
+    #: The company's main businesses as [{"name": ..., "description": ...}], each rendered as its own
+    #: block so a reader can scan the businesses without reading the whole body. Written as a whole
+    #: set, never queried by content, which is why it is one JSON column rather than a table.
+    business_areas: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    website_url: Mapped[str | None] = mapped_column(String(2048))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
     aliases: Mapped[list["CompanyAlias"]] = relationship(
         back_populates="company", cascade="all, delete-orphan", lazy="selectin"
     )

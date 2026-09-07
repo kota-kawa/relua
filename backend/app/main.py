@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.api.companies import router as companies_router
 from app.api.health import router as health_router
 from app.api.masters import router as masters_router
 from app.api.oauth import router as oauth_router
@@ -131,6 +132,7 @@ async def unhandled_exception(_: Request, exc: Exception) -> JSONResponse:
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(masters_router, prefix="/api/v1")
 app.include_router(opportunities_router, prefix="/api/v1")
+app.include_router(companies_router, prefix="/api/v1")
 if settings.mcp_oauth_enabled:
     app.include_router(oauth_router)
 

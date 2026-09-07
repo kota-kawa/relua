@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { getListingSeo, listingMetadata, opportunityMetadata, type SeoFacetCatalog } from "./seo";
-import type { Opportunity } from "./types";
+import { companyIsIndexable, companyMetadata, getListingSeo, listingMetadata, opportunityMetadata, type SeoFacetCatalog } from "./seo";
+import type { CompanyDetail, Opportunity } from "./types";
 
 const catalog: SeoFacetCatalog = {
   industry: new Map([["industry-01", "IT・通信"]]),
@@ -138,7 +138,7 @@ const opportunity = {
   public_code: "ABC12345",
   url: "https://relua.example/opportunities/ABC12345",
   recruitment_status: { id: 2, slug: "status-02", name: "募集中" },
-  company: { id: 1, name: "テスト株式会社" },
+  company: { id: 1, name: "テスト株式会社", public_code: "CMPNY001", url: "https://relua.example/companies/CMPNY001" },
   industry: { id: 1, slug: "industry-01", name: "IT・通信" },
   sector: { id: 1, slug: "sector-1-01", name: "ソフトウェア" },
   event_name: "28卒 エンジニア本選考",
@@ -182,5 +182,66 @@ describe("opportunityMetadata", () => {
       ...opportunity,
       recruitment_status: { id: 3, slug: "status-03", name: "締切" },
     }).robots).toMatchObject({ index: false, follow: true });
+  });
+});
+
+const company = {
+  id: 1,
+  public_code: "CMPNY001",
+  url: "https://relua.example/companies/CMPNY001",
+  name: "テスト株式会社",
+  business_summary: "業務システムの受託開発と自社SaaSの提供を行っている。",
+  description: "受託開発では販売管理と生産管理の領域を担当し、自社SaaSは在庫管理と実績集計の2製品を提供している。",
+  business_areas: [{ name: "受託開発事業", description: "販売管理・生産管理システムを個別に開発している。" }],
+  website_url: "https://company.example/",
+  industries: [],
+  current_opportunity_count: 1,
+  openings_updated_at: "2026-08-02T00:00:00Z",
+  created_at: "2026-08-01T00:00:00Z",
+  updated_at: "2026-08-02T00:00:00Z",
+  current_opportunities: [opportunity],
+  past_opportunities: [],
+} satisfies CompanyDetail;
+
+describe("companyMetadata", () => {
+  it("self-canonicals on the public code and indexes a described, hiring company", () => {
+    expect(companyIsIndexable(company)).toBe(true);
+    expect(companyMetadata(company)).toMatchObject({
+      title: "テスト株式会社のインターン・本選考情報",
+      alternates: { canonical: "/companies/CMPNY001" },
+      openGraph: { url: "/companies/CMPNY001" },
+      robots: { index: true, follow: true },
+    });
+  });
+
+  it("requires both halves of the written profile before indexing", () => {
+    expect(companyIsIndexable({ ...company, description: null })).toBe(false);
+    expect(companyIsIndexable({ ...company, description: "   " })).toBe(false);
+    expect(companyIsIndexable({ ...company, business_summary: null })).toBe(false);
+    expect(companyIsIndexable({ ...company, business_summary: "   " })).toBe(false);
+    expect(companyMetadata({ ...company, business_summary: null, description: null }).robots)
+      .toMatchObject({ index: false, follow: true });
+  });
+
+  it("describes the company with its lead sentence rather than the body", () => {
+    expect(companyMetadata(company).description)
+      .toContain("業務システムの受託開発と自社SaaSの提供を行っている。");
+  });
+
+  it("keeps a company with no current opening out of search", () => {
+    const closed = {
+      ...company,
+      current_opportunity_count: 0,
+      current_opportunities: [],
+    } satisfies CompanyDetail;
+    expect(companyIsIndexable(closed)).toBe(false);
+    expect(companyMetadata(closed).description).toContain("現在掲載中の募集はありません");
+  });
+
+  it("does not index a company whose only opening has already ended", () => {
+    expect(companyIsIndexable({
+      ...company,
+      current_opportunities: [{ ...opportunity, deadline: "2020-01-01" }],
+    })).toBe(false);
   });
 });

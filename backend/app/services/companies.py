@@ -7,10 +7,11 @@ from typing import Any, Literal
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models import (
+    PUBLIC_CODE_LENGTH,
     AuditLog,
     CollectionCheck,
     CollectionSource,
@@ -20,14 +21,21 @@ from app.models import (
     CompanyIndustry,
     CompanyRequestRecord,
     Opportunity,
+    public_code_string,
 )
-from app.schemas import CompanyIndustryInput
+from app.schemas import COMPANY_PROFILE_FIELD_NAMES, CompanyIndustryInput
 from app.services.company_industries import (
     company_industry_dict,
     resolve_company_industries,
     set_company_industries,
 )
 from app.services.normalization import normalize_company_name
+from app.services.serialization import company_business_areas, public_company_url
+
+#: Profile fields a caller may write through update_company_profile, in the order a merge fills
+#: gaps in. The set itself is defined next to the input schema so validation and storage agree.
+COMPANY_PROFILE_FIELDS = ("business_summary", "description", "business_areas", "website_url")
+assert set(COMPANY_PROFILE_FIELDS) == set(COMPANY_PROFILE_FIELD_NAMES)
 
 CompanyMatchType = Literal["canonical_exact", "alias_exact", "partial", "fuzzy"]
 COMPANY_FUZZY_THRESHOLD = 0.3
@@ -50,8 +58,15 @@ class CompanyCandidate:
 def company_identity_dict(company: Company) -> dict[str, Any]:
     return {
         "id": company.id,
+        "public_code": company.public_code,
+        "url": public_company_url(company.public_code),
         "canonical_name": company.name,
         "normalized_name": company.normalized_name,
+        "business_summary": company.business_summary,
+        "description": company.description,
+        "business_areas": company_business_areas(company),
+        "website_url": company.website_url,
+        "updated_at": company.updated_at,
         "aliases": [
             {"id": alias.id, "alias": alias.alias, "normalized_alias": alias.normalized_alias}
             for alias in sorted(company.aliases, key=lambda item: (item.normalized_alias, item.id))
@@ -75,12 +90,39 @@ def find_company(db: Session, name: str) -> Company | None:
     return alias.company if alias else None
 
 
+def _unique_company_public_code(db: Session) -> str:
+    for _ in range(10):
+        code = public_code_string()
+        if db.scalar(select(Company.id).where(Company.public_code == code)) is None:
+            return code
+    raise RuntimeError("企業の公開コードを生成できませんでした")
+
+
+def company_profile_query() -> Any:
+    """Company with its classification eagerly loaded.
+
+    CompanyIndustry.industry and .sector are lazy, so a page that renders every category would
+    otherwise issue one query per row.
+    """
+    return select(Company).options(
+        selectinload(Company.industries).selectinload(CompanyIndustry.industry),
+        selectinload(Company.industries).selectinload(CompanyIndustry.sector),
+    )
+
+
+def get_company_by_public_code(db: Session, public_code: str) -> Company | None:
+    """Resolve the public company code. Case-insensitive so a hand-typed lowercase URL still works."""
+    if len(public_code) != PUBLIC_CODE_LENGTH:
+        return None
+    return db.scalar(company_profile_query().where(Company.public_code == public_code.upper()))
+
+
 def get_or_create_company(db: Session, name: str) -> Company:
     company = find_company(db, name)
     if company is not None:
         return company
     normalized = normalize_company_name(name)
-    company = Company(name=name, normalized_name=normalized)
+    company = Company(name=name, normalized_name=normalized, public_code=_unique_company_public_code(db))
     db.add(company)
     db.flush()
     return company
@@ -265,6 +307,7 @@ def _audit_identity(
     request_id: str,
     client_name: str,
     before: dict[str, Any],
+    source_url: str | None = None,
 ) -> None:
     db.add(
         AuditLog(
@@ -273,7 +316,7 @@ def _audit_identity(
             entity_id=str(company.id),
             request_id=request_id,
             client_name=client_name,
-            source_url=None,
+            source_url=source_url,
             success=True,
             changes={"before": jsonable_encoder(before), "after": jsonable_encoder(company_identity_dict(company))},
         )
@@ -356,6 +399,74 @@ def add_company_alias(
     )
     db.commit()
     return company, created, False
+
+
+def update_company_profile(
+    db: Session,
+    *,
+    company_id: int,
+    changes: dict[str, Any],
+    source_url: str,
+    request_id: str,
+    client_name: str,
+) -> tuple[Company, bool, bool]:
+    """Write the operator-confirmed company profile.
+
+    A patch: only the keys present in ``changes`` are touched, and an explicit ``None`` clears the
+    field.  ``business_areas`` is the exception, replacing the stored set as a whole, the same way a
+    company's industry list is replaced.  ``source_url`` is the company page the text was read from
+    and is kept in the audit log rather than on the row, matching how a posting separates its content
+    from the evidence for it.
+
+    Every length rule lives on ``CompanyProfileUpdateRequest``; by the time a value reaches here it
+    is either absent, null, or long enough to be worth showing.
+    """
+    unknown = [key for key in changes if key not in COMPANY_PROFILE_FIELDS]
+    if unknown:
+        raise CompanyIdentityValidationError(
+            [{"field": unknown[0], "received": unknown[0], "reason": "企業プロフィールの項目ではありません"}]
+        )
+
+    operation = "company_profile_update"
+    # The hash carries the keys as sent, so "field omitted" and "field explicitly cleared" are two
+    # different operations and cannot replay each other's result.
+    request_hash = _request_hash(
+        operation, {"company_id": company_id, "changes": changes, "source_url": source_url}
+    )
+    replayed = _replayed_company(db, request_id=request_id, operation=operation, request_hash=request_hash)
+    if replayed is not None:
+        return replayed, False, True
+
+    company = db.get(Company, company_id)
+    if company is None:
+        raise LookupError("company_not_found")
+    before = company_identity_dict(company)
+
+    changed = False
+    for field, value in changes.items():
+        if getattr(company, field) != value:
+            setattr(company, field, value)
+            changed = True
+
+    _remember_request(
+        db,
+        request_id=request_id,
+        operation=operation,
+        request_hash=request_hash,
+        company_id=company.id,
+    )
+    db.flush()
+    _audit_identity(
+        db,
+        action=operation,
+        company=company,
+        request_id=request_id,
+        client_name=client_name,
+        before=before,
+        source_url=source_url,
+    )
+    db.commit()
+    return company, changed, False
 
 
 def delete_company_alias(db: Session, *, alias_id: int, request_id: str, client_name: str) -> tuple[Company, bool]:
@@ -609,6 +720,12 @@ def merge_company(
     for item in request_records:
         item.company_id = target.id
     summary["company_request_records_moved"] = len(request_records)
+
+    # The surviving company's own profile wins; only fields it never had are inherited, so a merge
+    # never silently replaces text the operator confirmed for the target.
+    for field in COMPANY_PROFILE_FIELDS:
+        if getattr(target, field) is None and getattr(source, field) is not None:
+            setattr(target, field, getattr(source, field))
 
     summary.update(_merge_collection_targets(db, source_company_id=source.id, target_company_id=target.id))
     # ``Company.aliases`` and ``Company.industries`` are delete-orphan relationships.  Flush and

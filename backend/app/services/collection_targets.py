@@ -40,7 +40,7 @@ from app.services.company_industries import (
 )
 from app.services.normalization import normalize_source_url, source_url_is_allowed
 from app.services.opportunities import RECONFIRMABLE_RECRUITMENT_STATUSES, DomainValidationError
-from app.services.serialization import detail_url, master_dict
+from app.services.serialization import company_ref_dict, detail_url, master_dict
 
 
 @dataclass
@@ -204,7 +204,7 @@ def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, A
     primary = primary_company_industry(classifications)
     return {
         "id": target.id,
-        "company": {"id": target.company.id, "name": target.company.name},
+        "company": company_ref_dict(target.company),
         #: Every industry this company belongs to. A company spanning two industries is one target
         #: with two entries here, never two targets.
         "industries": [company_industry_dict(row) for row in classifications],

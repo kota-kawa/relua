@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   getOpportunities: vi.fn(),
   getOpportunity: vi.fn(),
   getSameCompanyOpportunities: vi.fn(),
+  getCompany: vi.fn(),
   ApiError: class extends Error {
     constructor(public status: number, message: string) {
       super(message);
@@ -43,6 +44,7 @@ vi.mock("@/lib/api", () => api);
 vi.mock("next/cache", () => ({ unstable_cache: cacheHarness.unstableCache }));
 
 import {
+  loadCompanySnapshot,
   loadListingSnapshot,
   loadOpportunitySnapshot,
   normalizeListingParams,
@@ -125,5 +127,39 @@ describe("SEO snapshot loaders", () => {
     api.getSameCompanyOpportunities.mockResolvedValue([]);
     const recovered = await loadOpportunitySnapshot("legacy-id");
     expect(recovered.item).toEqual(item);
+  });
+});
+
+describe("company snapshot loader", () => {
+  afterEach(() => {
+    cacheHarness.clear();
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("normalizes the code so one cache entry serves either casing", async () => {
+    const company = { id: 1, public_code: "CMPNY001", name: "株式会社サンプル" };
+    api.getCompany.mockResolvedValue(company);
+
+    expect((await loadCompanySnapshot("cmpny001")).company).toEqual(company);
+    expect(api.getCompany).toHaveBeenCalledWith("CMPNY001");
+
+    await loadCompanySnapshot("CMPNY001");
+    expect(api.getCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches a 404 as null but lets an outage fail the page", async () => {
+    const initialTime = Date.parse("2026-09-07T00:00:00Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    api.getCompany.mockRejectedValue(new api.ApiError(404, "missing"));
+    expect((await loadCompanySnapshot("NOSUCH01")).company).toBeNull();
+
+    api.getCompany.mockRejectedValue(new Error("temporary outage"));
+    await expect(loadCompanySnapshot("OTHER001")).rejects.toThrow("temporary outage");
+
+    // A snapshot older than the stale window must not keep serving.
+    vi.setSystemTime(initialTime + SEO_DATA_MAX_STALE_MS + 1);
+    await expect(loadCompanySnapshot("NOSUCH01")).rejects.toThrow();
   });
 });

@@ -5,7 +5,8 @@ const getMasters = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/api", () => ({ getAllOpportunities, getMasters }));
 
-import sitemap from "@/app/sitemap";
+import { getSitemapEntries, sitemapXml } from "@/lib/sitemap";
+import { GET } from "@/app/sitemap.xml/route";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
 
@@ -27,7 +28,7 @@ describe("sitemap", () => {
       { public_code: "x/y", updated_at: "2026-08-02T10:00:00Z", source_checked_at: null, recruitment_status: { slug: "status-02" } },
     ]);
 
-    await expect(sitemap()).resolves.toEqual(expect.arrayContaining([
+    await expect(getSitemapEntries()).resolves.toEqual(expect.arrayContaining([
       {
         url: "https://relua.example/opportunities/ABC12345",
         lastModified: "2026-08-03T10:00:00Z",
@@ -43,19 +44,14 @@ describe("sitemap", () => {
     ]));
   });
 
-  it("returns static pages when opportunity retrieval is unavailable", async () => {
+  it("fails the whole sitemap when opportunity retrieval is unavailable", async () => {
     process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
     getAllOpportunities.mockRejectedValue(new Error("API unavailable"));
 
-    await expect(sitemap()).resolves.toEqual([
-      { url: "https://relua.example", changeFrequency: "daily", priority: 1 },
-      { url: "https://relua.example/about", changeFrequency: "yearly", priority: 0.5 },
-      { url: "https://relua.example/terms", changeFrequency: "yearly", priority: 0.3 },
-      { url: "https://relua.example/policy", changeFrequency: "yearly", priority: 0.3 },
-    ]);
+    await expect(getSitemapEntries()).rejects.toThrow("API unavailable");
   });
 
-  it("includes only sufficiently populated high-intent category pages", async () => {
+  it("includes allowlisted category pages with one or more active results", async () => {
     process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
     getAllOpportunities.mockResolvedValue(Array.from({ length: 10 }, (_, index) => ({
       public_code: `CODE000${index}`,
@@ -79,7 +75,7 @@ describe("sitemap", () => {
       degrees: [],
       recruitment_statuses: [],
     });
-    await expect(sitemap()).resolves.toEqual(expect.arrayContaining([
+    await expect(getSitemapEntries()).resolves.toEqual(expect.arrayContaining([
       { url: "https://relua.example/?industry=industry-01", changeFrequency: "daily", priority: 0.7 },
       { url: "https://relua.example/?event_type=type-01", changeFrequency: "daily", priority: 0.7 },
       { url: "https://relua.example/?graduation_year=grad-02", changeFrequency: "daily", priority: 0.7 },
@@ -105,11 +101,11 @@ describe("sitemap", () => {
       },
     ]);
 
-    const entries = await sitemap();
+    const entries = await getSitemapEntries();
     expect(entries.some((entry) => entry.url.endsWith("/opportunities/EXPIRED1"))).toBe(false);
   });
 
-  it("keeps detail URLs when the master catalog is temporarily unavailable", async () => {
+  it("fails the whole sitemap when the master catalog is unavailable", async () => {
     process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
     getMasters.mockRejectedValue(new Error("catalog unavailable"));
     getAllOpportunities.mockResolvedValue([
@@ -122,8 +118,32 @@ describe("sitemap", () => {
       },
     ]);
 
-    await expect(sitemap()).resolves.toEqual(expect.arrayContaining([
-      { url: "https://relua.example/opportunities/ABC12345", lastModified: "2026-08-01T00:00:00Z", changeFrequency: "weekly", priority: 0.8 },
-    ]));
+    await expect(getSitemapEntries()).rejects.toThrow("catalog unavailable");
+  });
+
+  it("escapes XML values and serializes metadata", () => {
+    expect(sitemapXml([{ url: "https://relua.example/?q=a&b=<c>", lastModified: new Date("2026-08-01T00:00:00Z"), changeFrequency: "daily", priority: 0.5 }]))
+      .toContain("<loc>https://relua.example/?q=a&amp;b=&lt;c&gt;</loc>");
+  });
+
+  it("returns static pages for a confirmed empty inventory", async () => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
+    getAllOpportunities.mockResolvedValue([]);
+    getMasters.mockResolvedValue({
+      industries: [], sectors: [], event_types: [], event_formats: [],
+      job_categories: [], graduation_years: [], degrees: [], recruitment_statuses: [],
+    });
+    const response = await GET();
+    expect(response.status).toBe(200);
+    expect((await response.text()).match(/<url>/g)).toHaveLength(4);
+  });
+
+  it("returns 503 with retry headers for a sitemap outage", async () => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
+    getAllOpportunities.mockRejectedValue(new Error("API unavailable"));
+    const response = await GET();
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("300");
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });

@@ -22,19 +22,45 @@ export type ListingFacet = {
 
 export type SeoFacetCatalog = Record<IndexableFacetKey, ReadonlyMap<string, string>>;
 
-/** Narrower intents need more inventory before they deserve a search landing page. */
-const MIN_INDEXABLE_RESULTS: Record<IndexableFacetKey, number> = {
-  industry: 5,
-  sector: 8,
-  job_category: 8,
-  event_type: 5,
-  event_format: 8,
-  graduation_year: 5,
+/**
+ * SEO category membership is deliberately a reviewed, typed configuration.
+ *
+ * The API master is still the source of labels and parent relationships, but
+ * inventory changes cannot silently add or remove crawlable landing pages.
+ * Add a new value here after reviewing its intent and content quality. Past
+ * graduation cohorts are filtered separately by currentGraduationYears().
+ */
+export const SEO_FACET_ALLOWLIST: Readonly<Record<IndexableFacetKey, readonly string[]>> = {
+  industry: [
+    "industry-01", "industry-02", "industry-03", "industry-04", "industry-05",
+    "industry-06", "industry-07", "industry-08", "industry-09", "industry-10",
+    "industry-11", "industry-12", "industry-13", "industry-14",
+  ],
+  sector: [
+    "sector-1-01", "sector-1-02", "sector-1-03", "sector-1-04", "sector-1-05", "sector-1-71",
+    "sector-2-07", "sector-2-08", "sector-2-09", "sector-2-10", "sector-2-11", "sector-2-12", "sector-2-13",
+    "sector-3-16",
+    "sector-4-18", "sector-4-19", "sector-4-20", "sector-4-21", "sector-4-22",
+    "sector-5-24", "sector-5-25", "sector-5-26", "sector-5-27",
+    "sector-6-29", "sector-6-30", "sector-6-31", "sector-6-32",
+    "sector-7-34", "sector-7-35", "sector-7-36", "sector-7-37",
+    "sector-8-39", "sector-8-41", "sector-8-42",
+    "sector-9-44", "sector-9-45", "sector-9-46",
+    "sector-10-48", "sector-10-49", "sector-10-50",
+    "sector-11-54", "sector-11-55", "sector-11-56",
+    "sector-12-58", "sector-12-59", "sector-12-60", "sector-12-61",
+    "sector-13-64",
+    "sector-14-66", "sector-14-68",
+  ],
+  job_category: [
+    "job-01", "job-02", "job-03", "job-04", "job-05", "job-06",
+    "job-07", "job-08", "job-09", "job-10", "job-11", "job-12",
+    "job-13", "job-14", "job-15", "job-16", "job-17", "job-18",
+  ],
+  event_type: ["type-01", "type-02", "type-03", "type-04", "type-05"],
+  event_format: ["format-01", "format-02", "format-03"],
+  graduation_year: ["grad-02", "grad-03", "grad-04", "grad-05", "grad-06"],
 };
-
-export function minimumIndexableResults(key: IndexableFacetKey) {
-  return MIN_INDEXABLE_RESULTS[key];
-}
 
 const LISTING_QUERY_KEYS = new Set([
   "q",
@@ -93,15 +119,22 @@ function usableLabel(label: string) {
 
 /** Builds the category vocabulary that is allowed to become an SEO landing page. */
 export function getSeoFacetCatalog(masters: Masters): SeoFacetCatalog {
+  const catalogFor = <T extends { slug: string; name: string }>(key: IndexableFacetKey, items: T[]) => {
+    const allowed = new Set(SEO_FACET_ALLOWLIST[key]);
+    return new Map(items
+      .filter((item) => allowed.has(item.slug) && usableLabel(item.name))
+      .map((item) => [item.slug, item.name] as const));
+  };
+
   return {
-    industry: new Map(masters.industries.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
-    sector: new Map(masters.sectors.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
-    job_category: new Map(masters.job_categories.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
-    event_type: new Map(masters.event_types.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
-    event_format: new Map(masters.event_formats.filter((item) => usableLabel(item.name)).map((item) => [item.slug, item.name])),
+    industry: catalogFor("industry", masters.industries),
+    sector: catalogFor("sector", masters.sectors),
+    job_category: catalogFor("job_category", masters.job_categories),
+    event_type: catalogFor("event_type", masters.event_types),
+    event_format: catalogFor("event_format", masters.event_formats),
     graduation_year: new Map(
       currentGraduationYears(masters.graduation_years, [])
-        .filter((item) => usableLabel(item.name))
+        .filter((item) => SEO_FACET_ALLOWLIST.graduation_year.includes(item.slug) && usableLabel(item.name))
         .map((item) => [item.slug, item.name]),
     ),
   };
@@ -121,6 +154,7 @@ function getIndexableFacet(params: SearchParams, catalog?: SeoFacetCatalog): Lis
   const values = valuesOf(params, key);
   if (values.length !== 1 || !values[0]) return null;
 
+  if (!SEO_FACET_ALLOWLIST[key].includes(values[0])) return null;
   const label = catalog?.[key]?.get(values[0]);
   if (catalog && !label) return null;
   return { key, slug: values[0], label };
@@ -137,9 +171,11 @@ export function listingPath(facet?: ListingFacet, page = 1) {
 
 /**
  * Search-result URLs are user navigation, not all landing pages. Index the
- * default listing, pure pagination, and one high-intent category facet at a
- * time. Search, sorting, arbitrary combinations, and thin categories stay
- * out of the index while their links remain crawlable.
+ * default listing, pure pagination, and one reviewed high-intent category
+ * facet at a time. Search, sorting, and arbitrary combinations stay out of
+ * the index while their links remain crawlable. Availability (including a
+ * normal zero-result category) is handled by the page loader so the route can
+ * return a real 404 instead of a robots directive.
  */
 export function getListingSeo(params: SearchParams, options: ListingSeoOptions = {}): ListingSeo {
   if (Object.keys(params).some((key) => !LISTING_QUERY_KEYS.has(key))) return noindex();
@@ -155,10 +191,6 @@ export function getListingSeo(params: SearchParams, options: ListingSeoOptions =
     || activeFilterKeys.length !== 1
     || activeFilterKeys[0] !== facet.key
   )) {
-    return noindex();
-  }
-
-  if (facet && options.resultTotal !== undefined && options.resultTotal < minimumIndexableResults(facet.key)) {
     return noindex();
   }
 

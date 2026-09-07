@@ -3,6 +3,8 @@ import "server-only";
 import type { Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
 
 const baseUrl = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
+const configuredTimeout = Number(process.env.API_INTERNAL_TIMEOUT_MS ?? "10000");
+const API_TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 10000;
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -12,14 +14,21 @@ export class ApiError extends Error {
 
 async function apiFetch<T>(path: string): Promise<T> {
   const internalToken = process.env.API_INTERNAL_TOKEN ?? "local-development-internal-token";
-  const response = await fetch(`${baseUrl}/api/v1${path}`, {
-    next: { revalidate: 60 },
-    headers: { Accept: "application/json", "X-Internal-API-Token": internalToken },
-  });
-  if (!response.ok) {
-    throw new ApiError(response.status, `API request failed: ${response.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${baseUrl}/api/v1${path}`, {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: { Accept: "application/json", "X-Internal-API-Token": internalToken },
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `API request failed: ${response.status}`);
+    }
+    return await response.json() as T;
+  } finally {
+    clearTimeout(timeout);
   }
-  return response.json() as Promise<T>;
 }
 
 function appendValues(target: URLSearchParams, key: string, value: string | string[] | undefined) {
@@ -47,7 +56,7 @@ export async function getAllOpportunities(statuses = ["status-02"]): Promise<Opp
   const commonQuery = common.toString();
   const firstPage = await apiFetch<OpportunityList>(`/opportunities?${commonQuery}`);
   const remainingPages = await Promise.all(
-    Array.from({ length: firstPage.total_pages - 1 }, (_, index) =>
+    Array.from({ length: Math.max(firstPage.total_pages - 1, 0) }, (_, index) =>
       apiFetch<OpportunityList>(`/opportunities?${commonQuery}&page=${index + 2}`),
     ),
   );

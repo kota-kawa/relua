@@ -6,7 +6,6 @@ import { CategoryOverview } from "@/components/category-overview";
 import { DeadlineCalendar } from "@/components/deadline-calendar";
 import { DiscoveryNav, type ViewMode } from "@/components/discovery-nav";
 import { EmptyState } from "@/components/empty-state";
-import { ErrorState } from "@/components/error-state";
 import { FilterPanel } from "@/components/filter-panel";
 import { Hero } from "@/components/hero";
 import { JsonLd } from "@/components/json-ld";
@@ -15,9 +14,9 @@ import { OpportunityTable } from "@/components/opportunity-table";
 import { Pagination } from "@/components/pagination";
 import { QuickFilters } from "@/components/quick-filters";
 import { SortForm } from "@/components/sort-form";
-import { getMasters, getOpportunities } from "@/lib/api";
 import { withDefaultOpenStatus } from "@/lib/format";
 import { getListingSeo, getSeoFacetCatalog, listingMetadata } from "@/lib/seo";
+import { loadListingSnapshot } from "@/lib/seo-data";
 import { listingStructuredData } from "@/lib/structured-data";
 import type { SearchParams } from "@/lib/types";
 
@@ -27,27 +26,15 @@ function first(params: SearchParams, key: string) {
 }
 
 export async function generateMetadata({ searchParams }: { searchParams: Promise<SearchParams> }): Promise<Metadata> {
-  const params = await searchParams;
-  const initial = listingMetadata(params);
-  const preliminary = getListingSeo(params);
+  const params = withDefaultOpenStatus(await searchParams);
+  const { masters, result } = await loadListingSnapshot(params);
+  const catalog = getSeoFacetCatalog(masters);
+  const preliminary = getListingSeo(params, { catalog });
   const requestedPage = Number(first(params, "page") ?? 1);
-  if (!preliminary.index || (!preliminary.facet && requestedPage <= 1)) return initial;
-
-  let data;
-  try {
-    data = await Promise.all([
-      getMasters(),
-      getOpportunities(withDefaultOpenStatus(params)),
-    ]);
-  } catch {
-    // Do not leave an unverified category URL indexable if the catalog or
-    // result count cannot be checked during metadata generation.
-    return { robots: { index: false, follow: true } };
-  }
-  const [masters, result] = data;
   if (Number.isSafeInteger(requestedPage) && requestedPage > 1 && requestedPage > result.total_pages) notFound();
+  if (preliminary.facet && result.total === 0) notFound();
   return listingMetadata(params, {
-    catalog: getSeoFacetCatalog(masters),
+    catalog,
     resultTotal: result.total,
     totalPages: result.total_pages,
   });
@@ -57,19 +44,14 @@ export default async function Home({ searchParams }: { searchParams: Promise<Sea
   const params = withDefaultOpenStatus(await searchParams);
   const requestedView = first(params, "view");
   const view: ViewMode = requestedView === "list" || requestedView === "calendar" ? requestedView : "cards";
-  let data;
-  try {
-    data = await Promise.all([getMasters(), getOpportunities(params)]);
-  } catch {
-    return <ErrorState />;
-  }
-  const [masters, result] = data;
+  const { masters, result } = await loadListingSnapshot(params);
   if (result.page > 1 && result.page > result.total_pages) notFound();
   const listingSeo = getListingSeo(params, {
     catalog: getSeoFacetCatalog(masters),
     resultTotal: result.total,
     totalPages: result.total_pages,
   });
+  if (listingSeo.facet && result.total === 0) notFound();
   const categoryLabel = listingSeo.facet?.label;
   const categoryHeading = categoryLabel
     ? `${categoryLabel}${listingSeo.facet?.key === "graduation_year" ? "向け" : "の"}募集情報`

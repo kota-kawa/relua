@@ -52,6 +52,7 @@
 | [`docs/decisions/0013-official-source-allowlist-and-check-evidence.md`](./docs/decisions/0013-official-source-allowlist-and-check-evidence.md) | 企業公式source allowlistと確認証跡の理由 |
 | [`docs/decisions/0014-scheduled-expiry-cleanup.md`](./docs/decisions/0014-scheduled-expiry-cleanup.md) | 完全削除を日次schedule化し監視する理由 |
 | [`docs/decisions/0015-canonical-public-urls-and-indexable-facets.md`](./docs/decisions/0015-canonical-public-urls-and-indexable-facets.md) | 公開URL正規化とindex対象カテゴリの理由 |
+| [`docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md`](./docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md) | SEOデータの障害耐性、レビュー済みカテゴリallowlist、サイトマップ503の理由 |
 
 ## 変更時のルール
 

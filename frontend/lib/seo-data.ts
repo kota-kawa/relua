@@ -85,6 +85,12 @@ export function seoSnapshotIsFresh(fetchedAt: number, now = Date.now()) {
   return Number.isFinite(fetchedAt) && now - fetchedAt <= SEO_DATA_MAX_STALE_MS;
 }
 
+/**
+ * The last line of the freshness bound rather than the outage path: an outage
+ * surfaces as the API's own error. This only fires if a just-completed refresh
+ * still carries an out-of-date timestamp, which today means a backwards clock
+ * jump or a future fetcher that returns something it did not fetch.
+ */
 function assertFresh<T extends { fetchedAt: number }>(snapshot: T): T {
   if (!seoSnapshotIsFresh(snapshot.fetchedAt)) {
     throw new SeoDataUnavailableError("The last successful SEO data snapshot is too old");
@@ -92,32 +98,71 @@ function assertFresh<T extends { fetchedAt: number }>(snapshot: T): T {
   return snapshot;
 }
 
+const inFlightSnapshots = new Map<string, Promise<unknown>>();
+
 /**
- * Data Cache owns the last successful complete listing snapshot. A failed
- * refresh is not stored by unstable_cache, so a recent successful value can
- * continue to serve while the API recovers. The age check stops an outage
- * from serving an unboundedly old page.
+ * One in-flight fetch per cache key for the whole process.
+ *
+ * unstable_cache only deduplicates revalidations within a single request, so a
+ * burst of requests on the same stale key would otherwise each start their own
+ * refresh. Sharing one promise also lets a blocking read join the revalidation
+ * the Data Cache is already running, so the value a request returns is the same
+ * value that gets stored for the requests after it.
  */
-const cachedListingSnapshot = unstable_cache(
-  async (serializedParams: string): Promise<ListingSnapshot> => {
-    const params = JSON.parse(serializedParams) as SearchParams;
-    const [masters, result] = await Promise.all([
-      getMasters(),
-      getOpportunities(params),
-    ]);
-    return { masters, result, fetchedAt: Date.now() };
-  },
-  ["seo-listing-snapshot-v2"],
-  { revalidate: SEO_DATA_REVALIDATE_SECONDS },
-);
+function sharedSnapshot<T>(key: string, fetchSnapshot: () => Promise<T>): Promise<T> {
+  const running = inFlightSnapshots.get(key) as Promise<T> | undefined;
+  if (running) return running;
+  const promise = fetchSnapshot();
+  inFlightSnapshots.set(key, promise);
+  const settle = () => {
+    if (inFlightSnapshots.get(key) === promise) inFlightSnapshots.delete(key);
+  };
+  // Both handlers so a rejection clears the entry without becoming an
+  // unhandled rejection of its own; the callers still see the original reason.
+  promise.then(settle, settle);
+  return promise;
+}
 
-const loadListingSnapshotByKey = cache(async (key: string): Promise<ListingSnapshot> => {
-  return assertFresh(await cachedListingSnapshot(key));
-});
+/**
+ * Wrap one snapshot fetcher in the two caches the SEO pages depend on.
+ *
+ * Data Cache (`unstable_cache`) owns the last successful snapshot across
+ * requests, and React `cache` keeps metadata and the page body on one snapshot
+ * within a request. A failed refresh is not stored, so a recent successful
+ * value keeps serving while the API recovers.
+ *
+ * Next.js returns an expired Data Cache entry immediately and refreshes it in
+ * the background, so a value past the staleness bound has to be replaced rather
+ * than rejected: the loader waits for the refresh instead of failing a request
+ * the API could have answered. Joining `sharedSnapshot` means it waits for the
+ * refresh the Data Cache is already running instead of starting a second one.
+ */
+function snapshotLoader<T extends { fetchedAt: number }>(
+  cacheKeyPart: string,
+  fetchSnapshot: (key: string) => Promise<T>,
+) {
+  const cachedSnapshot = unstable_cache(
+    (key: string) => sharedSnapshot(`${cacheKeyPart}:${key}`, () => fetchSnapshot(key)),
+    [cacheKeyPart],
+    { revalidate: SEO_DATA_REVALIDATE_SECONDS },
+  );
 
-/** Metadata and the page body call this with the same normalized key. */
-export async function loadListingSnapshot(params: SearchParams): Promise<ListingSnapshot> {
-  return loadListingSnapshotByKey(normalizeListingParams(params).key);
+  return cache(async (key: string): Promise<T> => {
+    const snapshot = await cachedSnapshot(key);
+    if (seoSnapshotIsFresh(snapshot.fetchedAt)) return snapshot;
+    // The read above left its refresh in the map, so this waits for that one.
+    // Starting a fetch here instead would still be correct, only wasteful.
+    return assertFresh(await sharedSnapshot(`${cacheKeyPart}:${key}`, () => fetchSnapshot(key)));
+  });
+}
+
+async function fetchListingSnapshot(serializedParams: string): Promise<ListingSnapshot> {
+  const params = JSON.parse(serializedParams) as SearchParams;
+  const [masters, result] = await Promise.all([
+    getMasters(),
+    getOpportunities(params),
+  ]);
+  return { masters, result, fetchedAt: Date.now() };
 }
 
 /**
@@ -126,33 +171,21 @@ export async function loadListingSnapshot(params: SearchParams): Promise<Listing
  * company data is deliberately best-effort and cannot make the primary page
  * unavailable.
  */
-const cachedOpportunitySnapshot = unstable_cache(
-  async (id: string): Promise<OpportunitySnapshot> => {
-    const itemPromise = getOpportunity(id).catch((error: unknown) => {
-      if (error instanceof ApiError && error.status === 404) return null;
-      throw error;
-    });
-    const relatedPromise = getSameCompanyOpportunities(id).catch(() => {
-      // The detail remains useful when the secondary recommendation query is
-      // temporarily unavailable.
-      return [] as Opportunity[];
-    });
-    const [item, sameCompanyOpportunities] = await Promise.all([itemPromise, relatedPromise]);
-    if (!item) {
-      return { item: null, sameCompanyOpportunities: [], fetchedAt: Date.now() };
-    }
-    return { item, sameCompanyOpportunities, fetchedAt: Date.now() };
-  },
-  ["seo-opportunity-snapshot-v2"],
-  { revalidate: SEO_DATA_REVALIDATE_SECONDS },
-);
-
-const loadOpportunitySnapshotById = cache(async (id: string): Promise<OpportunitySnapshot> => {
-  return assertFresh(await cachedOpportunitySnapshot(id));
-});
-
-export async function loadOpportunitySnapshot(id: string): Promise<OpportunitySnapshot> {
-  return loadOpportunitySnapshotById(id);
+async function fetchOpportunitySnapshot(id: string): Promise<OpportunitySnapshot> {
+  const itemPromise = getOpportunity(id).catch((error: unknown) => {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  });
+  const relatedPromise = getSameCompanyOpportunities(id).catch(() => {
+    // The detail remains useful when the secondary recommendation query is
+    // temporarily unavailable.
+    return [] as Opportunity[];
+  });
+  const [item, sameCompanyOpportunities] = await Promise.all([itemPromise, relatedPromise]);
+  if (!item) {
+    return { item: null, sameCompanyOpportunities: [], fetchedAt: Date.now() };
+  }
+  return { item, sameCompanyOpportunities, fetchedAt: Date.now() };
 }
 
 /**
@@ -160,21 +193,26 @@ export async function loadOpportunitySnapshot(id: string): Promise<OpportunitySn
  * opportunity detail there is no best-effort secondary fetch here: a 404 is a
  * cacheable null and every other failure propagates.
  */
-const cachedCompanySnapshot = unstable_cache(
-  async (publicCode: string): Promise<CompanySnapshot> => {
-    const company = await getCompany(publicCode).catch((error: unknown) => {
-      if (error instanceof ApiError && error.status === 404) return null;
-      throw error;
-    });
-    return { company, fetchedAt: Date.now() };
-  },
-  ["seo-company-snapshot-v1"],
-  { revalidate: SEO_DATA_REVALIDATE_SECONDS },
-);
+async function fetchCompanySnapshot(publicCode: string): Promise<CompanySnapshot> {
+  const company = await getCompany(publicCode).catch((error: unknown) => {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  });
+  return { company, fetchedAt: Date.now() };
+}
 
-const loadCompanySnapshotByCode = cache(async (publicCode: string): Promise<CompanySnapshot> => {
-  return assertFresh(await cachedCompanySnapshot(publicCode));
-});
+const loadListingSnapshotByKey = snapshotLoader("seo-listing-snapshot-v2", fetchListingSnapshot);
+const loadOpportunitySnapshotById = snapshotLoader("seo-opportunity-snapshot-v2", fetchOpportunitySnapshot);
+const loadCompanySnapshotByCode = snapshotLoader("seo-company-snapshot-v1", fetchCompanySnapshot);
+
+/** Metadata and the page body call this with the same normalized key. */
+export async function loadListingSnapshot(params: SearchParams): Promise<ListingSnapshot> {
+  return loadListingSnapshotByKey(normalizeListingParams(params).key);
+}
+
+export async function loadOpportunitySnapshot(id: string): Promise<OpportunitySnapshot> {
+  return loadOpportunitySnapshotById(id);
+}
 
 /** Metadata and the page body call this with the same normalized code. */
 export async function loadCompanySnapshot(publicCode: string): Promise<CompanySnapshot> {

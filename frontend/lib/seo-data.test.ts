@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("server-only", () => ({}), { virtual: true });
+vi.mock("server-only", () => ({}));
 
 const api = vi.hoisted(() => ({
   getMasters: vi.fn(),
@@ -15,10 +15,27 @@ const api = vi.hoisted(() => ({
   },
 }));
 
+/**
+ * Mirrors the Next.js 16 Data Cache: an expired entry is returned as-is and
+ * refreshed in the background, which is what turns a long-unvisited URL into a
+ * request that has to decide what to do with an out-of-date snapshot.
+ */
 const cacheHarness = vi.hoisted(() => {
   const entries = new Map<string, { value: unknown; storedAt: number }>();
+  let background: Promise<unknown>[] = [];
   return {
-    clear: () => entries.clear(),
+    reset: () => {
+      entries.clear();
+      background = [];
+    },
+    /** Let the background revalidations finish, as the server does per request. */
+    settled: async () => {
+      while (background.length) {
+        const pending = background;
+        background = [];
+        await Promise.all(pending);
+      }
+    },
     unstableCache: (
       fn: (...args: unknown[]) => Promise<unknown>,
       keyParts: string[] = [],
@@ -27,21 +44,31 @@ const cacheHarness = vi.hoisted(() => {
       const key = JSON.stringify([keyParts, args]);
       const hit = entries.get(key);
       const revalidateMs = (options.revalidate ?? 0) * 1000;
-      if (hit && Date.now() - hit.storedAt <= revalidateMs) return hit.value;
-      try {
-        const value = await fn(...args);
-        entries.set(key, { value, storedAt: Date.now() });
-        return value;
-      } catch (error) {
-        if (hit) return hit.value;
-        throw error;
+      if (hit) {
+        if (Date.now() - hit.storedAt > revalidateMs) {
+          background.push(
+            fn(...args)
+              .then((value) => entries.set(key, { value, storedAt: Date.now() }))
+              .catch(() => undefined),
+          );
+        }
+        return hit.value;
       }
+      const value = await fn(...args);
+      entries.set(key, { value, storedAt: Date.now() });
+      return value;
     },
   };
 });
 
 vi.mock("@/lib/api", () => api);
 vi.mock("next/cache", () => ({ unstable_cache: cacheHarness.unstableCache }));
+
+// React `cache` does not memoize outside a render, so every loader call below
+// is an independent request. That makes the process-wide sharing visible here,
+// but it also means the within-request sharing of metadata and body is not
+// covered by these tests; `docs/knowledge/seo-debugging.md` covers it against a
+// production build instead.
 
 import {
   loadCompanySnapshot,
@@ -80,19 +107,24 @@ describe("SEO snapshot loaders", () => {
     job_categories: [], graduation_years: [], degrees: [], recruitment_statuses: [],
   };
   const result = { items: [], total: 0, page: 1, per_page: 12, total_pages: 0 };
+  const initialTime = Date.parse("2026-09-07T00:00:00Z");
 
-  afterEach(() => {
-    cacheHarness.clear();
+  afterEach(async () => {
+    await cacheHarness.settled();
+    cacheHarness.reset();
     vi.clearAllMocks();
     vi.useRealTimers();
   });
 
-  it("serves the last complete listing snapshot through a failed refresh, then recovers", async () => {
-    const initialTime = Date.parse("2026-09-07T00:00:00Z");
-    vi.useFakeTimers();
-    vi.setSystemTime(initialTime);
+  function listingApiIsHealthy() {
     api.getMasters.mockResolvedValue(masters);
     api.getOpportunities.mockResolvedValue(result);
+  }
+
+  it("serves the last complete listing snapshot through a failed refresh", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    listingApiIsHealthy();
     const initial = await loadListingSnapshot({});
     expect(initial.fetchedAt).toBe(initialTime);
 
@@ -101,18 +133,110 @@ describe("SEO snapshot loaders", () => {
     api.getOpportunities.mockRejectedValue(new Error("temporary outage"));
     const stale = await loadListingSnapshot({});
     expect(stale.fetchedAt).toBe(initialTime);
+  });
+
+  it("waits for fresh data instead of failing a request the API can answer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    listingApiIsHealthy();
+    await loadListingSnapshot({});
+    expect(api.getOpportunities).toHaveBeenCalledTimes(1);
+
+    // The first visit after a quiet day: the Data Cache still holds the entry
+    // and hands it back expired, so the page must refresh rather than fail.
+    const arrival = initialTime + SEO_DATA_MAX_STALE_MS + 1;
+    vi.setSystemTime(arrival);
+    const refreshed = await loadListingSnapshot({});
+    expect(refreshed.fetchedAt).toBe(arrival);
+    // The blocking read joins the Data Cache's own refresh rather than adding one.
+    expect(api.getOpportunities).toHaveBeenCalledTimes(2);
+
+    // The refreshed value is what the next request reads.
+    await cacheHarness.settled();
+    const next = await loadListingSnapshot({});
+    expect(next.fetchedAt).toBe(arrival);
+    expect(api.getOpportunities).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails the request when the snapshot is too old and the refresh also fails", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    listingApiIsHealthy();
+    await loadListingSnapshot({});
 
     vi.setSystemTime(initialTime + SEO_DATA_MAX_STALE_MS + 1);
-    await expect(loadListingSnapshot({})).rejects.toThrow("SEO data");
+    api.getMasters.mockRejectedValue(new Error("temporary outage"));
+    api.getOpportunities.mockRejectedValue(new Error("temporary outage"));
+    await expect(loadListingSnapshot({})).rejects.toThrow("temporary outage");
 
-    api.getMasters.mockResolvedValue(masters);
-    api.getOpportunities.mockResolvedValue(result);
+    listingApiIsHealthy();
     const recovered = await loadListingSnapshot({});
     expect(recovered.fetchedAt).toBe(initialTime + SEO_DATA_MAX_STALE_MS + 1);
   });
 
+  it("propagates an outage when there is no snapshot to fall back to", async () => {
+    api.getMasters.mockRejectedValue(new Error("cold outage"));
+    api.getOpportunities.mockRejectedValue(new Error("cold outage"));
+    await expect(loadListingSnapshot({ q: "cold" })).rejects.toThrow("cold outage");
+  });
+
+  it("collapses concurrent requests for one key into a single fetch", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    api.getMasters.mockResolvedValue(masters);
+    api.getOpportunities.mockImplementation(async () => {
+      await gate;
+      return result;
+    });
+
+    const pending = [loadListingSnapshot({ q: "same" }), loadListingSnapshot({ q: "same" })];
+    release?.();
+    const [first, second] = await Promise.all(pending);
+    expect(first.fetchedAt).toBe(second.fetchedAt);
+    expect(api.getOpportunities).toHaveBeenCalledTimes(1);
+  });
+
+  it("collapses a burst on one expired key into a single refresh", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    listingApiIsHealthy();
+    await loadListingSnapshot({});
+
+    // The case sharedSnapshot exists for: an unvisited URL goes past the bound
+    // and several crawlers arrive at once.
+    const arrival = initialTime + SEO_DATA_MAX_STALE_MS + 1;
+    vi.setSystemTime(arrival);
+    const snapshots = await Promise.all(
+      Array.from({ length: 5 }, () => loadListingSnapshot({})),
+    );
+    expect(snapshots.every((snapshot) => snapshot.fetchedAt === arrival)).toBe(true);
+    expect(api.getOpportunities).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails every caller of one expired key when the shared refresh fails", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    listingApiIsHealthy();
+    await loadListingSnapshot({});
+
+    vi.setSystemTime(initialTime + SEO_DATA_MAX_STALE_MS + 1);
+    api.getMasters.mockRejectedValue(new Error("temporary outage"));
+    api.getOpportunities.mockRejectedValue(new Error("temporary outage"));
+    const results = await Promise.allSettled(
+      Array.from({ length: 3 }, () => loadListingSnapshot({})),
+    );
+    expect(results.map((entry) => entry.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(api.getOpportunities).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a separate snapshot per search key", async () => {
+    listingApiIsHealthy();
+    await loadListingSnapshot({ industry: "industry-01" });
+    await loadListingSnapshot({ industry: "industry-02" });
+    expect(api.getOpportunities).toHaveBeenCalledTimes(2);
+  });
+
   it("caches a primary 404 as null and can replace it after recovery", async () => {
-    const initialTime = Date.parse("2026-09-07T00:00:00Z");
     vi.useFakeTimers();
     vi.setSystemTime(initialTime);
     api.getOpportunity.mockRejectedValue(new api.ApiError(404, "missing"));
@@ -125,14 +249,32 @@ describe("SEO snapshot loaders", () => {
     const item = { id: "id", public_code: "ABC12345" };
     api.getOpportunity.mockResolvedValue(item);
     api.getSameCompanyOpportunities.mockResolvedValue([]);
+    // Inside the stale window the cached 404 still answers this request while
+    // the refresh runs behind it; the request after that sees the new record.
+    expect((await loadOpportunitySnapshot("legacy-id")).item).toBeNull();
+    await cacheHarness.settled();
     const recovered = await loadOpportunitySnapshot("legacy-id");
     expect(recovered.item).toEqual(item);
+  });
+
+  it("still answers 404 when a missing detail's snapshot is past the bound", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    api.getOpportunity.mockRejectedValue(new api.ApiError(404, "missing"));
+    api.getSameCompanyOpportunities.mockResolvedValue([]);
+    expect((await loadOpportunitySnapshot("gone")).item).toBeNull();
+
+    vi.setSystemTime(initialTime + SEO_DATA_MAX_STALE_MS + 1);
+    const refreshed = await loadOpportunitySnapshot("gone");
+    expect(refreshed.item).toBeNull();
+    expect(refreshed.fetchedAt).toBe(initialTime + SEO_DATA_MAX_STALE_MS + 1);
   });
 });
 
 describe("company snapshot loader", () => {
-  afterEach(() => {
-    cacheHarness.clear();
+  afterEach(async () => {
+    await cacheHarness.settled();
+    cacheHarness.reset();
     vi.clearAllMocks();
     vi.useRealTimers();
   });
@@ -148,6 +290,21 @@ describe("company snapshot loader", () => {
     expect(api.getCompany).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes a company page whose snapshot went past the bound", async () => {
+    const initialTime = Date.parse("2026-09-07T00:00:00Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(initialTime);
+    const company = { id: 1, public_code: "CMPNY001", name: "株式会社サンプル" };
+    api.getCompany.mockResolvedValue(company);
+    await loadCompanySnapshot("CMPNY001");
+
+    const arrival = initialTime + SEO_DATA_MAX_STALE_MS + 1;
+    vi.setSystemTime(arrival);
+    const refreshed = await loadCompanySnapshot("CMPNY001");
+    expect(refreshed.company).toEqual(company);
+    expect(refreshed.fetchedAt).toBe(arrival);
+  });
+
   it("caches a 404 as null but lets an outage fail the page", async () => {
     const initialTime = Date.parse("2026-09-07T00:00:00Z");
     vi.useFakeTimers();
@@ -158,8 +315,8 @@ describe("company snapshot loader", () => {
     api.getCompany.mockRejectedValue(new Error("temporary outage"));
     await expect(loadCompanySnapshot("OTHER001")).rejects.toThrow("temporary outage");
 
-    // A snapshot older than the stale window must not keep serving.
+    // A snapshot older than the stale window must not keep serving on its own.
     vi.setSystemTime(initialTime + SEO_DATA_MAX_STALE_MS + 1);
-    await expect(loadCompanySnapshot("NOSUCH01")).rejects.toThrow();
+    await expect(loadCompanySnapshot("NOSUCH01")).rejects.toThrow("temporary outage");
   });
 });

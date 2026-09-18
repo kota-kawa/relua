@@ -23,5 +23,6 @@
 | [`0015-canonical-public-urls-and-indexable-facets.md`](./0015-canonical-public-urls-and-indexable-facets.md) | 公開URLを正規化し、単一意図のカテゴリだけをindex対象にする | Superseded |
 | [`0016-seo-outage-resilience-and-reviewed-facets.md`](./0016-seo-outage-resilience-and-reviewed-facets.md) | SEOデータを正常スナップショットで保護し、レビュー済みカテゴリallowlistを安定運用する | Accepted |
 | [`0017-company-profile-and-public-company-page.md`](./0017-company-profile-and-public-company-page.md) | 企業の事業内容をMCPだけで記録し、公開コードの企業ページで見せる | Accepted |
+| [`0018-seo-snapshot-blocking-refresh.md`](./0018-seo-snapshot-blocking-refresh.md) | 期限切れSEOスナップショットを例外ではなくブロッキング再取得で置き換える | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

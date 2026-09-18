@@ -48,7 +48,32 @@ frontend imageのbuild時は、同じComposeで起動するAPIがまだ到達不
 - カテゴリ件数をカテゴリごとのAPI呼び出しで数えず、取得済み全件から集計する。
 - 募集API・master API・企業APIのいずれかの取得に失敗したときは、4ページだけの200ではなく503、`Retry-After: 300`、`Cache-Control: no-store`になる。正常な0件のときだけ静的4ページの200になる。
 
-## 4. Search Consoleでの確認
+## 4. 「初回だけエラー、リロードで正常」を切り分ける
+
+`frontend/lib/seo-data.ts` のスナップショットは、Next.jsのData Cacheに保存された値とその `fetchedAt` の両方で判断されます。Data Cacheのfetchエントリは期限で消えず、`revalidate` を過ぎたエントリは動的レンダリングでは**そのまま返され、更新は背後で実行**されます。したがって「久しぶりに開いたURLだけ初回500、リロードで200」は、APIの不調ではなくスナップショットの鮮度判定を疑います。
+
+再現に1時間待つ必要はありません。本番ビルドを起動し、保存済みエントリの `fetchedAt` とファイルmtimeを一緒に巻き戻します。
+
+```bash
+cd frontend && npm run build
+npx next start -p 3100 &          # Data Cacheは frontend/.next/cache/fetch-cache
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/opportunities/<PUBLIC_CODE>
+```
+
+本番と同じ入口（`frontend/Dockerfile` の `node server.js`）で確認する場合は、`.next/standalone` へ `.next/static` と `public` を配置して起動します。このときのData Cacheは `.next/standalone/.next/cache/fetch-cache` です。
+
+停止してから、各エントリの `data.body` に入っている `fetchedAt` を4時間前の値へ書き換え、同じ時刻を `utimes` で設定してから再起動します。`fetchedAt` だけを変えるとキャッシュは新鮮なままなので背後の更新が走らず、mtimeだけを変えると鮮度判定が変わりません。両方を揃えるのが、長く訪問のなかったURLと同じ状態です。
+
+確認する段階は4つです。
+
+- 60秒以内: APIを一度も呼ばずキャッシュを返す。
+- 60秒超〜1時間以内: キャッシュを返し、次のリクエストで更新後の内容になる。
+- 1時間超でAPIが正常: **初回から**最新データの200になる。同時に複数リクエストを投げても、上流の呼び出しはキーごとに1〜2回に収まる。
+- 1時間超でAPIが停止、またはキャッシュなしでAPIが停止: 200＋空一覧ではなく5xxになる。
+
+モックだけでは確認できません。この経路はNext.jsのキャッシュ実装そのものが原因なので、`next dev` ではなく本番ビルドで確認します。詳細は[ADR-0018](../decisions/0018-seo-snapshot-blocking-refresh.md)を参照してください。
+
+## 5. Search Consoleでの確認
 
 修正後はサイトマップを再送信し、代表URLについてURL検査を行います。
 

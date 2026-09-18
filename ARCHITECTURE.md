@@ -36,7 +36,7 @@ Next.js frontend              FastAPI backend
 - [`frontend/lib/browser-api.ts`](./frontend/lib/browser-api.ts) はその route handler を最大8件ずつ呼び、見つからないIDと一時取得失敗を分ける。
 - 画面固有の操作・表示は `frontend/components/`、検索パラメータ・表示整形・SEOは `frontend/lib/` に置く。
 - [`frontend/lib/site.ts`](./frontend/lib/site.ts) が公開originと公開コード詳細pathの正本で、[`frontend/proxy.ts`](./frontend/proxy.ts) が`www`と旧UUID詳細を描画前にcanonical URLへ308転送する。
-- [`frontend/lib/seo-data.ts`](./frontend/lib/seo-data.ts) が一覧・詳細のmetadataと本文で共有する完全成功スナップショットを管理する。60秒で再検証し、最後の正常取得から1時間まで利用できる。API fetchは`no-store`で、冷たいキャッシュの失敗や期限超過は5xxへ伝播する。
+- [`frontend/lib/seo-data.ts`](./frontend/lib/seo-data.ts) が一覧・詳細のmetadataと本文で共有する完全成功スナップショットを管理する。60秒で再検証し、最後の正常取得から1時間まで利用できる。1時間を超えた値は返さず、Data Cacheが実行中の再検証に相乗りして最新データを待つ。API fetchは`no-store`で、冷たいキャッシュの失敗も再取得の失敗も5xxへ伝播する。
 - `next.config.ts` は standalone 出力を使う。Docker build 時の `API_INTERNAL_URL` と `NEXT_PUBLIC_SITE_URL` は `frontend/Dockerfile` の build args から埋め込まれる。
 
 ### 2.2 画面と責務
@@ -302,7 +302,7 @@ MCP client
 | --- | --- | --- |
 | 公開一覧・詳細 | `frontend/app/`, `frontend/components/`, `frontend/lib/api.ts` | `backend/app/api/opportunities.py`, frontend tests |
 | 企業ページ・企業プロフィール | `frontend/app/companies/[code]/page.tsx`, `backend/app/services/company_pages.py`, `backend/app/api/companies.py` | `services/companies.py` の `update_company_profile`, `test_company_pages.py`, ADR-0017 |
-| canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/lib/seo-data.ts`, `frontend/lib/sitemap.ts`, `frontend/app/sitemap.xml/route.ts` | `relua.conf`, SEO/sitemap tests、ADR-0016 |
+| canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/lib/seo-data.ts`, `frontend/lib/sitemap.ts`, `frontend/app/sitemap.xml/route.ts` | `relua.conf`, SEO/sitemap tests、ADR-0016、ADR-0018 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py` |

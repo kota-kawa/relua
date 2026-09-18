@@ -54,6 +54,7 @@
 | [`docs/decisions/0015-canonical-public-urls-and-indexable-facets.md`](./docs/decisions/0015-canonical-public-urls-and-indexable-facets.md) | 公開URL正規化とindex対象カテゴリの理由 |
 | [`docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md`](./docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md) | SEOデータの障害耐性、レビュー済みカテゴリallowlist、サイトマップ503の理由 |
 | [`docs/decisions/0017-company-profile-and-public-company-page.md`](./docs/decisions/0017-company-profile-and-public-company-page.md) | 企業プロフィールをMCP限定で書く理由と、企業ページのURL・index条件 |
+| [`docs/decisions/0018-seo-snapshot-blocking-refresh.md`](./docs/decisions/0018-seo-snapshot-blocking-refresh.md) | 期限切れSEOスナップショットを待って再取得する理由と、読み取りAPI再試行の条件 |
 
 ## 変更時のルール
 

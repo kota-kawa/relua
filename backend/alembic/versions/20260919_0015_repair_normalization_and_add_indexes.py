@@ -31,12 +31,15 @@ coverage subqueries, merge_company's row lock - relied on a full table scan) or 
 listing sort orders, and collection_checks had no index supporting "latest N checks for one target".
 """
 
+import logging
 import re
 import unicodedata
 
 import sqlalchemy as sa
 
 from alembic import op
+
+logger = logging.getLogger("alembic.runtime.migration")
 
 revision = "20260919_0015"
 down_revision = "20260907_0014"
@@ -57,67 +60,88 @@ def _normalize_company_name(value: str) -> str:
     return without_legal.casefold()
 
 
-def _renormalize_companies(bind: sa.Connection) -> None:
-    rows = bind.execute(sa.text("SELECT id, name, normalized_name FROM companies")).fetchall()
-    wanted: dict[int, str] = {}
+def _apply_renormalization(
+    bind: sa.Connection,
+    *,
+    table: str,
+    column: str,
+    rows: list,
+    wanted: dict,
+    label: str,
+) -> None:
+    """Write the corrected values, skipping any group that would collide.
+
+    Two rows normalizing to the same value under the corrected rule are the same company under two
+    spellings - precisely the duplicate the missing "・" strip let through get_or_create_company.
+    Merging them here would mean reimplementing merge_company's transactional, audited handling of
+    collection targets/sources/checks, aliases, opportunities and request-record remapping a second
+    time in raw SQL, untested.
+
+    This used to raise instead, on the reasoning that an operator should resolve each group with
+    merge_company first. That was wrong for where this code runs: the api container's command is
+    `alembic upgrade head && uvicorn ...`, so a raise here does not surface a data-quality report -
+    it stops the API from starting at all, and takes the site down with it. The rows that would
+    collide are left exactly as they are (no worse than before this revision) and named in the log;
+    every other row is repaired. Resolving the named groups with merge_company and re-running is
+    still the right follow-up, but it is no longer an outage.
+
+    The writes go out in two passes because a corrected value can also collide transiently with the
+    *current* value of a row that is itself about to change. Parking every changing row on a unique
+    placeholder first makes the result independent of update order.
+    """
     ids_by_new_value: dict[str, list[int]] = {}
     for row in rows:
-        new_value = _normalize_company_name(row.name)
-        wanted[row.id] = new_value
-        ids_by_new_value.setdefault(new_value, []).append(row.id)
+        ids_by_new_value.setdefault(wanted[row.id], []).append(row.id)
 
-    # Two rows normalizing to the same value under the corrected rule are, in fact, the same
-    # company under two spellings - precisely the duplicate the missing "・" strip let through
-    # get_or_create_company. Merging them here would mean reimplementing merge_company's
-    # transactional, audited handling of collection targets/sources/checks, aliases, opportunities
-    # and request-record remapping a second time in raw SQL, untested. Fail loudly instead and name
-    # every group so an operator resolves each one with the existing merge_company operation before
-    # re-running this migration.
     collisions = {value: ids for value, ids in ids_by_new_value.items() if len(ids) > 1}
+    skipped: set[int] = set()
     if collisions:
-        details = "; ".join(f"{value!r} <- company ids {ids}" for value, ids in collisions.items())
-        raise RuntimeError(
-            "20260919_0015: re-normalizing companies.normalized_name would collide between "
-            f"existing rows ({details}). Resolve each group with merge_company "
-            "(see app/services/companies.py) before re-running this migration."
+        skipped = {row_id for ids in collisions.values() for row_id in ids}
+        details = "; ".join(f"{value!r} <- {label} ids {ids}" for value, ids in collisions.items())
+        logger.warning(
+            "20260919_0015: leaving %d %s row(s) un-normalized because the corrected rule would "
+            "collide between existing rows (%s). These are duplicate records of the same company "
+            "under two spellings; resolve each group with merge_company (see "
+            "app/services/companies.py) and re-run this repair. Every other row was repaired.",
+            len(skipped),
+            label,
+            details,
         )
 
-    for row in rows:
-        new_value = wanted[row.id]
-        if new_value != row.normalized_name:
-            bind.execute(
-                sa.text("UPDATE companies SET normalized_name = :normalized WHERE id = :id"),
-                {"normalized": new_value, "id": row.id},
-            )
+    changing = [row for row in rows if row.id not in skipped and wanted[row.id] != getattr(row, column)]
+    for row in changing:
+        bind.execute(
+            sa.text(f"UPDATE {table} SET {column} = :value WHERE id = :id"),
+            {"value": f"__0015_migrating__{row.id}", "id": row.id},
+        )
+    for row in changing:
+        bind.execute(
+            sa.text(f"UPDATE {table} SET {column} = :value WHERE id = :id"),
+            {"value": wanted[row.id], "id": row.id},
+        )
+
+
+def _renormalize_companies(bind: sa.Connection) -> None:
+    rows = bind.execute(sa.text("SELECT id, name, normalized_name FROM companies")).fetchall()
+    wanted = {row.id: _normalize_company_name(row.name) for row in rows}
+    _apply_renormalization(
+        bind, table="companies", column="normalized_name", rows=rows, wanted=wanted, label="company"
+    )
 
 
 def _renormalize_company_aliases(bind: sa.Connection) -> None:
     # normalized_alias is unique across the whole table, not just per company, so a collision here
     # can also occur between two aliases of two different companies.
     rows = bind.execute(sa.text("SELECT id, alias, normalized_alias FROM company_aliases")).fetchall()
-    wanted: dict[int, str] = {}
-    ids_by_new_value: dict[str, list[int]] = {}
-    for row in rows:
-        new_value = _normalize_company_name(row.alias)
-        wanted[row.id] = new_value
-        ids_by_new_value.setdefault(new_value, []).append(row.id)
-
-    collisions = {value: ids for value, ids in ids_by_new_value.items() if len(ids) > 1}
-    if collisions:
-        details = "; ".join(f"{value!r} <- company_alias ids {ids}" for value, ids in collisions.items())
-        raise RuntimeError(
-            "20260919_0015: re-normalizing company_aliases.normalized_alias would collide between "
-            f"existing rows ({details}). Resolve each group (delete_company_alias / merge_company) "
-            "before re-running this migration."
-        )
-
-    for row in rows:
-        new_value = wanted[row.id]
-        if new_value != row.normalized_alias:
-            bind.execute(
-                sa.text("UPDATE company_aliases SET normalized_alias = :normalized WHERE id = :id"),
-                {"normalized": new_value, "id": row.id},
-            )
+    wanted = {row.id: _normalize_company_name(row.alias) for row in rows}
+    _apply_renormalization(
+        bind,
+        table="company_aliases",
+        column="normalized_alias",
+        rows=rows,
+        wanted=wanted,
+        label="company_alias",
+    )
 
 
 def _repair_merged_check_results(bind: sa.Connection) -> None:

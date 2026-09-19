@@ -50,6 +50,21 @@ services:
     # Never set it to `*`: uvicorn would then trust a client-supplied X-Forwarded-For and the per-IP login
     # limit could be bypassed by rotating the header.
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-127.0.0.1,172.16.0.0/12}"
+    # Without this the container reports "running" the moment the shell starts, so a failing
+    # `alembic upgrade head` - which means uvicorn never runs at all - still looked like a healthy
+    # deploy while every page served 500 and /mcp served 502. The check asks the app itself, which
+    # only answers once migrations have finished and uvicorn is serving.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os,urllib.request;urllib.request.urlopen(urllib.request.Request(
+          'http://127.0.0.1:8000/api/v1/health',
+          headers={'X-Internal-API-Token': os.environ['API_INTERNAL_TOKEN']}), timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     depends_on:
       db:
         condition: service_healthy

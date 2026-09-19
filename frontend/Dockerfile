@@ -7,7 +7,9 @@ FROM node:24-alpine AS builder
 WORKDIR /app
 ARG API_INTERNAL_URL=http://api:8000
 ENV API_INTERNAL_URL=$API_INTERNAL_URL
-ARG NEXT_PUBLIC_SITE_URL=http://localhost:3100
+# No default: an image built without this would bake http://localhost:3100 into every static
+# page's canonical URL and social cards. The build now fails instead (see lib/site.ts).
+ARG NEXT_PUBLIC_SITE_URL
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

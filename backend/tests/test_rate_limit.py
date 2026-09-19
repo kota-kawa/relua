@@ -26,6 +26,8 @@ from app.services.rate_limit import (
 )
 
 LIMIT = 5
+#: Matches the mcp_registration_rate_limit_per_hour default the settings fixture leaves in place.
+REGISTRATION_LIMIT = 20
 
 
 class FakePipeline:
@@ -232,3 +234,30 @@ def test_the_login_page_refuses_with_503_while_redis_is_unreachable(redis, login
     response = login_client.post("/oauth/authorize", data=LOGIN_FORM)
     assert response.status_code == 503
     assert "運営者パスワード" not in response.text
+
+
+def test_registration_from_an_unresolved_address_cannot_block_every_new_client(redis):
+    """An unattributable registration shares one bucket, so that bucket must not be the precise limit.
+
+    Keyed on a bare "unknown" at the per-address limit, twenty throwaway registrations would block
+    every legitimate new MCP client for the rest of the hour — the same lockout switch the login
+    buckets were reshaped to avoid.
+    """
+    for _ in range(REGISTRATION_LIMIT):
+        enforce_registration_rate_limit(UNRESOLVED_CLIENT_IP)
+    assert f"mcp-register:{UNRESOLVED_CLIENT_IP}" not in redis.counters
+    # Still well inside the shared ceiling, so a real client can still register.
+    enforce_registration_rate_limit(UNRESOLVED_CLIENT_IP)
+
+    with pytest.raises(RateLimitExceeded):
+        for _ in range(REGISTRATION_LIMIT * GLOBAL_LOGIN_LIMIT_MULTIPLIER):
+            enforce_registration_rate_limit(UNRESOLVED_CLIENT_IP)
+
+
+def test_registration_from_a_resolved_address_is_counted_precisely(redis):
+    for _ in range(REGISTRATION_LIMIT):
+        enforce_registration_rate_limit("203.0.113.9")
+    with pytest.raises(RateLimitExceeded):
+        enforce_registration_rate_limit("203.0.113.9")
+    # Another address keeps its own budget.
+    enforce_registration_rate_limit("198.51.100.4")

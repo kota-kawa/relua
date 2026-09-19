@@ -1,30 +1,35 @@
 const DEVELOPMENT_ORIGIN = "http://localhost:3100";
 
 /**
- * `next build` inlines every `NEXT_PUBLIC_*` reference, so the check below is
- * deliberately skipped while building: the build is where the value is baked
- * in, CI builds without one, and failing there would only move the error to a
- * place that cannot know the deployment's origin anyway.
+ * `next build` inlines every `NEXT_PUBLIC_*` reference, so a build is the one and only chance to
+ * get this value right: whatever is in scope then is what the deployed bundle carries, and every
+ * statically generated page has its canonical URL, OG image, Twitter image and JSON-LD `@id`
+ * written into HTML that is then served as-is.
+ *
+ * Which is why the check below runs during the build too. It used to be skipped there, on the
+ * reasoning that the build is where the value gets baked in — but that is exactly backwards. A
+ * build without the variable produced `/about`, `/terms`, `/policy`, `/list`, `/saved`, `/import`
+ * and `/robots.txt` as static artifacts full of `http://localhost:3100`, all of them serving 200
+ * forever, while only the dynamic routes ever complained. Failing the build is recoverable in
+ * seconds; an index and a set of social cards full of unreachable URLs is not.
+ *
+ * An explicit `NEXT_PUBLIC_SITE_URL=http://localhost:3100` is still honoured, so a local or CI
+ * build only has to say so. It is the unset case — the one nobody meant — that stops.
  */
-function isProductionRuntime() {
-  return process.env.NODE_ENV === "production" && process.env.NEXT_PHASE !== "phase-production-build";
+function requiresPublicOrigin() {
+  return process.env.NODE_ENV === "production";
 }
 
 /** The one public origin used by metadata, sitemaps, structured data, and links. */
 export function siteOrigin() {
-  const origin = new URL(process.env.NEXT_PUBLIC_SITE_URL || DEVELOPMENT_ORIGIN).origin;
-  // A production server about to emit the development origin has lost its build
-  // argument (frontend/Dockerfile defaults it to localhost), and nothing else
-  // would say so: canonical URLs, OG urls, JSON-LD @id, robots.txt's Sitemap and
-  // Host, and every sitemap <loc> would point at localhost while the build and
-  // the tests still pass. Refusing to serve is recoverable; an index full of
-  // unreachable URLs is not.
-  if (origin === DEVELOPMENT_ORIGIN && isProductionRuntime()) {
+  const configured = process.env.NEXT_PUBLIC_SITE_URL;
+  if (!configured && requiresPublicOrigin()) {
     throw new Error(
-      "NEXT_PUBLIC_SITE_URL must be set to the public origin: canonical URLs, robots.txt and the sitemap are built from it",
+      "NEXT_PUBLIC_SITE_URL must be set to the public origin: canonical URLs, robots.txt, the sitemap "
+      + "and every social card are built from it, and a production build bakes it into static pages",
     );
   }
-  return origin;
+  return new URL(configured || DEVELOPMENT_ORIGIN).origin;
 }
 
 export function absoluteUrl(path: string) {

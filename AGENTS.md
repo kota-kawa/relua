@@ -74,7 +74,9 @@
 
 ```bash
 cd backend && DATABASE_URL=sqlite:// pytest && ruff check .
-cd ../frontend && npm test && npm run lint && npm run build
+cd ../frontend && npm test && npm run lint && NEXT_PUBLIC_SITE_URL=http://localhost:3100 npm run build
 ```
+
+`npm run build` は `NEXT_PUBLIC_SITE_URL` を要求します。`next build` がこの値を静的ページの canonical・OGP・JSON-LD へ焼き込むため、未設定のビルドを通すと localhost を指したままのページが出来上がるからです（ADR-0019）。
 
 PostgreSQL の Alembic と `pg_trgm` の確認は CI の PostgreSQL ジョブを正本とします。環境差異が疑われる場合は [`docs/knowledge/debugging.md`](./docs/knowledge/debugging.md) を参照してください。

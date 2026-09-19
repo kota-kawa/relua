@@ -657,7 +657,15 @@ def find_exact_duplicates(
     matched = [row.id for row in db.execute(stmt) if normalize_common(row.event_name) == target]
     if not matched:
         return []
-    return list(db.scalars(opportunity_query().where(Opportunity.id.in_(matched))).unique())
+    return list(
+        db.scalars(
+            opportunity_query()
+            .where(Opportunity.id.in_(matched))
+            # Callers report matches[0] as the record a write collided with, so the order has
+            # to be the same one the listings use rather than whatever the id scan produced.
+            .order_by(Opportunity.updated_at.desc())
+        ).unique()
+    )
 
 
 def _distinguishes_same_named_postings(

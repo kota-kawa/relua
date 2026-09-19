@@ -96,7 +96,19 @@ def clear_login_rate_limit(identifier: str | None, client_id: str | None = None)
 
 
 def enforce_registration_rate_limit(identifier: str) -> None:
-    _fixed_window(f"mcp-register:{identifier}", get_settings().mcp_registration_rate_limit_per_hour, 3600)
+    """Bound client registrations, without turning an unresolvable address into a lockout switch.
+
+    Same shape as the login buckets and for the same reason: when the proxy cannot give us a peer
+    address, every caller keys the same bucket, and twenty throwaway registrations would then block
+    every legitimate new client for the rest of the hour. A resolved address is counted precisely; an
+    unresolved one falls back to a shared bucket with enough slack that ordinary use never reaches it,
+    which is all an unattributable request can be given.
+    """
+    limit = get_settings().mcp_registration_rate_limit_per_hour
+    if identifier and identifier != UNRESOLVED_CLIENT_IP:
+        _fixed_window(f"mcp-register:{identifier}", limit, 3600)
+        return
+    _fixed_window("mcp-register:all", limit * GLOBAL_LOGIN_LIMIT_MULTIPLIER, 3600)
 
 
 def register_validation_failure(client_name: str, request_id: str) -> int:

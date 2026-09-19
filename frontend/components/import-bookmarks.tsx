@@ -29,11 +29,24 @@ export function ImportBookmarks() {
   const [status, setStatus] = useState<ImportStatus>("loading");
   const [attempt, setAttempt] = useState(0);
   const [importedCount, setImportedCount] = useState(0);
+  /* null until the browser fragment has been read once, so the load below does
+     not fire with an empty hash during the server render and rehydration. */
+  const [fragment, setFragment] = useState<string | null>(null);
 
   useEffect(() => {
+    const readHash = () => setFragment(window.location.hash);
+    readHash();
+    /* Back and forward between two /import fragments stay in the same document,
+       so only hashchange reports them. */
+    window.addEventListener("hashchange", readHash);
+    return () => window.removeEventListener("hashchange", readHash);
+  }, []);
+
+  useEffect(() => {
+    if (fragment === null) return;
     let active = true;
-    const codes = parseFragmentCodes(window.location.hash, TRANSFER_CODE_KEY);
-    const refs = codes.length ? codes : parseFragmentIds(window.location.hash, TRANSFER_LEGACY_KEY);
+    const codes = parseFragmentCodes(fragment, TRANSFER_CODE_KEY);
+    const refs = codes.length ? codes : parseFragmentIds(fragment, TRANSFER_LEGACY_KEY);
     loadOpportunities(refs).then((result) => {
       if (!active) return;
       setRequested(refs);
@@ -44,7 +57,7 @@ export function ImportBookmarks() {
       setStatus("ready");
     });
     return () => { active = false; };
-  }, [attempt]);
+  }, [fragment, attempt]);
 
   const newIds = useMemo(
     () => newBookmarkIds(items.map((item) => item.id), existingIds),
@@ -70,6 +83,23 @@ export function ImportBookmarks() {
     setAttempt((value) => value + 1);
   }
 
+  /**
+   * Opens a pasted transfer link without leaving the page.
+   *
+   * The validated href is a same-origin `/import#c=…`, so navigating to it from
+   * /import is a same-document fragment change: nothing reloads and nothing
+   * remounts. Driving the load from `fragment` state instead makes the paste
+   * form work here, while pushState keeps the address bar and Back button in
+   * step for someone who wants to return to the empty form.
+   */
+  function openTransferFragment(href: string) {
+    setStatus("loading");
+    window.history.pushState(null, "", href);
+    setFragment(new URL(href, window.location.origin).hash);
+    /* Re-runs the load even when the same link is submitted twice. */
+    setAttempt((value) => value + 1);
+  }
+
   const retryButton = failed > 0 && (
     <button type="button" className="text-button" onClick={retryImport}>再読み込み</button>
   );
@@ -90,7 +120,7 @@ export function ImportBookmarks() {
           <>
             <h1>引き継ぎリンクを貼り付ける</h1>
             <p>別の端末でコピーしたリンクを貼り付けると、追加内容を確認できます。</p>
-            <TransferLinkForm onSubmit={(href) => window.location.assign(href)} />
+            <TransferLinkForm onSubmit={openTransferFragment} />
             <Link className="import-back-link" href="/saved">保存した募集へ戻る</Link>
           </>
         ) : !items.length && failed > 0 ? (

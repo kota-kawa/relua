@@ -11,6 +11,27 @@ export function formatDate(value: string | null, fallback = "日程未定") {
   }).format(new Date(`${value}T00:00:00+09:00`));
 }
 
+/**
+ * Formats a timezone-aware instant as the calendar day it falls on in Tokyo.
+ *
+ * `formatDate` takes a date-only string, so callers used to slice the first ten
+ * characters off an ISO instant. The API serialises `DateTime(timezone=True)`
+ * columns with a UTC offset, so that slice yields the UTC day: anything checked
+ * between 00:00 and 09:00 JST rendered as the previous day.
+ */
+export function formatInstantDate(value: string | null, fallback = "日程未定") {
+  if (!value) return fallback;
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) return fallback;
+  return new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    weekday: "short",
+    timeZone: "Asia/Tokyo",
+  }).format(instant);
+}
+
 const DAY_IN_MS = 86_400_000;
 const tokyoDateParts = new Intl.DateTimeFormat("en-US", {
   year: "numeric",

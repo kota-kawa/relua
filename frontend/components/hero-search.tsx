@@ -42,6 +42,10 @@ export function HeroSearch({ defaultQuery }: { defaultQuery?: string }) {
         defaultValue={defaultQuery}
         placeholder="企業名・職種で検索"
         autoComplete="off"
+        // Mirrors the internal API's own `max_length=100` on `q` (see
+        // `lib/api.ts`'s `listingApiParams`), so a visitor sees the limit at
+        // the input instead of having it silently trimmed after submit.
+        maxLength={100}
       />
       <button type="submit">検索する</button>
     </form>

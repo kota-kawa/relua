@@ -15,11 +15,28 @@ const OPTIONS = [
   { value: "created", label: "掲載が新しい順" },
 ];
 
+/**
+ * The menu is a disclosure holding ordinary buttons, not an ARIA listbox.
+ *
+ * It used to carry role="listbox"/role="option", which promises arrow-key
+ * navigation and aria-activedescendant. Neither was implemented, and Escape was
+ * bound to the trigger alone, so a keyboard user who tabbed into the menu had no
+ * way out of it. Plain buttons get Tab, Enter and Space from the platform; this
+ * component only has to add Escape, return focus to the trigger, and close when
+ * focus or a pointer leaves.
+ *
+ * `open` doubles as the reason it opened, so a menu summoned with the arrow keys
+ * can move focus into itself while one opened by pointer leaves focus alone.
+ */
+type OpenState = false | "pointer" | "keyboard";
+
 export function SortForm({ params, value }: { params: SearchParams; value: string }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<OpenState>(false);
   const [isPending, startTransition] = useTransition();
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   useReportNavigation(isPending);
   const menuId = useId();
   const hasQuery = Array.isArray(params.q) ? params.q.some(Boolean) : Boolean(params.q);
@@ -28,12 +45,28 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
 
   useEffect(() => {
     if (!open) return;
-    const closeWhenOutside = (event: PointerEvent) => {
+    const closeWhenOutside = (event: Event) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
     };
     document.addEventListener("pointerdown", closeWhenOutside);
-    return () => document.removeEventListener("pointerdown", closeWhenOutside);
+    /* Tabbing past the last option never produces a pointer event, so focus
+       moving out of the menu has to close it as well. */
+    document.addEventListener("focusin", closeWhenOutside);
+    return () => {
+      document.removeEventListener("pointerdown", closeWhenOutside);
+      document.removeEventListener("focusin", closeWhenOutside);
+    };
   }, [open]);
+
+  useEffect(() => {
+    if (open !== "keyboard") return;
+    menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [open]);
+
+  function closeMenu({ returnFocus }: { returnFocus: boolean }) {
+    setOpen(false);
+    if (returnFocus) triggerRef.current?.focus();
+  }
 
   function sortHref(sort: string) {
     const entries = Object.keys(params).flatMap((key) => {
@@ -46,26 +79,37 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
   }
 
   function selectSort(sort: string) {
-    setOpen(false);
+    /* The chosen option unmounts with the menu, so focus has to go somewhere
+       deliberate rather than falling back to <body>. */
+    closeMenu({ returnFocus: true });
     if (sort === value) return;
     startTransition(() => router.replace(sortHref(sort), { scroll: false }));
   }
 
   return (
-    <div className={`sort-form${isPending ? " is-pending" : ""}`} ref={rootRef}>
+    <div
+      className={`sort-form${isPending ? " is-pending" : ""}`}
+      ref={rootRef}
+      /* Bound on the wrapper rather than the trigger so Escape also works once
+         focus has moved into the menu. */
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !open) return;
+        event.stopPropagation();
+        closeMenu({ returnFocus: true });
+      }}
+    >
       <button
         type="button"
+        ref={triggerRef}
         className="sort-trigger"
         aria-label={`並び替え: ${current.label}`}
-        aria-haspopup="listbox"
         aria-controls={menuId}
-        aria-expanded={open}
-        onClick={() => setOpen((shown) => !shown)}
+        aria-expanded={Boolean(open)}
+        onClick={() => setOpen((shown) => (shown ? false : "pointer"))}
         onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            setOpen(true);
+            setOpen("keyboard");
           }
         }}
       >
@@ -74,13 +118,12 @@ export function SortForm({ params, value }: { params: SearchParams; value: strin
         <ChevronDown className="sort-select-chevron" size={15} aria-hidden="true" />
       </button>
       {open && (
-        <div className="sort-menu" id={menuId} role="listbox" aria-label="並び順">
+        <div className="sort-menu" id={menuId} ref={menuRef} aria-label="並び順">
           {availableOptions.map((option) => (
             <button
               key={option.value}
               type="button"
-              role="option"
-              aria-selected={option.value === value}
+              aria-current={option.value === value}
               className={option.value === value ? "active" : ""}
               onClick={() => selectSort(option.value)}
             >

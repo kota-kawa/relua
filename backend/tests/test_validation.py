@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import pytest
 from pydantic import ValidationError
 
+from app import dates
 from app.schemas import OpportunityInput
 
 
@@ -85,3 +86,26 @@ def test_valid_input_accepts_strict_values():
     item = OpportunityInput.model_validate(valid_payload())
     assert item.company_name == "株式会社テスト"
     assert item.source_url == "https://example.com/source"
+
+
+def test_add_years_clamps_only_the_leap_day():
+    assert dates.add_years(date(2026, 8, 31), 5) == date(2031, 8, 31)
+    assert dates.add_years(date(2028, 2, 29), 4) == date(2032, 2, 29)  # target year is also a leap year
+    assert dates.add_years(date(2028, 2, 29), 5) == date(2033, 2, 28)
+
+
+def test_the_five_year_date_bound_survives_a_leap_day(monkeypatch):
+    """2033 has no February 29, so date(2028, 2, 29).replace(year=2033) raises ValueError.
+
+    The bound is computed inside a model_validator, so on 2028-02-29 that ValueError would have
+    failed *every* write - add, upsert, update, patch, and the dry-run validator alike - with the
+    unrelated message "day is out of range for month" rather than anything about the payload.
+    """
+    monkeypatch.setattr(dates, "today_in_tokyo", lambda *_args, **_kwargs: date(2028, 2, 29))
+
+    assert dates.years_ahead_in_tokyo(5) == date(2033, 2, 28)
+    assert OpportunityInput.model_validate(valid_payload()).company_name == "株式会社テスト"
+
+    payload = valid_payload() | {"deadline": "2033-03-01"}
+    with pytest.raises(ValidationError, match="5年後"):
+        OpportunityInput.model_validate(payload)

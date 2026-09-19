@@ -50,7 +50,8 @@ Next.js frontend              FastAPI backend
 | `/import` | `frontend/app/import/page.tsx`, `components/import-bookmarks.tsx` | 引き継ぎリンクの確認と localStorage へのマージ |
 | `/list` | `frontend/app/list/page.tsx`, `components/shared-opportunity-list.tsx` | 共有リンクから募集を読み込む |
 | `/about`, `/terms`, `/policy` | 各 `page.tsx` | サービス説明、利用規約、プライバシー説明 |
-| `/sitemap.xml`, `/robots.txt` | `app/sitemap.xml/route.ts`, `lib/sitemap.ts`, `robots.ts` | 実行時の募集データと固定allowlistカテゴリから作るcanonical公開URL。部分失敗は503 |
+| `/sitemap.xml`, `/sitemaps/[page].xml`, `/robots.txt` | `app/sitemap.xml/route.ts`, `app/sitemaps/[page]/route.ts`, `lib/sitemap.ts`, `robots.ts` | 実行時の募集データと固定allowlistカテゴリから作るcanonical公開URL。45,000件までは単一 `urlset`、超過時は同じURLがサイトマップインデックスになる。部分失敗は503 |
+| エラー境界 | `app/error.tsx` | 想定外の上流失敗を500ではなく再試行可能な画面に落とす |
 
 企業ページは、一言説明（`business_summary`）と事業内容の本文（`description`）の両方が登録済みで、かつ現在の募集（募集予定・募集中・通年募集で締切前／未定）が1件以上ある企業だけをindex対象にし、それ以外は`noindex, follow`とする。
 
@@ -272,6 +273,7 @@ MCP client
 - 以降の migration は既存DBへ段階的に適用する。特に関連コードが新規DBで既に存在し得るため、後続 migration は存在確認や dialect 分岐を持つ。
 - `20260814_0009_add_relevance_search.py` と `20260820_0013_add_company_identity_tools.py` は PostgreSQL の `pg_trgm` と GIN index を使う。SQLiteのテストは近似検索へフォールバックするため、移行と本番検索を同一視しない。
 - `20260820_0012_add_company_industries.py` は、旧来の業界単位収集対象を1社1対象へ統合し、分類を `company_industries` へ移すデータ移行である。
+- `20260919_0015_repair_normalization_and_add_indexes.py` は、正規化ルールの変更に追随していなかった `companies.normalized_name` / `company_aliases.normalized_alias` を現行ルールで再計算し、`collection_checks` から `last_check_result` を再導出し、ダングリングな `collection_request_records` を整理したうえで、`models.py` が先行して持っていた索引を追加する。正規化の再計算で衝突が起きた場合は、統合ロジックを二重実装せず例外で停止し、`merge_company` による手動解消を促す。
 
 スキーマを変更するときは ORM、migration、fresh DB、既存DB upgrade、必要な回帰テストを一緒に確認します。
 
@@ -302,7 +304,8 @@ MCP client
 | --- | --- | --- |
 | 公開一覧・詳細 | `frontend/app/`, `frontend/components/`, `frontend/lib/api.ts` | `backend/app/api/opportunities.py`, frontend tests |
 | 企業ページ・企業プロフィール | `frontend/app/companies/[code]/page.tsx`, `backend/app/services/company_pages.py`, `backend/app/api/companies.py` | `services/companies.py` の `update_company_profile`, `test_company_pages.py`, ADR-0017 |
-| canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/lib/seo-data.ts`, `frontend/lib/sitemap.ts`, `frontend/app/sitemap.xml/route.ts` | `relua.conf`, SEO/sitemap tests、ADR-0016、ADR-0018 |
+| canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/lib/seo-data.ts`, `frontend/lib/sitemap.ts`, `frontend/app/sitemap.xml/route.ts`, `frontend/app/sitemaps/[page]/route.ts` | `relua.conf`, SEO/sitemap tests、ADR-0016、ADR-0018、ADR-0022 |
+| 起動時の必須設定・信頼するプロキシ | `backend/app/config.py`, `docker-compose.yml`, `frontend/lib/site.ts`, `frontend/lib/api.ts` | `.env.example`, `relua.conf`, `test_security.py`, `test_rate_limit.py`、ADR-0019 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py` |

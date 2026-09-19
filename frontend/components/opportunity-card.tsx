@@ -1,7 +1,7 @@
 import { BookmarkButton } from "@/components/bookmark-button";
 import { ArrowRight, CalendarDays, MapPin } from "@/components/icons";
 import { NavLink } from "@/components/nav-link";
-import { daysUntil, deadlineChipLabel, formatDate } from "@/lib/format";
+import { daysUntil, deadlineChipLabel, formatDate, formatInstantDate } from "@/lib/format";
 import { stagger } from "@/lib/motion";
 import { opportunityPath } from "@/lib/site";
 import type { Opportunity } from "@/lib/types";
@@ -53,7 +53,7 @@ export function OpportunityCard({ item, index = 0 }: { item: Opportunity; index?
       </div>
 
       <div className="card-footer">
-        <span>公式確認 {formatDate(sourceCheckedAt.slice(0, 10), "")}</span>
+        <span>公式確認 {formatInstantDate(sourceCheckedAt, "")}</span>
         <span className="card-cta">詳細を見る <ArrowRight size={16} /></span>
       </div>
     </article>

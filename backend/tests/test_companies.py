@@ -199,6 +199,18 @@ def test_postgresql_opportunity_search_recovers_a_typo_in_a_normalized_alias(db)
     assert [company.id for company in companies] == [item.company_id]
 
 
+def test_company_keyword_filter_treats_percent_and_underscore_as_literal_characters(db):
+    """Without escaping, ilike("%%%%%") - the pattern a query of a bare "%" builds - matches every
+    row and gets reported to the caller as a keyword hit, and a bare "_" matches any single
+    character; neither pattern can use an index either. company_keyword_filter must treat both as
+    literal text to search for, not as SQL LIKE wildcards."""
+    company(db, "株式会社ワイルドカード保護")
+    company(db, "有限会社パーセント検索")
+
+    assert list(db.scalars(select(Company).where(company_keyword_filter(db, "%")))) == []
+    assert list(db.scalars(select(Company).where(company_keyword_filter(db, "_")))) == []
+
+
 def test_merge_company_moves_references_keeps_old_names_and_is_idempotent(db):
     source = company(db, "株式会社旧ティス")
     target = company(db, "TIS株式会社")

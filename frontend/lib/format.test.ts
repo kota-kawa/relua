@@ -6,6 +6,7 @@ import {
   deadlineLabel,
   daysUntil,
   filterHref,
+  formatInstantDate,
   labelledSectors,
   actionableFilterItems,
   activeFilterCount,
@@ -199,5 +200,20 @@ describe("labelledSectors", () => {
   it("qualifies only the duplicated labels with their parent industry", () => {
     expect(labelledSectors(masters as never).map((s) => s.name))
       .toEqual(["ソフトウェア", "その他（IT・通信）", "その他（メーカー）"]);
+  });
+});
+
+describe("formatInstantDate", () => {
+  it("renders a UTC evening instant as the next day in Tokyo", () => {
+    expect(formatInstantDate("2026-08-01T22:00:00+00:00")).toContain("8月2日");
+  });
+
+  it("keeps an instant already expressed in JST on its own day", () => {
+    expect(formatInstantDate("2026-08-02T07:00:00+09:00")).toContain("8月2日");
+  });
+
+  it("falls back for null and unparsable values", () => {
+    expect(formatInstantDate(null, "-")).toBe("-");
+    expect(formatInstantDate("not-a-date", "-")).toBe("-");
   });
 });

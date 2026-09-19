@@ -93,6 +93,18 @@ describe("local bookmark data", () => {
     expect(validateTransferLink("not a URL", "https://example.com")).toEqual({ ok: false, error: "invalid" });
   });
 
+  it("refuses a transfer link truncated mid-code instead of importing a partial list", () => {
+    // A messaging app that cuts the link off leaves a trailing chunk shorter
+    // than PUBLIC_CODE_LENGTH (or one with characters CODE_PATTERN rejects).
+    // parseFragmentCodes alone would silently drop it and report the rest as
+    // "ok", so validateTransferLink must refuse the whole link instead of
+    // reporting success with fewer codes than the sender actually shared.
+    expect(validateTransferLink("https://example.com/import#c=A1B2C3D4XYZ", "https://example.com")).toEqual({
+      ok: false,
+      error: "damaged",
+    });
+  });
+
   it("still accepts UUID links minted before public codes existed", () => {
     expect(validateTransferLink("https://example.com/import#b=1,2,2", "https://example.com")).toEqual({
       ok: true,

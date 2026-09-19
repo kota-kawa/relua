@@ -9,10 +9,11 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Integer, Select, and_, case, cast, func, literal, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.dates import today_in_tokyo
+from app.dates import today_in_tokyo, years_ahead_in_tokyo
 from app.models import (
     PUBLIC_CODE_LENGTH,
     AuditLog,
@@ -175,6 +176,24 @@ def _decode_search_cursor(
     return snapshot_at, value, payload["id"]
 
 
+#: LIKE/ILIKE has no default escape character in either PostgreSQL or SQLite, so one has to be
+#: declared on every comparison that uses a pattern built from user input.
+LIKE_ESCAPE_CHARACTER = "\\"
+
+
+def _like_contains(value: str) -> str:
+    """Build a ``%...%`` pattern that matches the caller's text literally.
+
+    Without escaping, a query of "%" matches every row - and is then reported to the user as a
+    keyword hit - while "_" matches any single character, and neither pattern can use an index.
+    Every ilike() given one of these patterns must also pass escape=LIKE_ESCAPE_CHARACTER.
+    """
+    escaped = value.replace(LIKE_ESCAPE_CHARACTER, LIKE_ESCAPE_CHARACTER * 2)
+    for wildcard in ("%", "_"):
+        escaped = escaped.replace(wildcard, LIKE_ESCAPE_CHARACTER + wildcard)
+    return f"%{escaped}%"
+
+
 def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
     """Return a deterministic weighted score suitable for ordering and cursors.
 
@@ -182,23 +201,24 @@ def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
     relevant part of a long description. SQLite keeps an exact-substring approximation for local
     development and the unit test suite; PostgreSQL integration tests cover the production path.
     """
-    term = f"%{query}%"
+    term = _like_contains(query)
     # normalize_company_name strips nakaguro ("・"), legal suffixes, and casing, so it lines up a
     # query like "ディーエヌエー" with a stored name like "株式会社ディー・エヌ・エー" that the raw
     # ilike/trigram comparisons below cannot: those compare literal text, not normalized text.
     normalized_query = normalize_company_name(query)
-    normalized_term = f"%{normalized_query}%"
+    normalized_term = _like_contains(normalized_query)
     is_postgresql = db.get_bind().dialect.name == "postgresql"
 
     def field_score(
         column: ColumnElement[str], weight: int, *, text: str = query, pattern: str = term
     ) -> ColumnElement[int]:
+        contains = column.ilike(pattern, escape=LIKE_ESCAPE_CHARACTER)
         similarity = (
             func.word_similarity(text.casefold(), func.lower(func.coalesce(column, "")))
             if is_postgresql
-            else case((column.ilike(pattern), 1.0), else_=0.0)
+            else case((contains, 1.0), else_=0.0)
         )
-        contains_bonus = case((column.ilike(pattern), float(weight)), else_=0.0)
+        contains_bonus = case((contains, float(weight)), else_=0.0)
         return cast((similarity * weight + contains_bonus) * 1000, Integer)
 
     job_score = (
@@ -241,18 +261,19 @@ def _search_relevance_score(db: Session, query: str) -> ColumnElement[int]:
 
 
 def _keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
-    term = f"%{query}%"
+    term = _like_contains(query)
     normalized_query = normalize_company_name(query)
-    normalized_term = f"%{normalized_query}%"
+    normalized_term = _like_contains(normalized_query)
+    escape = LIKE_ESCAPE_CHARACTER
     matches: list[ColumnElement[bool]] = [
-        Company.name.ilike(term),
-        Company.normalized_name.ilike(normalized_term),
-        Company.aliases.any(CompanyAlias.alias.ilike(term)),
-        Company.aliases.any(CompanyAlias.normalized_alias.ilike(normalized_term)),
-        Opportunity.event_name.ilike(term),
-        Opportunity.description.ilike(term),
-        Opportunity.requirements.ilike(term),
-        Opportunity.job_categories.any(JobCategory.name.ilike(term)),
+        Company.name.ilike(term, escape=escape),
+        Company.normalized_name.ilike(normalized_term, escape=escape),
+        Company.aliases.any(CompanyAlias.alias.ilike(term, escape=escape)),
+        Company.aliases.any(CompanyAlias.normalized_alias.ilike(normalized_term, escape=escape)),
+        Opportunity.event_name.ilike(term, escape=escape),
+        Opportunity.description.ilike(term, escape=escape),
+        Opportunity.requirements.ilike(term, escape=escape),
+        Opportunity.job_categories.any(JobCategory.name.ilike(term, escape=escape)),
     ]
     if db.get_bind().dialect.name == "postgresql" and len(query) >= 3:
         # Similarity operators use pg_trgm indexes and recover common misspellings in concise,
@@ -273,17 +294,18 @@ def _keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
 
 
 def opportunity_query(*, include_deleted: bool = False) -> Select[tuple[Opportunity]]:
+    # joinedload, not selectinload, for the six many-to-one master relations: they are single rows
+    # on the same side of the relationship, so an OUTER JOIN adds columns to the query already being
+    # run instead of six extra round trips - which a single-row get_opportunity paid in full.
+    # The four many-to-many collections are deliberately absent: models.Opportunity already declares
+    # them lazy="selectin", and re-specifying that here only duplicates the same option.
     stmt = select(Opportunity).options(
-        selectinload(Opportunity.status),
-        selectinload(Opportunity.company),
-        selectinload(Opportunity.industry),
-        selectinload(Opportunity.sector),
-        selectinload(Opportunity.event_type),
-        selectinload(Opportunity.event_format),
-        selectinload(Opportunity.job_categories),
-        selectinload(Opportunity.graduation_years),
-        selectinload(Opportunity.degrees),
-        selectinload(Opportunity.tags),
+        joinedload(Opportunity.status),
+        joinedload(Opportunity.company),
+        joinedload(Opportunity.industry),
+        joinedload(Opportunity.sector),
+        joinedload(Opportunity.event_type),
+        joinedload(Opportunity.event_format),
     )
     return stmt if include_deleted else stmt.where(Opportunity.deleted_at.is_(None))
 
@@ -302,7 +324,14 @@ def get_opportunity_for_update(
     return db.scalar(
         opportunity_query(include_deleted=include_deleted)
         .where(Opportunity.id == opportunity_id)
-        .with_for_update()
+        # `of=Opportunity` is required, not an optimisation. opportunity_query() eager-loads the six
+        # master relations with joinedload, which emits LEFT OUTER JOINs, and PostgreSQL refuses
+        # `FOR UPDATE` that reaches the nullable side of an outer join
+        # ("FOR UPDATE cannot be applied to the nullable side of an outer join"). Naming the row we
+        # actually mean to lock keeps the master tables out of the lock, which is right anyway: they
+        # are shared read-only reference data and locking them would serialise unrelated writers.
+        # SQLite ignores FOR UPDATE entirely, so only a PostgreSQL run can catch a regression here.
+        .with_for_update(of=Opportunity)
     )
 
 
@@ -536,6 +565,16 @@ def search_opportunities(
     return SearchResult(items=items, total=total, page=1, per_page=per_page, next_cursor=next_cursor)
 
 
+#: Ceiling on how many of one company's postings are materialized when the caller still has to
+#: narrow them further in Python. normalize_common() (NFKC, whitespace collapsing, casefold) has no
+#: SQL equivalent, so the event-name comparison itself cannot be pushed down - but the amount of
+#: work one company's history costs can be, and must be: this runs on the add_opportunity hot path
+#: via find_exact_duplicates, with every posting's eager relations attached. Rows come back most
+#: recently updated first, so the ones a duplicate or "same company" check cares about are inside
+#: the window well before a company ever reaches this many live postings.
+COMPANY_CANDIDATE_LIMIT = 200
+
+
 def _company_opportunities(
     db: Session,
     company_name: str,
@@ -543,6 +582,7 @@ def _company_opportunities(
     *,
     recruitment_statuses: list[str] | None = None,
     deadline_on_or_after: date | None = None,
+    limit: int = COMPANY_CANDIDATE_LIMIT,
 ) -> list[Opportunity]:
     stmt = opportunity_query().join(Opportunity.company).where(company_name_filter(company_name))
     if exclude_id:
@@ -552,7 +592,7 @@ def _company_opportunities(
         stmt = stmt.where(Opportunity.status_id.in_(status_ids))
     if deadline_on_or_after:
         stmt = stmt.where(or_(Opportunity.deadline.is_(None), Opportunity.deadline >= deadline_on_or_after))
-    return list(db.scalars(stmt.order_by(Opportunity.updated_at.desc())).unique())
+    return list(db.scalars(stmt.order_by(Opportunity.updated_at.desc()).limit(limit)).unique())
 
 
 def find_similar_opportunities(
@@ -571,12 +611,17 @@ def find_similar_opportunities(
     Event names match on containment in either direction, which catches "サマーインターン" against
     "サマーインターン2027" — near-misses a caller should look at before adding a second record.
     """
+    # Without an event name there is nothing left to narrow in Python, so the caller's limit is the
+    # query's LIMIT - GET /opportunities/{id}/same-company asks for 3 rows and now reads 3, not the
+    # company's entire history. With one, the query still has to return candidates for the
+    # containment match below, bounded by COMPANY_CANDIDATE_LIMIT.
     items = _company_opportunities(
         db,
         company_name,
         exclude_id,
         recruitment_statuses=recruitment_statuses,
         deadline_on_or_after=deadline_on_or_after,
+        limit=COMPANY_CANDIDATE_LIMIT if event_name else limit,
     )
     if event_name:
         target = normalize_common(event_name)
@@ -591,11 +636,28 @@ def find_similar_opportunities(
 def find_exact_duplicates(
     db: Session, *, company_name: str, event_name: str, exclude_id: str | None = None
 ) -> list[Opportunity]:
-    """Same company and the same event name after normalization: a re-registration, not a new entry."""
+    """Same company and the same event name after normalization: a re-registration, not a new entry.
+
+    This deliberately does not go through `_company_opportunities`. That helper caps how many rows it
+    materializes, which is right for the "other postings by this company" listings that only ever show
+    a handful - but a cap here would mean a company with more live postings than the cap could
+    re-register an older posting verbatim and have the duplicate block silently miss it. Completeness
+    is the whole point of this check, so instead of limiting the rows, it limits the columns: two
+    scalars per row rather than the entity with its six joined master relations. The full entities are
+    then loaded only for the matches, which is nearly always none or one.
+    """
     target = normalize_common(event_name)
-    return [
-        item for item in _company_opportunities(db, company_name, exclude_id) if normalize_common(item.event_name) == target
-    ]
+    stmt = (
+        select(Opportunity.id, Opportunity.event_name)
+        .join(Opportunity.company)
+        .where(company_name_filter(company_name), Opportunity.deleted_at.is_(None))
+    )
+    if exclude_id:
+        stmt = stmt.where(Opportunity.id != exclude_id)
+    matched = [row.id for row in db.execute(stmt) if normalize_common(row.event_name) == target]
+    if not matched:
+        return []
+    return list(db.scalars(opportunity_query().where(Opportunity.id.in_(matched))).unique())
 
 
 def _distinguishes_same_named_postings(
@@ -968,14 +1030,36 @@ def validate_write(db: Session, *, data: OpportunityInput) -> list[dict[str, Any
 
 
 def _tags(db: Session, names: list[str]) -> list[Tag]:
+    """Resolve tag names to rows, creating the ones that do not exist yet.
+
+    Existing tags are looked up in a single SELECT instead of one per name, and each creation runs
+    inside a SAVEPOINT: two concurrent writes introducing the same brand-new tag both see nothing in
+    the lookup, and the one that loses the unique constraint on Tag.normalized_name has to recover
+    the winner's row rather than turn an ordinary write into a 500. Same pattern as add_company_alias
+    in services/companies.py.
+    """
+    normalized_names = {name: normalize_tag(name) for name in names}
+    resolved = {
+        tag.normalized_name: tag
+        for tag in db.scalars(select(Tag).where(Tag.normalized_name.in_(set(normalized_names.values()))))
+    }
     result: list[Tag] = []
     for name in names:
-        normalized = normalize_tag(name)
-        tag = db.scalar(select(Tag).where(Tag.normalized_name == normalized))
+        normalized = normalized_names[name]
+        tag = resolved.get(normalized)
         if tag is None:
-            tag = Tag(name=name, normalized_name=normalized)
-            db.add(tag)
-            db.flush()
+            try:
+                with db.begin_nested():
+                    tag = Tag(name=name, normalized_name=normalized)
+                    db.add(tag)
+                    db.flush()
+            except IntegrityError:
+                tag = db.scalar(select(Tag).where(Tag.normalized_name == normalized))
+                if tag is None:
+                    raise
+            # Two distinct spellings in one payload can normalize to the same tag, so remember what
+            # was just created as well - a second INSERT for it would hit the same constraint.
+            resolved[normalized] = tag
         result.append(tag)
     return result
 
@@ -1023,13 +1107,26 @@ def opportunity_input_dict(item: Opportunity) -> dict[str, Any]:
     }
 
 
+#: Write-payload fields holding an unordered set of master names. opportunity_input_dict returns
+#: them in their canonical display order while a caller sends whatever order they typed, so a
+#: positional comparison reports a change for a pure reorder - which would bump updated_at and
+#: invalidate every other client's expected_updated_at without anything having actually changed.
+UNORDERED_LIST_FIELDS = frozenset({"job_categories", "tags", "graduation_years", "degrees"})
+
+
 def opportunity_patch_changes(item: Opportunity, data: OpportunityInput) -> list[dict[str, Any]]:
     before = opportunity_input_dict(item)
     after = data.model_dump()
+
+    def changed(field: str) -> bool:
+        if field in UNORDERED_LIST_FIELDS:
+            return sorted(before[field]) != sorted(after[field])
+        return before[field] != after[field]
+
     return [
         {"field": field, "before": before[field], "after": after[field]}
         for field in before
-        if before[field] != after[field]
+        if changed(field)
     ]
 
 
@@ -1166,20 +1263,34 @@ def _ensure_company_source_allowed(
     """Enforce a company's active collection sources as its official-source allowlist.
 
     Unmonitored companies have no curated trust anchor yet and retain the legacy denylist check.
-    Once a collection target exists, however, an agent cannot silently introduce an unrelated host
-    through an opportunity write.  Operators extend the allowlist explicitly with
-    add_collection_source/update_collection_source, both of which are audited writes.
+    Once an *active* collection target with at least one active source exists, however, an agent
+    cannot silently introduce an unrelated host through an opportunity write.  Operators extend the
+    allowlist explicitly with add_collection_source/update_collection_source, both of which are
+    audited writes.
+
+    A company whose target is deactivated, or whose every source is deactivated, has no curated
+    allowlist any more, so it falls back to the legacy denylist instead of rejecting every URL.
+    Rejecting everything would lock the company out of new registrations and, worse, make
+    restore_opportunity impossible - close_expired then purges a soft-deleted record that nobody
+    could ever have recovered.
     """
 
     target = target or db.scalar(
         select(CollectionTarget)
         .options(selectinload(CollectionTarget.sources))
-        .where(CollectionTarget.company_id == company.id)
+        .where(
+            CollectionTarget.company_id == company.id,
+            # Same filter as _auto_matched_collection_target: a deactivated target is not a trust
+            # anchor, so it must not keep enforcing an allowlist nobody is maintaining.
+            CollectionTarget.is_active.is_(True),
+        )
     )
     if target is None:
         return
     allowed_urls = [source.url for source in target.sources if source.is_active]
-    if allowed_urls and source_url_is_allowed(source_url, allowed_urls):
+    if not allowed_urls:
+        return
+    if source_url_is_allowed(source_url, allowed_urls):
         return
     raise DomainValidationError(
         [
@@ -1264,7 +1375,10 @@ def write_opportunity(
     request_hash = _request_hash(
         data,
         collection_target_id=collection_target_id,
-        expected_updated_at=expected_updated_at.isoformat() if expected_updated_at else None,
+        # Normalized to UTC like update_recruitment_status and delete_opportunity: the same instant
+        # sent back with a different offset is the same request, so a retry must replay instead of
+        # being rejected as "same request_id, different content".
+        expected_updated_at=_as_utc(expected_updated_at).isoformat() if expected_updated_at else None,
         action=action,
     )
     previous = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.request_id == request_id))
@@ -1281,14 +1395,17 @@ def write_opportunity(
     company = get_or_create_company(db, data.company_name)
     db.scalar(select(Company.id).where(Company.id == company.id).with_for_update())
 
-    if opportunity_id is None and not allow_duplicate:
+    if not allow_duplicate:
         # Idempotency only catches a replay of the same request_id. A client that re-reads the same
         # source page next week sends a new request_id, so the same posting would land twice.
+        # Updates are checked too, not just creates: editing a record's company or event name can
+        # make it byte-identical to another live record, and nothing downstream would report that -
+        # find_probable_duplicates only surfaces matches that were *downgraded* to probable.
         # Only an exact match blocks the write: a company can legitimately reuse one event name across
         # graduation years, terms, or tracks (e.g. "新卒採用エントリー" for both 28卒 and 29卒), and a
         # hard block on event_name alone made an agent about to register a genuinely separate posting
-        # believe it already existed. A probable match still gets created; it surfaces as a warning
-        # below instead (see _write_warnings / find_probable_duplicates).
+        # believe it already existed. A probable match still gets written; it surfaces as a warning
+        # instead (see _write_warnings / find_probable_duplicates), on the update path as well.
         exact_duplicates, _ = classify_duplicate_candidates(
             db,
             company_name=data.company_name,
@@ -1296,6 +1413,9 @@ def write_opportunity(
             graduation_years=data.graduation_years,
             event_start_date=data.event_start_date,
             job_categories=data.job_categories,
+            # The row being updated is trivially a same-company/same-event-name match for itself, so
+            # excluding it is what keeps an ordinary edit from colliding with its own record.
+            exclude_id=opportunity_id,
         )
         if exact_duplicates:
             raise DomainValidationError([_duplicate_error(exact_duplicates)])
@@ -1485,13 +1605,31 @@ def update_recruitment_status(
     if status is None:
         raise DomainValidationError([master_error("recruitment_status", recruitment_status, choices(db, RecruitmentStatus))])
 
+    if deadline is not None and clear_deadline:
+        # Silently preferring one over the other hides a caller bug: the two arguments express
+        # opposite intents ("set this date" vs. "there is no date"), so neither can be assumed.
+        raise DomainValidationError(
+            [
+                {
+                    "field": FIELD_LABELS["deadline"],
+                    "received": {"deadline": deadline, "clear_deadline": clear_deadline},
+                    "reason": "deadlineとclear_deadlineは同時に指定できません",
+                    "expected": "新しい締め切りを設定するならdeadlineのみ、締め切りを消すならclear_deadlineのみ",
+                    "example": "2026-08-31",
+                    "alternative": "締め切りを変更しない場合は、どちらも指定しないでください",
+                }
+            ]
+        )
+
     new_deadline = item.deadline
     if deadline is not None:
         new_deadline = deadline
     elif clear_deadline:
         new_deadline = None
     if new_deadline is not None:
-        limit = date.today().replace(year=date.today().year + 5)
+        # Shared with OpportunityInput's date-range validator; see years_ahead_in_tokyo for why
+        # date.today().replace(year=...) cannot be used (it raises on a leap day).
+        limit = years_ahead_in_tokyo(5)
         if not date(2000, 1, 1) <= new_deadline <= limit:
             raise DomainValidationError(
                 [
@@ -1582,7 +1720,10 @@ def verify_opportunity(
             raise DomainValidationError([_reused_request_id_error(request_id)])
         return _active_idempotency_target(db, previous.opportunity_id), True
 
-    item = get_opportunity(db, opportunity_id)
+    # Row-locked like every other write path: the "must be newer than the stored source_checked_at"
+    # check below is a read-modify-write, so without the lock two concurrent verifies can both pass
+    # it and the older check time can land last.
+    item = get_opportunity_for_update(db, opportunity_id)
     if item is None:
         raise LookupError("opportunity_not_found")
 

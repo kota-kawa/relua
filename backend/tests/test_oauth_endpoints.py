@@ -37,8 +37,8 @@ def client():
     with pytest.MonkeyPatch.context() as patch:
         # The bearer check runs in middleware, where dependency overrides do not reach.
         patch.setattr(main, "SessionLocal", session_factory)
-        patch.setattr(oauth_api, "enforce_login_rate_limit", lambda identifier: None)
-        patch.setattr(oauth_api, "clear_login_rate_limit", lambda identifier: None)
+        patch.setattr(oauth_api, "enforce_login_rate_limit", lambda identifier, client_id=None: None)
+        patch.setattr(oauth_api, "clear_login_rate_limit", lambda identifier, client_id=None: None)
         patch.setattr(oauth_api, "enforce_registration_rate_limit", lambda identifier: None)
         main.app.dependency_overrides[get_db] = override_db
         with TestClient(main.app) as test_client:

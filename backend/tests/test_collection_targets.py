@@ -298,6 +298,51 @@ def test_non_found_check_requires_an_active_registered_source_url(db):
     assert "登録済み" in exc_info.value.errors[0]["reason"]
 
 
+def test_record_collection_check_rejects_reusing_a_write_opportunitys_request_id(db):
+    """write_opportunity records its own CollectionCheck (see _record_collection_success) without
+    ever creating a CollectionRequestRecord for it, so _replayed_entity_id cannot see that row.
+    record_collection_check must still notice the collision itself and return the same structured
+    "reused request_id" error every other collision on this id gets, instead of letting the insert
+    hit collection_checks.request_id's UNIQUE constraint as a raw IntegrityError (a 500)."""
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社確認ID衝突",
+            sources=[{"source_type": "recruit", "url": "https://example.com/request-id-collision"}],
+            request_id="request-id-collision-target-0001",
+        ),
+    )
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社確認ID衝突",
+                "source_url": "https://example.com/request-id-collision/posting",
+            }
+        ),
+        request_id="request-id-collision-write-0001",
+        client_name="pytest",
+    )
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        record_collection_check(
+            db,
+            target_id=target.id,
+            payload=CollectionCheckRequest.model_validate(
+                {
+                    "result": "found",
+                    "opportunity_id": item.id,
+                    "source_url": item.source_url,
+                    "request_id": "request-id-collision-write-0001",
+                    "client_name": "pytest",
+                }
+            ),
+        )
+
+    assert exc_info.value.errors[0]["field"] == "request_id"
+
+
 def test_opportunity_source_must_match_the_company_official_allowlist(db):
     target, _ = create_collection_target(
         db,
@@ -734,10 +779,63 @@ def test_check_can_register_the_recruit_page_it_just_discovered(db):
     )
 
     view = collection_target_dict(db, updated)
-    assert [(source["source_type"], source["url"]) for source in view["sources"]] == [
-        ("other", "https://discovery.example.com/"),
-        ("recruit", "https://discovery.example.com/recruit"),
-        ("internship", "https://discovery.example.com/internship"),
+    # ADR-0013 requires that trusting a new official host be an explicit, separately auditable step,
+    # so a page merely mentioned as "discovered" while recording a check lands inactive: it is
+    # evidence for review, not yet part of the company's official-source allowlist. It only starts
+    # counting toward coverage (and toward add_opportunity's allowlist) once someone reviews it and
+    # calls update_collection_source(is_active=True).
+    assert [(source["source_type"], source["url"], source["is_active"]) for source in view["sources"]] == [
+        ("other", "https://discovery.example.com/", True),
+        ("recruit", "https://discovery.example.com/recruit", False),
+        ("internship", "https://discovery.example.com/internship", False),
     ]
-    assert view["has_primary_source"] is True
-    assert view["missing_source_types"] == ["event", "news"]
+    assert view["has_primary_source"] is False
+    assert view["missing_source_types"] == ["recruit", "internship", "event", "news"]
+
+
+def test_discovered_sources_do_not_widen_the_official_source_allowlist(db):
+    """A source that only ever appeared as check-time discovery must not be usable for writes yet -
+    otherwise "found this page while checking" would silently substitute for the explicit
+    add_collection_source review ADR-0013 requires before a new host is trusted."""
+    # Two different hosts: the registered "other" page stays the only trusted host, and the
+    # discovered "recruit" page lives on a host that only its own (inactive) source entry could
+    # have vouched for.
+    target, _ = create_collection_target(
+        db,
+        target_payload(
+            company_name="株式会社発見元は未許可",
+            sources=[{"source_type": "other", "url": "https://corp-guard.example.com/"}],
+            request_id="discovery-guard-target-0001",
+        ),
+    )
+    record_collection_check(
+        db,
+        target_id=target.id,
+        payload=CollectionCheckRequest.model_validate(
+            {
+                "result": "no_opening",
+                "source_url": "https://corp-guard.example.com/",
+                "discovered_sources": [
+                    {"source_type": "recruit", "url": "https://careers-guard.example.com/recruit"},
+                ],
+                "request_id": "discovery-guard-check-0001",
+                "client_name": "pytest",
+            }
+        ),
+    )
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "company_name": "株式会社発見元は未許可",
+                    "source_url": "https://careers-guard.example.com/recruit/posting",
+                }
+            ),
+            request_id="discovery-guard-write-0001",
+            client_name="pytest",
+        )
+
+    assert "allowlist" in exc_info.value.errors[0]["reason"]

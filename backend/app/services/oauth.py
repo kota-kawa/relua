@@ -13,6 +13,7 @@ actually grants access.
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,9 @@ from app.security import new_secret, token_hash
 DEFAULT_SCOPE = "mcp"
 SUPPORTED_GRANT_TYPES = ("authorization_code", "refresh_token")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+#: RFC 7636 §4.1 defines code_verifier as 43-128 characters of ALPHA / DIGIT / "-" / "." / "_" / "~".
+CODE_VERIFIER_PATTERN = re.compile(r"\A[A-Za-z0-9\-._~]{43,128}\Z")
 
 
 class OAuthError(Exception):
@@ -127,6 +131,21 @@ def authenticate_client(db: Session, client_id: str | None, client_secret: str |
     return client
 
 
+def validate_scope(scope: str | None) -> str:
+    """Allowlist the requested scope and normalise it to the single scope this server issues.
+
+    The value used to be stored raw into a String(200) column, so a long scope was a PostgreSQL DataError
+    — an unauthenticated 500 — and an unknown scope was recorded as if it had been granted while nothing
+    ever read it back. Refusing anything but DEFAULT_SCOPE here means what is stored is also what is
+    enforced, so a future read-only scope cannot be silently upgraded to write access.
+    """
+    if not scope:
+        return DEFAULT_SCOPE
+    if any(requested != DEFAULT_SCOPE for requested in scope.split()):
+        raise OAuthError("invalid_scope", f"scope は {DEFAULT_SCOPE} のみ対応しています")
+    return DEFAULT_SCOPE
+
+
 def check_resource(resource: str | None) -> str | None:
     """Reject a token request aimed at some other server, so a token minted here cannot be replayed elsewhere."""
     expected = get_settings().resource_identifier
@@ -153,7 +172,7 @@ def issue_authorization_code(
             client_id=client.client_id,
             redirect_uri=redirect_uri,
             code_challenge=code_challenge,
-            scope=scope or DEFAULT_SCOPE,
+            scope=validate_scope(scope),
             resource=resource,
             expires_at=_now() + timedelta(seconds=settings.mcp_authorization_code_ttl_seconds),
         )
@@ -163,12 +182,29 @@ def issue_authorization_code(
 
 
 def _verify_pkce(code_verifier: str | None, code_challenge: str) -> None:
-    if not code_verifier or not 43 <= len(code_verifier) <= 128:
+    # The charset is checked, not just the length: `.encode("ascii")` below raised UnicodeEncodeError on
+    # any non-ASCII verifier, which surfaced as an unauthenticated 500 instead of an OAuth error body.
+    if not code_verifier or not CODE_VERIFIER_PATTERN.match(code_verifier):
         raise OAuthError("invalid_grant", "code_verifier が不正です")
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     computed = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     if not hmac.compare_digest(computed, code_challenge):
         raise OAuthError("invalid_grant", "code_verifier が code_challenge と一致しません")
+
+
+def _locked(db: Session, statement):
+    """Add a row lock to a SELECT that is about to be read, decided on, and written back.
+
+    Exchanging an authorization code and rotating a refresh token both read a row, check that it has not
+    been used, and only later write that it has. Without a lock two concurrent requests carrying the same
+    leaked code both see `consumed_at IS NULL`, both mint an independent grant, and the OAuth 2.1 reuse
+    detection in the caller never fires — the attacker ends up with a grant the operator never learns
+    about. SQLite has no FOR UPDATE (its writes already serialise on a database-wide lock), so the clause
+    is added only where it exists.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        return statement.with_for_update()
+    return statement
 
 
 def revoke_grant(db: Session, grant_id: str) -> None:
@@ -228,7 +264,9 @@ def exchange_authorization_code(
     code_verifier: str | None,
     resource: str | None,
 ) -> dict:
-    record = db.scalar(select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == token_hash(code)))
+    record = db.scalar(
+        _locked(db, select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == token_hash(code)))
+    )
     if record is None or record.client_id != client.client_id:
         raise OAuthError("invalid_grant", "認可コードが無効です")
     if record.consumed_at is not None:
@@ -238,7 +276,9 @@ def exchange_authorization_code(
         raise OAuthError("invalid_grant", "認可コードは既に使用されています")
     if _expired(record.expires_at):
         raise OAuthError("invalid_grant", "認可コードの有効期限が切れています")
-    if redirect_uri is not None and redirect_uri != record.redirect_uri:
+    # Compared unconditionally: the column is NOT NULL, so a client that simply omits the parameter used
+    # to skip the check entirely, which is exactly what a stolen code replayed from elsewhere would do.
+    if redirect_uri != record.redirect_uri:
         raise OAuthError("invalid_grant", "redirect_uri が認可時と一致しません")
     _verify_pkce(code_verifier, record.code_challenge)
     check_resource(resource)
@@ -257,7 +297,7 @@ def exchange_authorization_code(
 
 
 def refresh_access_token(db: Session, *, refresh_token: str, client: OAuthClient, resource: str | None) -> dict:
-    record = db.scalar(select(OAuthToken).where(OAuthToken.token_hash == token_hash(refresh_token)))
+    record = db.scalar(_locked(db, select(OAuthToken).where(OAuthToken.token_hash == token_hash(refresh_token))))
     if record is None or record.kind != "refresh" or record.client_id != client.client_id:
         raise OAuthError("invalid_grant", "リフレッシュトークンが無効です")
     if record.revoked_at is not None:
@@ -292,9 +332,18 @@ def revoke_token(db: Session, *, token: str, client: OAuthClient) -> None:
         db.commit()
 
 
-def authenticate_access_token(db: Session, token: str) -> OAuthToken | None:
+def authenticate_access_token(db: Session, token: str, *, required_scope: str = DEFAULT_SCOPE) -> OAuthToken | None:
+    """Resolve a bearer token, or None when it is unknown, revoked, expired, or too narrow.
+
+    The scope is checked, not just recorded: the MCP write tools advertise `scopes: ["mcp"]`, so a token
+    that was never granted that scope must not open them. Today only DEFAULT_SCOPE is ever issued, which
+    makes this a no-op — but it is the check that stops a narrower scope, added later, from carrying full
+    write access simply because nothing looked at the column.
+    """
     record = db.scalar(select(OAuthToken).where(OAuthToken.token_hash == token_hash(token)))
     if record is None or record.kind != "access" or record.revoked_at is not None or _expired(record.expires_at):
+        return None
+    if required_scope not in (record.scope or "").split():
         return None
     return record
 

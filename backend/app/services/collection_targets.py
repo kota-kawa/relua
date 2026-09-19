@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -32,7 +32,6 @@ from app.schemas import (
 )
 from app.services.companies import company_identity_dict, company_keyword_filter, get_or_create_company
 from app.services.company_industries import (
-    company_industries,
     company_industry_dict,
     primary_company_industry,
     resolve_company_industries,
@@ -74,8 +73,16 @@ class UnmonitoredCompanyList:
 
 
 def collection_target_query():
+    #: CompanyIndustry.industry and .sector are lazy, so serializing a listing straight off the
+    #: eagerly loaded classification would still cost two queries per classification row. Load both
+    #: here, which is what lets collection_target_dict read company.industries directly.
     return select(CollectionTarget).options(
-        selectinload(CollectionTarget.company).selectinload(Company.industries),
+        selectinload(CollectionTarget.company)
+        .selectinload(Company.industries)
+        .selectinload(CompanyIndustry.industry),
+        selectinload(CollectionTarget.company)
+        .selectinload(Company.industries)
+        .selectinload(CompanyIndustry.sector),
         selectinload(CollectionTarget.sources),
     )
 
@@ -125,31 +132,58 @@ def get_collection_source(db: Session, source_id: int) -> CollectionSource | Non
     return db.scalar(select(CollectionSource).where(CollectionSource.id == source_id))
 
 
-def _opportunity_references(db: Session, target: CollectionTarget) -> list[dict[str, Any]]:
-    """Return only postings eligible for routine maintenance in collection-target views."""
-    items = db.scalars(
+def _opportunity_reference_dict(item: Opportunity) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "public_code": item.public_code,
+        "url": detail_url(item),
+        "event_name": item.event_name,
+        "recruitment_status": item.status.name,
+        "source_url": item.source_url,
+        "updated_at": item.updated_at,
+    }
+
+
+def _maintenance_opportunity_query(company_ids: list[int]):
+    """Postings eligible for routine maintenance, for one or many companies at once."""
+    return (
         select(Opportunity)
         .options(selectinload(Opportunity.status))
         .join(Opportunity.status)
         .where(
-            Opportunity.company_id == target.company_id,
+            Opportunity.company_id.in_(company_ids),
             Opportunity.deleted_at.is_(None),
             RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES),
         )
         .order_by(Opportunity.updated_at.desc(), Opportunity.id)
     )
-    return [
-        {
-            "id": item.id,
-            "public_code": item.public_code,
-            "url": detail_url(item),
-            "event_name": item.event_name,
-            "recruitment_status": item.status.name,
-            "source_url": item.source_url,
-            "updated_at": item.updated_at,
-        }
-        for item in items
-    ]
+
+
+#: Key under which a listing hands its pre-grouped posting references to collection_target_dict.
+#: The MCP layer serializes a page with a plain per-item comprehension, so the batching cannot be
+#: passed as an argument; Session.info is the supported place for exactly this kind of per-session
+#: scratch space. Each company's entry is consumed once and then gone, so a later write path in the
+#: same session re-queries instead of reading a snapshot taken before its own changes.
+_OPPORTUNITY_REFERENCES_KEY = "collection_target_opportunity_references"
+
+
+def _prefetch_opportunity_references(db: Session, targets: list[CollectionTarget]) -> None:
+    """Resolve every listed target's postings in one query instead of one query per target."""
+    company_ids = sorted({target.company_id for target in targets})
+    if not company_ids:
+        return
+    grouped: dict[int, list[dict[str, Any]]] = {company_id: [] for company_id in company_ids}
+    for item in db.scalars(_maintenance_opportunity_query(company_ids)):
+        grouped[item.company_id].append(_opportunity_reference_dict(item))
+    db.info[_OPPORTUNITY_REFERENCES_KEY] = grouped
+
+
+def _opportunity_references(db: Session, target: CollectionTarget) -> list[dict[str, Any]]:
+    """Return only postings eligible for routine maintenance in collection-target views."""
+    prefetched = db.info.get(_OPPORTUNITY_REFERENCES_KEY)
+    if prefetched is not None and target.company_id in prefetched:
+        return prefetched.pop(target.company_id)
+    return [_opportunity_reference_dict(item) for item in db.scalars(_maintenance_opportunity_query([target.company_id]))]
 
 
 def collection_source_dict(source: CollectionSource) -> dict[str, Any]:
@@ -200,7 +234,9 @@ def _source_coverage(target: CollectionTarget) -> tuple[bool, list[str]]:
 def collection_target_dict(db: Session, target: CollectionTarget) -> dict[str, Any]:
     opportunities = _opportunity_references(db, target)
     has_primary_source, missing_source_types = _source_coverage(target)
-    classifications = company_industries(db, target.company_id)
+    # collection_target_query eagerly loads the classification with its industry and sector, so this
+    # reads what is already in memory. Write paths that change the classification expire it first.
+    classifications = company_industries_for_dict(target.company)
     primary = primary_company_industry(classifications)
     return {
         "id": target.id,
@@ -364,6 +400,7 @@ def list_collection_targets(
     )
     total = int(db.scalar(count_stmt) or 0)
     items = list(db.scalars(stmt.offset((page - 1) * per_page).limit(per_page)).unique())
+    _prefetch_opportunity_references(db, items)
     return CollectionTargetList(items=items, total=total, page=page, per_page=per_page)
 
 
@@ -407,7 +444,9 @@ def undercovered_collection_targets(
     if industry:
         stmt = stmt.where(_classified_as_clause(industry=industry))
     stmt = stmt.order_by(linked_count.asc(), Company.name).limit(limit)
-    return list(db.scalars(stmt).unique())
+    items = list(db.scalars(stmt).unique())
+    _prefetch_opportunity_references(db, items)
+    return items
 
 
 def unmonitored_company_dict(item: UnmonitoredCompany) -> dict[str, Any]:
@@ -556,7 +595,26 @@ def _audit(
 PRIORITY_TIER_1_CAP = 200
 
 
+#: Arbitrary constant fed to pg_advisory_xact_lock below - it identifies the lock, not any row, so
+#: any stable 64-bit value works as long as nothing else in the codebase reuses it.
+_TIER_ONE_CAP_LOCK_KEY = 0x7465315F6361705F
+
+
 def _ensure_tier_one_capacity(db: Session) -> None:
+    """Refuse a new tier-1 target once PRIORITY_TIER_1_CAP is already reached.
+
+    count() then insert is not atomic: two concurrent create_collection_target(priority_tier=1)
+    calls can both count 199 and both proceed, landing at 201. A row lock on the *existing* tier-1
+    rows cannot close this by itself - a transaction about to INSERT a brand new row is not blocked
+    by a lock on rows that already exist (the classic phantom-read gap under READ COMMITTED). On
+    PostgreSQL, a session-scoped advisory lock keyed to this one check serializes the whole
+    check-then-insert section: a second concurrent caller blocks until the first's transaction
+    (whether it raises or goes on to insert) commits or rolls back, at which point pg_advisory_xact_lock
+    releases automatically. SQLite has no advisory locks, but this codebase only ever runs it with a
+    single writer, so the race does not arise there.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _TIER_ONE_CAP_LOCK_KEY})
     count = int(
         db.scalar(
             select(func.count(CollectionTarget.id)).where(
@@ -637,6 +695,9 @@ def create_collection_target(db: Session, payload: CollectionTargetCreateRequest
     db.add(target)
     set_company_industries(db, company=company, classifications=classifications)
     db.flush()
+    # set_company_industries writes CompanyIndustry rows directly, so the company's eagerly loaded
+    # classification - which collection_target_dict now serializes from - is stale until expired.
+    db.expire(company, ["industries"])
     after = collection_target_dict(db, target)
     _audit(
         db,
@@ -675,6 +736,9 @@ def update_collection_target(
     target = get_collection_target(db, target_id)
     if target is None:
         raise LookupError("collection_target_not_found")
+    # An opportunity written earlier in this session may have classified the company after its
+    # relationship was loaded, and a query does not overwrite an already-populated collection.
+    db.expire(target.company, ["industries"])
     before = collection_target_dict(db, target)
     fields = payload.model_fields_set
 
@@ -723,6 +787,7 @@ def update_collection_target(
     if "check_interval_days" in fields and target.last_checked_at is not None:
         target.next_check_at = target.last_checked_at + timedelta(days=target.check_interval_days)
     db.flush()
+    db.expire(company, ["industries"])
     after = collection_target_dict(db, target)
     _audit(
         db,
@@ -796,6 +861,45 @@ def create_collection_source(
     return source, False
 
 
+def _ensure_active_source_remains(
+    db: Session, *, source: CollectionSource, payload: CollectionSourceUpdateRequest
+) -> None:
+    """Refuse to deactivate a monitored company's last remaining active source.
+
+    A company's active sources are its official-source allowlist, so emptying it does not merely
+    pause collection: every add_opportunity for that company is rejected, and a soft-deleted posting
+    can no longer be restored either. Stopping collection for a company is what
+    update_collection_target(is_active=false) is for - that leaves the allowlist intact.
+    """
+    if "is_active" not in payload.model_fields_set or payload.is_active is not False or not source.is_active:
+        return
+    remaining = int(
+        db.scalar(
+            select(func.count(CollectionSource.id)).where(
+                CollectionSource.collection_target_id == source.collection_target_id,
+                CollectionSource.is_active.is_(True),
+                CollectionSource.id != source.id,
+            )
+        )
+        or 0
+    )
+    if remaining == 0:
+        raise DomainValidationError(
+            [
+                {
+                    "field": "is_active",
+                    "received": False,
+                    "reason": "この収集対象で唯一有効な情報源のため無効化できません",
+                    "expected": "有効な情報源を1件以上残すこと",
+                    "alternative": (
+                        "先にadd_collection_sourceで代わりの企業公式ページを登録するか、"
+                        "企業単位で収集を止める場合はupdate_collection_targetでis_active=falseにしてください"
+                    ),
+                }
+            ]
+        )
+
+
 def update_collection_source(
     db: Session, *, source_id: int, payload: CollectionSourceUpdateRequest
 ) -> tuple[CollectionSource, bool]:
@@ -810,6 +914,7 @@ def update_collection_source(
     source = get_collection_source(db, source_id)
     if source is None:
         raise LookupError("collection_source_not_found")
+    _ensure_active_source_remains(db, source=source, payload=payload)
     before = collection_source_dict(source)
     for name in ("source_type", "url", "is_active"):
         if name in payload.model_fields_set:
@@ -856,6 +961,14 @@ def record_collection_check(
         if target is None:
             raise RuntimeError("collection check target not found")
         return check, target, True
+    # A write_opportunity call records its own CollectionCheck (see _record_collection_success in
+    # services/opportunities.py) tagged with that write's request_id, without ever creating a
+    # CollectionRequestRecord for it - _replayed_entity_id above cannot see that row. Reusing the same
+    # request_id here for an unrelated manual check would otherwise reach collection_checks.request_id's
+    # UNIQUE constraint as a raw IntegrityError (a 500) instead of the same structured "reused
+    # request_id" validation error every other collision on this id already gets.
+    if db.scalar(select(CollectionCheck.id).where(CollectionCheck.request_id == payload.request_id)) is not None:
+        raise DomainValidationError([_request_id_error(payload.request_id)])
     target = get_collection_target(db, target_id)
     if target is None:
         raise LookupError("collection_target_not_found")
@@ -942,21 +1055,42 @@ def record_collection_check(
             source.last_checked_at = now
             break
     # Closes the loop for targets that only knew the corporate top page: whoever just read that page
-    # can register the recruit/internship pages it linked to, in the same call as the check result,
-    # instead of remembering to follow up with add_collection_source afterwards.
+    # can hand over the recruit/internship pages it linked to in the same call as the check result,
+    # instead of remembering a follow-up add_collection_source. ADR-0013 requires that trusting a new
+    # official host be an explicit, separately auditable operation - "found this page while checking"
+    # is discovery evidence, not that confirmation - so these land inactive. They do not join
+    # active_sources / _ensure_company_source_allowed's allowlist until someone reviews the source and
+    # calls update_collection_source(is_active=True), which is already its own audited action; a
+    # collection_check_create action here recording who discovered what is not authorization to trust
+    # it for opportunity writes.
     known_urls = {source.url for source in target.sources}
     added_sources = []
     for discovered in payload.discovered_sources:
         if discovered.url in known_urls:
             continue
         known_urls.add(discovered.url)
-        source = CollectionSource(source_type=discovered.source_type, url=discovered.url)
+        source = CollectionSource(source_type=discovered.source_type, url=discovered.url, is_active=False)
         target.sources.append(source)
         added_sources.append(source)
     db.flush()
     check_after = collection_check_dict(check)
     if added_sources:
         check_after["discovered_sources"] = [collection_source_dict(source) for source in added_sources]
+        # Give each discovered source its own filterable audit row (entity_type="collection_source"),
+        # rather than leaving it recoverable only by reading into the check's "after" payload - the
+        # same shape create_collection_source's own audit row uses.
+        for source in added_sources:
+            _audit(
+                db,
+                action="collection_source_create",
+                entity_type="collection_source",
+                entity_id=source.id,
+                request_id=payload.request_id,
+                client_name=payload.client_name,
+                source_url=source.url,
+                before=None,
+                after=collection_source_dict(source),
+            )
     _audit(
         db,
         action="collection_check_create",

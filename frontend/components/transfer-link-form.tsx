@@ -12,6 +12,7 @@ const ERROR_MESSAGES: Record<TransferLinkError, string> = {
   "wrong-path": "募集リストではなく、保存データの引き継ぎリンクを貼り付けてください。",
   "too-long": "リンクが長すぎます。送信元の端末からJSONバックアップで引き継いでください。",
   "no-data": "リンクに保存データが含まれていません。途中で切れていないか確認してください。",
+  damaged: "リンクが途中で切れているか壊れています。一部だけを取り込まないよう中止しました。送信元の端末でリンクを作り直してください。",
 };
 
 export function TransferLinkForm({ onSubmit }: { onSubmit: (href: string) => void }) {

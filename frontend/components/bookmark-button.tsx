@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 
 import { Bookmark } from "@/components/icons";
 import { showToast } from "@/components/toast";
-import { BOOKMARKS_KEY, LOCAL_DATA_EVENT, normalizeIds, toggleBookmark } from "@/lib/local-data";
+import { BOOKMARKS_KEY, LOCAL_DATA_EVENT, snapshotHasId, toggleBookmark } from "@/lib/local-data";
 
 function subscribe(callback: () => void) {
   window.addEventListener("storage", callback);
@@ -19,21 +19,15 @@ function snapshot() {
   try { return window.localStorage.getItem(BOOKMARKS_KEY) ?? "[]"; } catch { return "[]"; }
 }
 
-function idsFromSnapshot(value: string) {
-  try {
-    return normalizeIds(JSON.parse(value));
-  } catch {
-    return [];
-  }
-}
-
 export function notifyLocalDataChanged() {
   window.dispatchEvent(new Event(LOCAL_DATA_EVENT));
 }
 
 export function BookmarkButton({ id, compact = false }: { id: string; compact?: boolean }) {
   const raw = useSyncExternalStore(subscribe, snapshot, () => "[]");
-  const saved = idsFromSnapshot(raw).includes(id);
+  /* Every card on the page shares this one snapshot string, so the parse is
+     memoized in lib/local-data rather than repeated per card. */
+  const saved = snapshotHasId(raw, id);
 
   return (
     <button

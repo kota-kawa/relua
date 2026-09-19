@@ -6,6 +6,24 @@ const UUID_PATH = /^\/opportunities\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[
 const PUBLIC_CODE = /^[0-9A-HJKMNP-TV-Z]{8}$/i;
 const configuredTimeout = Number(process.env.API_INTERNAL_TIMEOUT_MS ?? "10000");
 const API_TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 10000;
+const DEVELOPMENT_INTERNAL_TOKEN = "local-development-internal-token";
+
+/**
+ * Same rule as `lib/api.ts`: the published development token is a convenience
+ * for `docker compose up`, never a credential, so a production process without
+ * a configured token has none and says so instead of authenticating with a value
+ * anyone can read out of this repository. The rule is repeated rather than
+ * imported because this module is bundled as middleware and cannot pull in a
+ * `server-only` module.
+ */
+function internalApiToken() {
+  const token = process.env.API_INTERNAL_TOKEN;
+  if (token) return token;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("API_INTERNAL_TOKEN must be set: the development default is not a credential");
+  }
+  return DEVELOPMENT_INTERNAL_TOKEN;
+}
 
 export function legacyOpportunityId(pathname: string) {
   return UUID_PATH.exec(pathname)?.[1] ?? null;
@@ -25,7 +43,7 @@ export async function proxy(request: NextRequest) {
   const id = legacyOpportunityId(request.nextUrl.pathname);
   if (id) {
     const baseUrl = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
-    const internalToken = process.env.API_INTERNAL_TOKEN ?? "local-development-internal-token";
+    const internalToken = internalApiToken();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
     try {

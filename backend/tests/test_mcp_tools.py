@@ -2,15 +2,19 @@
 
 import asyncio
 import json
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from app import mcp_server
 from app.dates import today_in_tokyo
-from app.models import AuditLog, Opportunity
+from app.models import AuditLog, Industry, Opportunity
 from app.schemas import OpportunityInput
+from app.services import master_cache
 from app.services.errors import FIELD_LABELS
 from app.services.opportunities import write_opportunity
 from tests.test_validation import valid_payload
@@ -1710,3 +1714,300 @@ def test_collection_targets_reject_bad_classification_and_non_primary_sources(to
 
     assert classification["errors"][0]["field"] == "業種"
     assert source["errors"][0]["field"] == "公式情報源[0].公式情報源URL"
+
+
+# --- The tool boundary: what a failing tool is allowed to tell its caller -------------------------
+
+
+def test_an_unexpected_failure_never_hands_the_caller_the_sql_that_produced_it(tools, db, monkeypatch, caplog):
+    """search_opportunity is anonymous, so its failure text is public.
+
+    FastMCP stringifies whatever a tool body raises into the tool result, and MCP dispatch never
+    reaches main.py's catch-all handler. A SQLAlchemy error stringifies to the whole statement plus its
+    bound parameters, which is a full column listing of four tables for anyone who can make the query
+    fail.
+    """
+    statement = (
+        "SELECT opportunities.id, companies.name, company_aliases.alias, opportunity_jobs.job_id "
+        "FROM opportunities JOIN companies ON companies.id = opportunities.company_id"
+    )
+
+    def explode(*_args, **_kwargs):
+        raise OperationalError(statement, {"pattern": "%" + "あ" * 3000 + "%"}, Exception("too complex"))
+
+    monkeypatch.setattr(mcp_server, "search_opportunities", explode)
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ToolError) as raised:
+            asyncio.run(mcp_server.mcp.call_tool("search_opportunity", {"query": "テスト"}))
+
+    message = str(raised.value)
+    assert json.loads(message[message.index("{") :]) == mcp_server.INTERNAL_ERROR
+    for leaked in ("SELECT", "FROM opportunities", "company_aliases", "あ"):
+        assert leaked not in message
+    # The operator still gets the whole thing, with its traceback, on the server side.
+    assert any(record.exc_info and "search_opportunity" in record.getMessage() for record in caplog.records)
+
+
+def test_the_boundary_lets_the_intentional_json_errors_through(tools, db):
+    """The guard must not flatten the structured replies agents are expected to read."""
+    assert tool_error("get_opportunity", {"reference": "ZZZZZZZZ"})["error"] == "not_found"
+    assert tool_error("add_opportunity", write_args(sector="銀行"))["error"] == "validation_failed"
+
+
+# --- Bounds on what an unauthenticated caller can ask for -----------------------------------------
+
+
+def test_anonymous_tools_bound_every_string_they_accept():
+    """One keyword becomes eight ilike patterns plus relevance scoring.
+
+    Unbounded, that is an unauthenticated way to buy an arbitrarily expensive scan, so the anonymous
+    tools carry the same bounds the authenticated list_* tools already had.
+    """
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    schemas = {tool.name: tool.inputSchema for tool in listed}
+
+    def max_length(name: str, field: str) -> int | None:
+        prop = schemas[name]["properties"][field]
+        options = prop.get("anyOf") or [prop]
+        lengths = [option.get("maxLength") for option in options if option.get("type") == "string"]
+        return max(lengths) if lengths and all(lengths) else None
+
+    assert max_length("search_opportunity", "query") == 200
+    assert max_length("find_similar_opportunities", "company_name") == 200
+    assert max_length("find_similar_opportunities", "event_name") == 200
+    assert max_length("get_opportunity", "reference") == 64
+    assert max_length("find_opportunities_by_source_url", "source_url") == 2048
+
+    for name in mcp_server.ANONYMOUS_TOOLS:
+        for field, prop in schemas[name]["properties"].items():
+            options = prop.get("anyOf") or [prop]
+            for option in options:
+                if option.get("type") == "string" and "enum" not in option:
+                    assert option.get("maxLength"), f"{name}.{field} accepts an unbounded string"
+
+
+def test_an_oversized_anonymous_query_is_refused_before_the_database_sees_it(tools, db, monkeypatch):
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("the search service must not be reached")
+
+    monkeypatch.setattr(mcp_server, "search_opportunities", unreachable)
+    with pytest.raises(ToolError):
+        asyncio.run(mcp_server.mcp.call_tool("search_opportunity", {"query": "あ" * 201}))
+
+
+# --- ADR-0002: every rejected write is audited ----------------------------------------------------
+
+
+def patch_args(item, updated_at, **overrides) -> dict:
+    return {
+        "opportunity_id": item.id,
+        "changes": {"description": "監査ログ確認のために内容を書き換えます。"},
+        "expected_updated_at": updated_at,
+        "request_id": "patch-audit-0001",
+        "client_name": "pytest",
+    } | overrides
+
+
+def failed_audit(db, request_id: str) -> AuditLog:
+    return db.query(AuditLog).filter_by(request_id=request_id, success=False).one()
+
+
+def test_every_patch_failure_branch_leaves_an_audit_row(tools, db):
+    """ADR-0002 audits failures, and patch used to record only the pydantic branch.
+
+    The optimistic-lock conflict, the fixed-value rejection and the empty-diff rejection all raised the
+    client reply and wrote nothing, so the identical failure was auditable on update_opportunity and
+    invisible on patch_opportunity.
+    """
+    item = seed(db)
+    stale = call("get_opportunity", {"reference": item.id})["updated_at"]
+    fresh = call("patch_opportunity", patch_args(item, stale))["opportunity"]["updated_at"]
+
+    conflict = tool_error("patch_opportunity", patch_args(item, stale, request_id="patch-audit-stale-0001"))
+    fixed_value = tool_error(
+        "patch_opportunity",
+        patch_args(item, fresh, changes={"sector": "銀行"}, request_id="patch-audit-sector-0001"),
+    )
+    unchanged = tool_error(
+        "patch_opportunity",
+        patch_args(
+            item,
+            fresh,
+            changes={"description": "監査ログ確認のために内容を書き換えます。"},
+            request_id="patch-audit-nochange-0001",
+        ),
+    )
+    broken_type = tool_error(
+        "patch_opportunity",
+        patch_args(item, fresh, changes={"deadline": "来週まで"}, request_id="patch-audit-type-0001"),
+    )
+
+    assert conflict["errors"][0]["field"] == "更新前の最終確認日時"
+    assert fixed_value["errors"][0]["field"] == "業種"
+    assert "変わる項目がありません" in unchanged["errors"][0]["reason"]
+    assert broken_type["errors"][0]["field"] == "締め切り"
+    for request_id in (
+        "patch-audit-stale-0001",
+        "patch-audit-sector-0001",
+        "patch-audit-nochange-0001",
+        "patch-audit-type-0001",
+    ):
+        assert failed_audit(db, request_id).action == "patch"
+
+
+def test_the_read_only_preview_tools_do_not_append_to_the_audit_log(tools, db):
+    """readOnlyHint=True is kept honest instead of being corrected.
+
+    Both tools exist to be retried while an agent converges on a valid payload, so persisting each
+    attempt would let a well-behaved client grow audit_logs without ever writing anything. The
+    repeated-failure signal still comes from the Redis counter behind _validation_error.
+    """
+    item = seed(db)
+    current = call("get_opportunity", {"reference": item.id})["updated_at"]
+    before = db.query(AuditLog).count()
+
+    tool_error(
+        "preview_opportunity_patch",
+        patch_args(item, current, changes={"sector": "銀行"}, request_id="preview-audit-0001"),
+    )
+    tool_error(
+        "preview_opportunity_patch",
+        patch_args(item, current, changes={"deadline": "来週まで"}, request_id="preview-audit-0002"),
+    )
+    tool_error("validate_opportunity", write_args(sector="銀行", request_id="validate-audit-0001"))
+    tool_error("validate_opportunity", write_args(deadline="来週まで", request_id="validate-audit-0002"))
+
+    assert db.query(AuditLog).count() == before
+
+
+# --- Idempotency the caller can actually see ------------------------------------------------------
+
+
+def test_upsert_reports_a_replay_instead_of_claiming_a_second_create(tools, db):
+    """A retry after a timeout must not read as "created" twice.
+
+    upsert_opportunity dropped write_opportunity's replayed flag and MCPUpsertResponse had no field to
+    carry it, so an agent resending the same request_id believed it had registered two postings.
+    """
+    arguments = write_args(request_id="upsert-replay-0001")
+
+    created = call("upsert_opportunity", arguments)
+    replayed = call("upsert_opportunity", arguments)
+
+    assert created["result"] == "created"
+    assert created["idempotent_replay"] is False
+    assert replayed["idempotent_replay"] is True
+    assert replayed["opportunity"]["id"] == created["opportunity"]["id"]
+    assert db.query(Opportunity).count() == 1
+
+
+def test_request_ids_that_differ_only_in_whitespace_are_one_operation(tools, db):
+    """The inline request_id declarations lacked strip_whitespace, so "req-1 " retried as a new write."""
+    item = seed(db)
+    preview = call("preview_delete_opportunity", {"opportunity_id": item.id})
+    arguments = {
+        "opportunity_id": item.id,
+        "expected_updated_at": preview["expected_updated_at"],
+        "request_id": "delete-whitespace-0001",
+        "client_name": "pytest",
+    }
+
+    first = call("delete_opportunity", arguments)
+    retried = call("delete_opportunity", arguments | {"request_id": " delete-whitespace-0001 "})
+
+    assert first["idempotent_replay"] is False
+    assert retried["idempotent_replay"] is True
+
+
+def test_every_write_tool_declares_the_shared_request_id_and_client_name_types():
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    schemas = {tool.name: tool.inputSchema for tool in listed}
+
+    for name in (
+        "preview_opportunity_patch",
+        "patch_opportunity",
+        "update_recruitment_status",
+        "verify_opportunity",
+        "delete_opportunity",
+        "restore_opportunity",
+        "add_company_alias",
+        "delete_company_alias",
+        "merge_company",
+    ):
+        request_id = schemas[name]["properties"]["request_id"]
+        client_name = schemas[name]["properties"]["client_name"]
+        assert (request_id["minLength"], request_id["maxLength"]) == (8, 100), name
+        assert (client_name["minLength"], client_name["maxLength"]) == (1, 100), name
+
+
+# --- One source of truth for who may call what ----------------------------------------------------
+
+
+def test_every_authenticated_tool_says_so_in_its_description():
+    """ANONYMOUS_TOOLS, the description text and main.py's gate are three places that can disagree.
+
+    The gate is exercised elsewhere; this keeps the text an agent reads from drifting away from the set
+    that actually decides.
+    """
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+
+    for tool in listed:
+        requires_auth = tool.name not in mcp_server.ANONYMOUS_TOOLS
+        assert ("認証が必要です" in tool.description) == requires_auth, tool.name
+
+
+# --- Fixed values the write path will actually accept ---------------------------------------------
+
+
+class FakeRedis:
+    """Just the two commands master_payload uses. The test environment has no Redis."""
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    def setex(self, key: str, _ttl: int, value: str) -> None:
+        self.store[key] = value
+
+
+def _drop_alembic_version(db) -> None:
+    db.rollback()
+    db.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    db.commit()
+
+
+def test_get_master_values_stops_advertising_fixed_values_the_write_path_rejects(tools, db, monkeypatch, request):
+    """The cache was a single key with a one-hour TTL and no reachable invalidation.
+
+    Master rows only ever change in a migration, and for up to an hour afterwards get_master_values
+    served the old list while validate_write read the new rows directly - it offered values that
+    add_opportunity rejected, and hid the ones it had just gained. Keying the payload on the applied
+    schema revision rotates it in the same step that can change the data.
+    """
+    fake = FakeRedis()
+    # alembic_version is not part of Base.metadata, so the db fixture's drop_all() will not remove it.
+    # On the in-memory SQLite the whole database goes away regardless, but against the PostgreSQL job
+    # the table would survive into the next run and this CREATE would fail with DuplicateTable.
+    db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+    db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260726_0001')"))
+    db.commit()
+    request.addfinalizer(lambda: _drop_alembic_version(db))
+
+    monkeypatch.setattr(master_cache, "redis_client", lambda: fake)
+    first = call("get_master_values", {})
+
+    # Same revision: the payload is genuinely cached, so a row added behind the cache stays unseen.
+    db.add(Industry(id=900, slug="industry-90", name="架空業界", sort_order=900, is_active=True))
+    db.commit()
+    assert call("get_master_values", {}) == first
+
+    # The migration that seeds a master value moves the revision, which rotates the key.
+    db.execute(text("UPDATE alembic_version SET version_num = '20260920_9999'"))
+    db.commit()
+    refreshed = call("get_master_values", {})
+
+    assert "架空業界" not in [industry["name"] for industry in first["industries"]]
+    assert "架空業界" in [industry["name"] for industry in refreshed["industries"]]
+    assert len(fake.store) == 2, "the superseded generation is left to expire rather than deleted"

@@ -74,8 +74,10 @@ import {
   loadCompanySnapshot,
   loadListingSnapshot,
   loadOpportunitySnapshot,
+  listingSnapshotIsCacheable,
   normalizeListingParams,
   seoSnapshotIsFresh,
+  MAX_CACHEABLE_LISTING_PAGE,
   SEO_DATA_MAX_STALE_MS,
 } from "./seo-data";
 
@@ -88,6 +90,24 @@ describe("SEO data cache keys", () => {
   it("uses the same key when callers only differ in object property order", () => {
     expect(normalizeListingParams({ page: "2", industry: "industry-01" }).key)
       .toBe(normalizeListingParams({ industry: "industry-01", page: "2" }).key);
+  });
+});
+
+describe("listing Data Cache eligibility", () => {
+  it("admits only URLs that could enter the index", () => {
+    expect(listingSnapshotIsCacheable({})).toBe(true);
+    expect(listingSnapshotIsCacheable({ industry: "industry-01" })).toBe(true);
+    // A search query, an unknown facet value, and a non-default sort are all
+    // `noindex`; letting a visitor mint a Data Cache entry from any of them is
+    // exactly the unbounded-disk-writes case this function exists to prevent.
+    expect(listingSnapshotIsCacheable({ q: "engineer" })).toBe(false);
+    expect(listingSnapshotIsCacheable({ industry: "no-such-industry" })).toBe(false);
+    expect(listingSnapshotIsCacheable({ sort: "updated" })).toBe(false);
+  });
+
+  it("stops admitting pagination past the cacheable depth", () => {
+    expect(listingSnapshotIsCacheable({ page: String(MAX_CACHEABLE_LISTING_PAGE) })).toBe(true);
+    expect(listingSnapshotIsCacheable({ page: String(MAX_CACHEABLE_LISTING_PAGE + 1) })).toBe(false);
   });
 });
 
@@ -233,6 +253,23 @@ describe("SEO snapshot loaders", () => {
     listingApiIsHealthy();
     await loadListingSnapshot({ industry: "industry-01" });
     await loadListingSnapshot({ industry: "industry-02" });
+    expect(api.getOpportunities).toHaveBeenCalledTimes(2);
+  });
+
+  it("still serves one Data Cache entry for a repeated indexable listing", async () => {
+    listingApiIsHealthy();
+    await loadListingSnapshot({ industry: "industry-01" });
+    await loadListingSnapshot({ industry: "industry-01" });
+    expect(api.getOpportunities).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches a search query directly instead of writing it to the Data Cache", async () => {
+    listingApiIsHealthy();
+    await loadListingSnapshot({ q: "engineer" });
+    await loadListingSnapshot({ q: "engineer" });
+    // A cacheable key would collapse this to one call, as the previous test
+    // shows; a `q`-bearing URL is already `noindex`, so each request re-runs
+    // the search rather than occupying a permanent key on disk.
     expect(api.getOpportunities).toHaveBeenCalledTimes(2);
   });
 

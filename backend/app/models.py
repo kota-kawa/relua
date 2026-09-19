@@ -363,6 +363,17 @@ class Opportunity(Base):
         CheckConstraint("deadline IS NULL OR recruitment_start_date IS NULL OR deadline >= recruitment_start_date", name="ck_recruitment_dates"),
         Index("ix_opportunities_deadline", "deadline"),
         Index("ix_opportunities_filter", "status_id", "industry_id", "event_type_id"),
+        #: PostgreSQL does not index a foreign key column on its own, and company_id is the join key
+        #: for every company-scoped read: the public company page, the collection queue's coverage
+        #: subqueries, and the SELECT ... FOR UPDATE that merge_company runs over a company's postings.
+        Index("ix_opportunities_company", "company_id"),
+        #: The three list orderings, spelled exactly as services.opportunities emits them so the whole
+        #: ORDER BY can be answered from the index instead of sorting the table. ix_opportunities_deadline
+        #: above cannot serve the default sort, which leads with the "(deadline IS NULL)" expression to
+        #: push undated postings last on both PostgreSQL and SQLite.
+        Index("ix_opportunities_updated_sort", text("updated_at DESC"), "id"),
+        Index("ix_opportunities_created_sort", text("created_at DESC"), "id"),
+        Index("ix_opportunities_deadline_sort", text("(deadline IS NULL)"), "deadline", "id"),
     )
 
 
@@ -392,6 +403,10 @@ class CollectionCheck(Base):
             "result IN ('found', 'no_opening', 'unreachable', 'needs_review')",
             name="ck_collection_check_result",
         ),
+        #: This table only ever grows, and both readers scope to one target: the history view takes the
+        #: newest 20 rows for a target, and a company merge moves one target's rows onto another. The
+        #: FK column alone is unindexed on PostgreSQL, so without this both scan the whole history.
+        Index("ix_collection_checks_target_checked", "collection_target_id", text("checked_at DESC")),
     )
 
 

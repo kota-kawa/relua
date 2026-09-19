@@ -8,6 +8,7 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   if (siteUrl === undefined) delete process.env.NEXT_PUBLIC_SITE_URL;
   else process.env.NEXT_PUBLIC_SITE_URL = siteUrl;
 });
@@ -73,5 +74,17 @@ describe("legacy UUID proxy resolution", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("connection reset")));
     const response = await proxy(new NextRequest(`https://relua.example/opportunities/${uuid}`));
     expect(response.status).toBe(503);
+  });
+
+  it("refuses the published development token default in production", async () => {
+    // Deliberately no API_INTERNAL_TOKEN configured for this request.
+    delete process.env.API_INTERNAL_TOKEN;
+    vi.stubEnv("NODE_ENV", "production");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(proxy(new NextRequest(`https://relua.example/opportunities/${uuid}`)))
+      .rejects.toThrow(/API_INTERNAL_TOKEN must be set/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

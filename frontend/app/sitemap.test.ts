@@ -6,7 +6,7 @@ const getAllIndexableCompanies = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/api", () => ({ getAllOpportunities, getMasters, getAllIndexableCompanies }));
 
-import { getSitemapEntries, sitemapXml } from "@/lib/sitemap";
+import { chunkSitemapEntries, getSitemapEntries, SITEMAP_CHUNK_SIZE, sitemapXml } from "@/lib/sitemap";
 import { GET } from "@/app/sitemap.xml/route";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
@@ -185,6 +185,17 @@ describe("sitemap", () => {
     expect((await response.text()).match(/<url>/g)).toHaveLength(4);
   });
 
+  it("lets a shared cache answer repeats instead of re-running the fan-out on every hit", async () => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
+    getAllOpportunities.mockResolvedValue([]);
+    getMasters.mockResolvedValue({
+      industries: [], sectors: [], event_types: [], event_formats: [],
+      job_categories: [], graduation_years: [], degrees: [], recruitment_statuses: [],
+    });
+    const response = await GET();
+    expect(response.headers.get("cache-control")).toBe("public, s-maxage=3600, stale-while-revalidate=86400");
+  });
+
   it("returns 503 with retry headers for a sitemap outage", async () => {
     process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
     getAllOpportunities.mockRejectedValue(new Error("API unavailable"));
@@ -193,4 +204,35 @@ describe("sitemap", () => {
     expect(response.headers.get("retry-after")).toBe("300");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("serves a sitemap index with child sitemaps past the per-file URL limit", async () => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://relua.example";
+    getMasters.mockResolvedValue({
+      industries: [], sectors: [], event_types: [], event_formats: [],
+      job_categories: [], graduation_years: [], degrees: [], recruitment_statuses: [],
+    });
+    getAllOpportunities.mockResolvedValue(Array.from({ length: SITEMAP_CHUNK_SIZE + 1 }, (_, index) => ({
+      public_code: `CODE${String(index).padStart(4, "0")}`,
+      updated_at: "2026-08-01T00:00:00Z",
+      source_checked_at: null,
+      recruitment_status: { slug: "status-02" },
+    })));
+
+    const entries = await getSitemapEntries();
+    expect(entries.length).toBeGreaterThan(SITEMAP_CHUNK_SIZE);
+    const pages = chunkSitemapEntries(entries);
+    expect(pages).toHaveLength(2);
+    expect(pages[0]).toHaveLength(SITEMAP_CHUNK_SIZE);
+    // Every URL still ships: splitting must not drop the remainder.
+    expect(pages[0].length + pages[1].length).toBe(entries.length);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("<sitemapindex");
+    expect(body).not.toContain("<urlset");
+    expect(body).toContain("https://relua.example/sitemaps/1.xml");
+    expect(body).toContain("https://relua.example/sitemaps/2.xml");
+  });
+
 });

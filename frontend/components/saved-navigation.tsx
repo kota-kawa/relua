@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useSyncExternalStore } from "react";
 
 import { Bookmark } from "@/components/icons";
-import { BOOKMARKS_KEY, LOCAL_DATA_EVENT, normalizeIds } from "@/lib/local-data";
+import { BOOKMARKS_KEY, idsFromSnapshot, LOCAL_DATA_EVENT } from "@/lib/local-data";
 
 function subscribe(callback: () => void) {
   window.addEventListener("storage", callback);
@@ -21,8 +21,9 @@ function snapshot() {
 
 export function SavedNavigation() {
   const raw = useSyncExternalStore(subscribe, snapshot, () => "[]");
-  let count = 0;
-  try { count = normalizeIds(JSON.parse(raw)).length; } catch { count = 0; }
+  /* Shares the memoized parse in lib/local-data with BookmarkButton, which reads
+     the same snapshot string on every page that renders this nav link. */
+  const count = idsFromSnapshot(raw).length;
   return (
     <Link className="saved-navigation" href="/saved">
       <Bookmark size={17} /> 保存した募集

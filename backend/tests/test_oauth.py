@@ -4,9 +4,11 @@ import hashlib
 import pytest
 from sqlalchemy import select
 
-from app.models import OAuthToken
+from app.models import OAuthAuthorizationCode, OAuthToken
 from app.services.oauth import (
+    DEFAULT_SCOPE,
     OAuthError,
+    _locked,
     authenticate_access_token,
     authenticate_client,
     exchange_authorization_code,
@@ -15,6 +17,7 @@ from app.services.oauth import (
     register_client,
     revoke_token,
     valid_redirect_uri,
+    validate_scope,
 )
 
 RESOURCE = "https://relua.test/mcp"
@@ -202,3 +205,143 @@ def test_revoking_the_refresh_token_kills_the_access_token(db):
     assert authenticate_access_token(db, tokens["access_token"]) is None
     with pytest.raises(OAuthError):
         refresh_access_token(db, refresh_token=tokens["refresh_token"], client=client, resource=RESOURCE)
+
+
+def test_a_non_ascii_code_verifier_is_an_oauth_error_not_a_crash(db):
+    """`code_verifier.encode("ascii")` used to raise UnicodeEncodeError, surfacing as an unauthenticated 500."""
+    client, _ = make_client(db)
+    code = issue_authorization_code(
+        db,
+        client=client,
+        redirect_uri=client.redirect_uris[0],
+        code_challenge=CHALLENGE,
+        scope=None,
+        resource=RESOURCE,
+    )
+    with pytest.raises(OAuthError) as error:
+        exchange_authorization_code(
+            db,
+            code=code,
+            client=client,
+            redirect_uri=client.redirect_uris[0],
+            code_verifier="コードベリファイア" * 6,
+            resource=RESOURCE,
+        )
+    assert error.value.error == "invalid_grant"
+    assert error.value.status_code == 400
+
+
+def test_a_code_verifier_outside_the_rfc_charset_is_rejected(db):
+    """RFC 7636 §4.1 limits the verifier to ALPHA / DIGIT / "-" / "." / "_" / "~"."""
+    client, _ = make_client(db)
+    for verifier in ("+" * 43, "/" * 43, "a b" + "c" * 40, "a" * 42, "a" * 129):
+        code = issue_authorization_code(
+            db,
+            client=client,
+            redirect_uri=client.redirect_uris[0],
+            code_challenge=CHALLENGE,
+            scope=None,
+            resource=RESOURCE,
+        )
+        with pytest.raises(OAuthError) as error:
+            exchange_authorization_code(
+                db,
+                code=code,
+                client=client,
+                redirect_uri=client.redirect_uris[0],
+                code_verifier=verifier,
+                resource=RESOURCE,
+            )
+        assert error.value.error == "invalid_grant"
+
+
+def test_a_token_request_that_omits_the_redirect_uri_is_refused(db):
+    """The column is NOT NULL, so skipping the comparison when the client omits it checked nothing at all."""
+    client, _ = make_client(db)
+    code = issue_authorization_code(
+        db,
+        client=client,
+        redirect_uri=client.redirect_uris[0],
+        code_challenge=CHALLENGE,
+        scope=None,
+        resource=RESOURCE,
+    )
+    with pytest.raises(OAuthError) as error:
+        exchange_authorization_code(
+            db, code=code, client=client, redirect_uri=None, code_verifier=VERIFIER, resource=RESOURCE
+        )
+    assert error.value.error == "invalid_grant"
+
+
+def test_a_token_request_with_another_redirect_uri_is_refused(db):
+    client, _ = make_client(db)
+    code = issue_authorization_code(
+        db,
+        client=client,
+        redirect_uri=client.redirect_uris[0],
+        code_challenge=CHALLENGE,
+        scope=None,
+        resource=RESOURCE,
+    )
+    with pytest.raises(OAuthError) as error:
+        exchange_authorization_code(
+            db,
+            code=code,
+            client=client,
+            redirect_uri="https://attacker.example/cb",
+            code_verifier=VERIFIER,
+            resource=RESOURCE,
+        )
+    assert error.value.error == "invalid_grant"
+
+
+def test_only_the_single_supported_scope_can_be_requested():
+    assert validate_scope(None) == DEFAULT_SCOPE
+    assert validate_scope("") == DEFAULT_SCOPE
+    assert validate_scope(DEFAULT_SCOPE) == DEFAULT_SCOPE
+
+    for requested in ("openid", f"{DEFAULT_SCOPE} admin", "x" * 300):
+        with pytest.raises(OAuthError) as error:
+            validate_scope(requested)
+        assert error.value.error == "invalid_scope"
+
+
+def test_an_unknown_scope_never_reaches_the_column(db):
+    """String(200) would make an over-long scope a PostgreSQL DataError, i.e. an unauthenticated 500."""
+    client, _ = make_client(db)
+    with pytest.raises(OAuthError) as error:
+        issue_authorization_code(
+            db,
+            client=client,
+            redirect_uri=client.redirect_uris[0],
+            code_challenge=CHALLENGE,
+            scope="x" * 300,
+            resource=RESOURCE,
+        )
+    assert error.value.error == "invalid_scope"
+
+
+def test_an_access_token_without_the_required_scope_does_not_authenticate(db):
+    """The MCP write tools advertise scopes ["mcp"]; the stored scope has to be checked, not just recorded."""
+    client, _ = make_client(db)
+    tokens = connect(db, client)
+    record = authenticate_access_token(db, tokens["access_token"])
+    assert record is not None and record.scope == DEFAULT_SCOPE
+
+    assert authenticate_access_token(db, tokens["access_token"], required_scope="admin") is None
+
+    # A grant that predates the allowlist, or one narrowed later, must not open a tool it never covered.
+    record.scope = "read"
+    db.commit()
+    assert authenticate_access_token(db, tokens["access_token"]) is None
+
+
+def test_the_authorization_code_is_read_under_a_row_lock_where_one_exists(db):
+    """Two concurrent exchanges of one leaked code must not both pass the `consumed_at IS NULL` check."""
+    statement = select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == "x")
+    compiled = str(_locked(db, statement).compile(db.get_bind()))
+    if db.get_bind().dialect.name == "postgresql":
+        assert "FOR UPDATE" in compiled
+    else:
+        # SQLite has no FOR UPDATE and serialises writes on a database-wide lock instead.
+        assert "FOR UPDATE" not in compiled

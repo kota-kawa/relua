@@ -12,10 +12,19 @@ import {
   getSameCompanyOpportunities,
 } from "@/lib/api";
 import { withDefaultOpenStatus } from "@/lib/format";
+import { getListingSeo } from "@/lib/seo";
 import type { CompanyDetail, Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
 
 export const SEO_DATA_REVALIDATE_SECONDS = 60;
 export const SEO_DATA_MAX_STALE_MS = 60 * 60 * 1000;
+/**
+ * How deep pagination is still worth a stored snapshot. The cached key space is
+ * (reviewed category values + the bare listing) x this number, so the bound has
+ * to exist; past it the page is still served, just fetched per request. Crawlers
+ * spend their budget on the first pages of a category, which is what ADR-0018's
+ * blocking refresh is protecting.
+ */
+export const MAX_CACHEABLE_LISTING_PAGE = 20;
 
 export class SeoDataUnavailableError extends Error {
   constructor(message = "SEO data is temporarily unavailable") {
@@ -79,6 +88,29 @@ export function normalizeListingParams(params: SearchParams): { params: SearchPa
     normalized[key] = values.length === 1 ? values[0] : values;
   }
   return { params: normalized, key: JSON.stringify(normalized) };
+}
+
+/**
+ * Whether this listing URL may occupy a Data Cache entry.
+ *
+ * `unstable_cache` writes each distinct key to disk (`.next/cache/fetch-cache`)
+ * and nothing evicts it, so the key space has to be one this site defines rather
+ * than one a visitor can mint: `/?q=<random>` or `/?industry=<random>` repeated
+ * in a loop would otherwise write unboundedly, each entry holding the masters
+ * plus up to sixty opportunities, and re-run the full-text search besides.
+ *
+ * The rule reuses the index decision rather than inventing a second one: exactly
+ * the URLs that can enter the index are cached, which is the set ADR-0018's
+ * blocking refresh exists for. Everything else — a search query, an unknown
+ * facet value, an arbitrary filter combination, a sort — is already `noindex`,
+ * so it is fetched directly and only deduplicated within its own request.
+ */
+export function listingSnapshotIsCacheable(normalized: SearchParams) {
+  if (!getListingSeo(normalized).index) return false;
+  const pages = normalizedValues(normalized, "page");
+  // `index` above already rejected anything that is not a single positive
+  // integer, so this is only the depth check.
+  return pages.length === 0 || Number(pages[0]) <= MAX_CACHEABLE_LISTING_PAGE;
 }
 
 export function seoSnapshotIsFresh(fetchedAt: number, now = Date.now()) {
@@ -202,12 +234,37 @@ async function fetchCompanySnapshot(publicCode: string): Promise<CompanySnapshot
 }
 
 const loadListingSnapshotByKey = snapshotLoader("seo-listing-snapshot-v2", fetchListingSnapshot);
+const NON_CACHEABLE_LISTING_PREFIX = "seo-listing-snapshot-direct-v1";
+/**
+ * The non-cacheable twin of `loadListingSnapshotByKey`: it never touches
+ * `unstable_cache`, so nothing is written to disk and nothing outlives the
+ * requests that are currently in flight for it. It still goes through
+ * `sharedSnapshot`, because a burst of concurrent requests for the same
+ * search term (several tabs, a crawler retry, or metadata and the page body
+ * racing each other) should still share one database hit rather than each
+ * starting their own — the only thing this path forgoes is remembering the
+ * result once every caller has moved on.
+ */
+function loadListingSnapshotDirectly(key: string): Promise<ListingSnapshot> {
+  return sharedSnapshot(`${NON_CACHEABLE_LISTING_PREFIX}:${key}`, () => fetchListingSnapshot(key));
+}
 const loadOpportunitySnapshotById = snapshotLoader("seo-opportunity-snapshot-v2", fetchOpportunitySnapshot);
 const loadCompanySnapshotByCode = snapshotLoader("seo-company-snapshot-v1", fetchCompanySnapshot);
 
-/** Metadata and the page body call this with the same normalized key. */
+/**
+ * Metadata and the page body call this with the same normalized key.
+ *
+ * A URL outside `listingSnapshotIsCacheable` bypasses the Data Cache entirely
+ * rather than being written under its own key: it is already `noindex`, so
+ * there is no ranking benefit to a stored snapshot, and letting a visitor mint
+ * one on demand (`/?q=<random>`) is exactly the unbounded-disk-writes case this
+ * guards against. Fetching directly still benefits from `getOpportunities`'
+ * own retry and from `sharedSnapshot`'s in-flight dedup for a concurrent burst.
+ */
 export async function loadListingSnapshot(params: SearchParams): Promise<ListingSnapshot> {
-  return loadListingSnapshotByKey(normalizeListingParams(params).key);
+  const { params: normalized, key } = normalizeListingParams(params);
+  if (!listingSnapshotIsCacheable(normalized)) return loadListingSnapshotDirectly(key);
+  return loadListingSnapshotByKey(key);
 }
 
 export async function loadOpportunitySnapshot(id: string): Promise<OpportunitySnapshot> {

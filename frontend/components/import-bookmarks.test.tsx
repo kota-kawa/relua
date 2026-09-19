@@ -71,6 +71,31 @@ describe("ImportBookmarks", () => {
     expect(screen.getByRole("button", { name: "クリップボードから貼り付け" })).toBeTruthy();
   });
 
+  it("loads a transfer link pasted directly on /import without a page reload", async () => {
+    // /import#c=... is same-origin and same-path, so submitting it from the
+    // paste form on /import itself used to be a same-document fragment
+    // navigation: window.location.assign(href) changed the hash but nothing
+    // reloaded, and the load effect (keyed only on `attempt`) never reran.
+    window.history.replaceState({}, "", "/import");
+    loadOpportunities.mockImplementation(async (ids: string[]) =>
+      ids.length
+        ? { items: [opportunity("pasted", "貼り付け社", "貼り付けた募集")], missingIds: [], failedIds: [] }
+        : { items: [], missingIds: [], failedIds: [] },
+    );
+
+    render(<ImportBookmarks />);
+    expect(await screen.findByRole("heading", { name: "引き継ぎリンクを貼り付ける" })).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("引き継ぎリンク"), {
+      target: { value: `${window.location.origin}/import#c=A1B2C3D4` },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "内容を確認" }));
+
+    expect(await screen.findByRole("heading", { name: "1件を追加できます" })).toBeTruthy();
+    expect(screen.getByText("貼り付けた募集")).toBeTruthy();
+    expect(window.location.hash).toBe("#c=A1B2C3D4");
+  });
+
   it("explains when browser storage rejects the import", async () => {
     window.history.replaceState({}, "", "/import#b=new");
     loadOpportunities.mockResolvedValue({ items: [opportunity("new", "保存不可社", "保存する募集")], missingIds: [], failedIds: [] });

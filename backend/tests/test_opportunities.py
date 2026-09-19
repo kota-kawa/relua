@@ -1,20 +1,38 @@
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import event, insert
+from sqlalchemy import event, insert, select
 from sqlalchemy.exc import IntegrityError
 
+from app import dates
 from app.dates import today_in_tokyo
-from app.models import PUBLIC_CODE_ALPHABET, PUBLIC_CODE_LENGTH, Company, CompanyAlias, Opportunity
+from app.models import (
+    PUBLIC_CODE_ALPHABET,
+    PUBLIC_CODE_LENGTH,
+    CollectionSource,
+    CollectionTarget,
+    Company,
+    CompanyAlias,
+    Opportunity,
+    Tag,
+)
 from app.schemas import OpportunityInput
-from app.services.normalization import normalize_company_name
+from app.services import opportunities as opportunities_module
+from app.services.normalization import normalize_company_name, normalize_tag
 from app.services.opportunities import (
+    COMPANY_CANDIDATE_LIMIT,
     DomainValidationError,
+    delete_opportunity,
+    find_exact_duplicates,
     find_probable_duplicates,
     find_similar_opportunities,
+    get_opportunity,
     get_opportunity_by_public_ref,
     list_opportunities_requiring_review,
     list_stale_opportunities,
+    opportunity_input_dict,
+    opportunity_patch_changes,
+    restore_opportunity,
     search_opportunities,
     update_recruitment_status,
     verify_opportunity,
@@ -779,3 +797,520 @@ def test_review_queue_includes_fresh_date_status_conflicts_before_stale_sources(
     assert reviews[0].opportunity.id == conflict.id
     assert by_id[conflict.id].reasons == ["deadline_passed_while_open", "event_ended_while_open"]
     assert by_id[stale.id].reasons == ["source_not_checked_recently"]
+
+
+def test_keyword_search_treats_like_wildcards_literally(db):
+    """"%" and "_" are LIKE metacharacters, and neither PostgreSQL nor SQLite escapes them by default.
+
+    Unescaped, a query of "%" matched every row - and every row was then reported back to the user as
+    a keyword hit - while "_" matched any single character and the pattern stopped being indexable.
+    """
+    write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="like-escape-0001",
+        client_name="pytest",
+    )
+    literal, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": "株式会社100%達成",
+                "event_name": "内定率100%_説明会",
+                "source_url": "https://example.com/like-escape",
+            }
+        ),
+        request_id="like-escape-0002",
+        client_name="pytest",
+    )
+
+    for wildcard in ("%", "_"):
+        result = search_opportunities(db, q=wildcard)
+        assert [item.id for item in result.items] == [literal.id]
+    assert [item.id for item in search_opportunities(db, q="100%_説明").items] == [literal.id]
+    assert search_opportunities(db, q="存在しない%").total == 0
+
+
+def test_status_update_deadline_bound_survives_a_leap_day(db, monkeypatch):
+    """The companion to the schemas.py bound: here the same replace(year=+5) was a plain 500."""
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="leap-status-0001",
+        client_name="pytest",
+    )
+    monkeypatch.setattr(dates, "today_in_tokyo", lambda *_args, **_kwargs: date(2028, 2, 29))
+
+    updated, _ = update_recruitment_status(
+        db,
+        opportunity_id=item.id,
+        expected_updated_at=item.updated_at,
+        recruitment_status="募集中",
+        deadline=date(2029, 4, 1),
+        request_id="leap-status-0002",
+        client_name="pytest",
+    )
+    assert updated.deadline == date(2029, 4, 1)
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        update_recruitment_status(
+            db,
+            opportunity_id=item.id,
+            expected_updated_at=updated.updated_at,
+            recruitment_status="募集中",
+            deadline=date(2033, 3, 1),
+            request_id="leap-status-0003",
+            client_name="pytest",
+        )
+    assert exc_info.value.errors[0]["reason"] == "許容範囲外の日付です"
+
+
+def test_deadline_and_clear_deadline_cannot_be_combined(db):
+    """The two arguments express opposite intents, so silently preferring one hides a caller bug."""
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="clear-deadline-0001",
+        client_name="pytest",
+    )
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        update_recruitment_status(
+            db,
+            opportunity_id=item.id,
+            expected_updated_at=item.updated_at,
+            recruitment_status="締切",
+            deadline=date(2027, 3, 1),
+            clear_deadline=True,
+            request_id="clear-deadline-0002",
+            client_name="pytest",
+        )
+    assert exc_info.value.errors[0]["reason"] == "deadlineとclear_deadlineは同時に指定できません"
+    assert item.deadline is not None  # neither intent was applied
+
+
+def _monitor_company(db, company_id: int, *, url: str) -> CollectionTarget:
+    """Attach a minimal collection target so the company gets an official-source allowlist."""
+    target = CollectionTarget(company_id=company_id, is_active=True)
+    target.sources.append(CollectionSource(source_type="recruit", url=url, is_active=True))
+    db.add(target)
+    db.flush()
+    return target
+
+
+def test_a_company_with_no_active_sources_falls_back_instead_of_locking_out_writes(db):
+    """An allowlist with no entries rejected every URL, so deactivating the last collection source
+
+    silently locked the company out of every future registration - with "expected: []" as the only
+    explanation an agent ever saw. No active source means no curated trust anchor, which is the same
+    situation as an unmonitored company: the legacy aggregator denylist is the check that applies.
+    """
+    first, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="empty-allowlist-0001",
+        client_name="pytest",
+    )
+    target = _monitor_company(db, first.company_id, url="https://example.com/recruit")
+    outside = valid_payload() | {
+        "event_name": "別の募集",
+        "source_url": "https://unrelated.example/posting",
+    }
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(outside),
+            request_id="empty-allowlist-0002",
+            client_name="pytest",
+        )
+    assert "allowlist" in exc_info.value.errors[0]["reason"]
+
+    target.sources[0].is_active = False
+    db.flush()
+
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(outside),
+        request_id="empty-allowlist-0003",
+        client_name="pytest",
+    )
+    assert item.source_url == "https://unrelated.example/posting"
+
+
+def test_a_deactivated_collection_target_stops_enforcing_its_allowlist(db):
+    """The lookup here did not filter on is_active, unlike _auto_matched_collection_target, so a
+
+    deactivated target kept enforcing an allowlist that nobody was maintaining any more.
+    """
+    first, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="inactive-target-0001",
+        client_name="pytest",
+    )
+    target = _monitor_company(db, first.company_id, url="https://example.com/recruit")
+    target.is_active = False
+    db.flush()
+
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload() | {"event_name": "別の募集", "source_url": "https://unrelated.example/posting"}
+        ),
+        request_id="inactive-target-0002",
+        client_name="pytest",
+    )
+    assert item.source_url == "https://unrelated.example/posting"
+
+
+def test_restore_still_works_when_the_company_has_no_active_sources(db):
+    """restore_opportunity re-checks the allowlist, so an empty one made a soft-deleted record
+
+    permanently unrecoverable - and close_expired physically deletes it 30 days later.
+    """
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="restore-allowlist-0001",
+        client_name="pytest",
+    )
+    target = _monitor_company(db, item.company_id, url=item.source_url)
+    delete_opportunity(
+        db,
+        opportunity_id=item.id,
+        expected_updated_at=item.updated_at,
+        request_id="restore-allowlist-0002",
+        client_name="pytest",
+    )
+    target.sources[0].is_active = False
+    db.flush()
+
+    restored, replayed = restore_opportunity(
+        db,
+        opportunity_id=item.id,
+        request_id="restore-allowlist-0003",
+        client_name="pytest",
+    )
+    assert replayed is False
+    assert restored["id"] == item.id
+    assert get_opportunity(db, item.id) is not None
+
+
+def test_an_update_cannot_turn_a_record_into_an_exact_duplicate(db):
+    """The exact-duplicate check only ran on create, so an update could make a record identical to
+
+    another live one with neither an error nor a warning: find_probable_duplicates reports only the
+    matches that were downgraded to probable, never exact ones.
+    """
+    first, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="update-duplicate-0001",
+        client_name="pytest",
+    )
+    second_payload = valid_payload() | {
+        "event_name": "別の募集",
+        "source_url": "https://example.com/update-duplicate-2",
+    }
+    second, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(second_payload),
+        request_id="update-duplicate-0002",
+        client_name="pytest",
+    )
+
+    with pytest.raises(DomainValidationError) as exc_info:
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(second_payload | {"event_name": first.event_name}),
+            request_id="update-duplicate-0003",
+            client_name="pytest",
+            opportunity_id=second.id,
+            expected_updated_at=second.updated_at,
+        )
+    assert exc_info.value.errors[0]["field"] == "イベント名"
+    assert [entry["id"] for entry in exc_info.value.errors[0]["existing"]] == [first.id]
+
+    # An ordinary edit keeps the record's own event name, so it must not collide with its own row.
+    updated, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(second_payload | {"description": "内容を更新しました。"}),
+        request_id="update-duplicate-0004",
+        client_name="pytest",
+        opportunity_id=second.id,
+        expected_updated_at=second.updated_at,
+    )
+    assert updated.description == "内容を更新しました。"
+
+
+def test_patch_idempotency_hash_ignores_the_timezone_offset(db):
+    """The same instant sent back in a different offset is the same request, so a retry has to
+
+    replay - not be rejected as "same request_id, different content" like an unrelated operation.
+    """
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="offset-hash-0001",
+        client_name="pytest",
+    )
+    expected = item.updated_at
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    patch_data = OpportunityInput.model_validate(valid_payload() | {"tags": ["急募"]})
+
+    patched, replayed = write_opportunity(
+        db,
+        data=patch_data,
+        request_id="offset-hash-0002",
+        client_name="pytest",
+        opportunity_id=item.id,
+        expected_updated_at=expected,
+        action="patch",
+    )
+    assert replayed is False
+
+    retried, replayed = write_opportunity(
+        db,
+        data=patch_data,
+        request_id="offset-hash-0002",
+        client_name="pytest",
+        opportunity_id=item.id,
+        expected_updated_at=expected.astimezone(timezone(timedelta(hours=9))),
+        action="patch",
+    )
+    assert replayed is True
+    assert retried.id == patched.id
+
+
+def test_reordering_a_list_field_is_not_a_patch_change(db):
+    """Stored order is canonical and caller order is arbitrary, so comparing them positionally
+
+    reported a change for a pure reorder - bumping updated_at and invalidating every other client's
+    expected_updated_at without anything having actually changed.
+    """
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "job_categories": ["ソフトウェアエンジニア", "営業"],
+                "tags": ["急募", "交通費支給"],
+            }
+        ),
+        request_id="reorder-patch-0001",
+        client_name="pytest",
+    )
+
+    reordered = OpportunityInput.model_validate(
+        opportunity_input_dict(item)
+        | {"job_categories": ["営業", "ソフトウェアエンジニア"], "tags": ["交通費支給", "急募"]}
+    )
+    assert opportunity_patch_changes(item, reordered) == []
+
+    dropped = OpportunityInput.model_validate(opportunity_input_dict(item) | {"tags": ["急募"]})
+    assert [entry["field"] for entry in opportunity_patch_changes(item, dropped)] == ["tags"]
+
+
+def test_same_company_lookup_applies_its_limit_in_sql(db):
+    """GET /opportunities/{id}/same-company needs three rows, and find_exact_duplicates runs on the
+
+    add_opportunity hot path. Both used to materialize the company's entire history, eager relations
+    included, and slice it in Python.
+    """
+    created = []
+    for index in range(4):
+        item, _ = write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "event_name": f"会社説明会{index}",
+                    "source_url": f"https://example.com/company-limit-{index}",
+                }
+            ),
+            request_id=f"company-limit-{index:04d}",
+            client_name="pytest",
+        )
+        created.append(item.id)
+
+    statements = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        matches = find_similar_opportunities(db, company_name="株式会社テスト", exclude_id=created[0], limit=2)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert len(matches) == 2
+    company_select = next(statement for statement in statements if "FROM opportunities" in statement)
+    assert "LIMIT" in company_select.upper()
+
+
+def test_reading_one_opportunity_does_not_fan_out_one_query_per_relation(db):
+    """The six master relations are many-to-one, so an OUTER JOIN returns them with the row itself.
+
+    selectinload made a single-row read cost six extra round trips on top of the four selectin
+    collections the model already declares.
+    """
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="eager-shape-0001",
+        client_name="pytest",
+    )
+    db.expunge_all()
+
+    statements = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        fetched = get_opportunity(db, item.id)
+        assert fetched is not None
+        assert fetched.status.name == "募集中"
+        assert fetched.company.name == "株式会社テスト"
+        assert fetched.sector.name == "Webサービス"
+        assert [value.name for value in fetched.job_categories] == ["ソフトウェアエンジニア"]
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    master_tables = ("recruitment_statuses", "companies", "industries", "sectors", "event_types", "event_formats")
+    row_query = statements[0]
+    assert all(f"JOIN {table} " in row_query for table in master_tables)
+    assert [
+        statement
+        for statement in statements[1:]
+        if any(f"FROM {table} " in statement for table in master_tables)
+    ] == []
+
+
+def test_verify_opportunity_takes_the_row_lock(db, monkeypatch):
+    """The "newer than the stored source_checked_at" check is an unprotected read-modify-write
+
+    without the lock, so two concurrent verifies can both pass it and the older check time can land
+    last. The real race needs two live connections (Postgres, two sessions), which this in-process
+    SQLite fixture cannot exercise, so this asserts the locking read is the one being used.
+    """
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="verify-lock-0001",
+        client_name="pytest",
+    )
+    locked: list[str] = []
+    locked_read = opportunities_module.get_opportunity_for_update
+
+    def spy(session, opportunity_id, **kwargs):
+        locked.append(opportunity_id)
+        return locked_read(session, opportunity_id, **kwargs)
+
+    monkeypatch.setattr(opportunities_module, "get_opportunity_for_update", spy)
+    monkeypatch.setattr(
+        opportunities_module,
+        "get_opportunity",
+        lambda *_args, **_kwargs: pytest.fail("verify_opportunity must use the locking read"),
+    )
+
+    verified, _ = verify_opportunity(
+        db,
+        opportunity_id=item.id,
+        checked_at=datetime.now(timezone.utc),  # noqa: UP017 -- tests also support Python 3.10
+        source_url=item.source_url,
+        request_id="verify-lock-0002",
+        client_name="pytest",
+    )
+    assert locked == [item.id]
+    assert verified.source_checked_at is not None
+
+
+def test_tag_creation_recovers_from_a_concurrent_insert_of_the_same_tag(db, monkeypatch):
+    """Two writes introducing the same brand-new tag both miss the lookup, and the one that loses
+
+    tags.normalized_name UNIQUE has to adopt the winner's row instead of turning an ordinary write
+    into a 500. The concurrent commit is simulated by inserting the winner immediately before our
+    own INSERT is attempted, which is the window the savepoint exists to survive.
+    """
+    item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload()),
+        request_id="tag-race-0001",
+        client_name="pytest",
+    )
+    normalized = normalize_tag("急募")
+    real_begin_nested = db.begin_nested
+    winner_ids: list[int] = []
+
+    def racing_begin_nested():
+        if not winner_ids:
+            winner = Tag(name="急募", normalized_name=normalized)
+            db.add(winner)
+            db.flush()
+            winner_ids.append(winner.id)
+        return real_begin_nested()
+
+    monkeypatch.setattr(db, "begin_nested", racing_begin_nested)
+    updated, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload() | {"tags": ["急募"]}),
+        request_id="tag-race-0002",
+        client_name="pytest",
+        opportunity_id=item.id,
+        expected_updated_at=item.updated_at,
+        action="patch",
+    )
+
+    assert [tag.id for tag in updated.tags] == winner_ids
+    assert len(db.scalars(select(Tag).where(Tag.normalized_name == normalized)).all()) == 1
+
+
+def test_exact_duplicate_detection_is_not_capped_by_the_company_candidate_limit(db):
+    """A company past the candidate cap must still have its re-registrations blocked.
+
+    The "other postings by this company" helper caps how many rows it materializes, and the exact
+    duplicate check used to share that cap. A company with more live postings than the cap could then
+    re-register an older posting verbatim: the older row had been pushed out of the most-recently-
+    updated window, so nothing matched and the duplicate was created without an error or a warning.
+    """
+    company = "株式会社大量募集"
+    oldest, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "company_name": company,
+                "event_name": "最古のイベント",
+                "source_url": "https://example.com/bulk-oldest",
+            }
+        ),
+        request_id="bulk-oldest-1",
+        client_name="pytest",
+    )
+    for index in range(COMPANY_CANDIDATE_LIMIT + 5):
+        write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "company_name": company,
+                    "event_name": f"別イベント{index}",
+                    "source_url": f"https://example.com/bulk-{index}",
+                }
+            ),
+            request_id=f"bulk-{index}",
+            client_name="pytest",
+        )
+    db.commit()
+
+    assert [item.id for item in find_exact_duplicates(db, company_name=company, event_name="最古のイベント")] == [
+        oldest.id
+    ]

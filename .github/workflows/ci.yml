@@ -76,7 +76,15 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run lint
+      # eslint does not typecheck and vitest does not either, so two real TypeScript
+      # errors sat in the tree unnoticed until someone ran tsc by hand.
+      - run: npm run typecheck
+      - run: npm test
+      # next build inlines NEXT_PUBLIC_* into every statically generated page, so the
+      # build refuses to run without a public origin rather than baking in localhost.
       - run: npm run build
+        env:
+          NEXT_PUBLIC_SITE_URL: http://localhost:3100
 
   deploy:
     name: Deploy (main push)

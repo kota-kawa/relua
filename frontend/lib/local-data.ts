@@ -23,7 +23,7 @@ export type RecentEntry = { id: string; viewedAt: string };
 /** Display-only details captured with a bookmark backup. IDs remain authoritative on restore. */
 export type BookmarkBackupSnapshot = { id: string; company: { name: string }; event_name: string };
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-export type TransferLinkError = "empty" | "invalid" | "wrong-origin" | "wrong-path" | "too-long" | "no-data";
+export type TransferLinkError = "empty" | "invalid" | "wrong-origin" | "wrong-path" | "too-long" | "no-data" | "damaged";
 export type TransferLinkValidation =
   | { ok: true; href: string; refs: string[] }
   | { ok: false; error: TransferLinkError };
@@ -71,6 +71,41 @@ function getStoredValue(storage: StorageLike, key: string): string | null {
 
 export function readBookmarks(storage: StorageLike): string[] {
   return normalizeIds(parseJson(getStoredValue(storage, BOOKMARKS_KEY)));
+}
+
+/**
+ * Single-entry memo for the raw bookmark snapshot string.
+ *
+ * Every card on a page reads the same localStorage snapshot through
+ * useSyncExternalStore, so one bookmark toggle re-renders all of them with a
+ * string that is byte-for-byte identical. Parsing per component turned a single
+ * toggle into dozens of JSON.parse calls plus a Set per call inside
+ * normalizeIds. The snapshot is a client-only value and the cache holds exactly
+ * one entry, so there is nothing to leak between renders or requests: a server
+ * render only ever sees the "[]" fallback.
+ */
+let snapshotCache: { raw: string; ids: string[]; idSet: Set<string> } | null = null;
+
+function readSnapshot(raw: string) {
+  if (snapshotCache?.raw === raw) return snapshotCache;
+  let ids: string[];
+  try {
+    ids = normalizeIds(JSON.parse(raw));
+  } catch {
+    ids = [];
+  }
+  snapshotCache = { raw, ids, idSet: new Set(ids) };
+  return snapshotCache;
+}
+
+/** Parses a bookmark snapshot string, returning the same array for the same input. */
+export function idsFromSnapshot(raw: string): string[] {
+  return readSnapshot(raw).ids;
+}
+
+/** Membership test against a bookmark snapshot, without an O(n) scan per card. */
+export function snapshotHasId(raw: string, id: string): boolean {
+  return readSnapshot(raw).idSet.has(id);
 }
 
 export function writeBookmarks(storage: StorageLike, ids: string[]): string[] {
@@ -140,12 +175,25 @@ export function buildFragmentUrl(origin: string, path: "/import" | "/list", key:
   return url.toString();
 }
 
-/** Codes are fixed width, so they need no separator between entries. */
-export function parseFragmentCodes(hash: string, key: "c" | "l"): string[] {
+/**
+ * Codes are fixed width, so they need no separator between entries.
+ *
+ * Because there is no separator there is also no redundancy: a link that a
+ * messaging app wrapped or trimmed still parses, it just yields fewer codes.
+ * `complete` reports whether the payload is exactly a whole number of valid
+ * codes, so callers that can still warn the user do not import a partial list
+ * and call it a success.
+ */
+export function readFragmentCodes(hash: string, key: "c" | "l"): { codes: string[]; complete: boolean } {
   const params = new URLSearchParams(hash.replace(/^#/, ""));
-  const raw = params.get(key);
-  if (!raw) return [];
-  return normalizeCodes(raw.toUpperCase().match(new RegExp(`.{1,${PUBLIC_CODE_LENGTH}}`, "g")) ?? []);
+  const raw = params.get(key)?.toUpperCase() ?? "";
+  if (!raw) return { codes: [], complete: true };
+  const chunks = raw.match(new RegExp(`.{1,${PUBLIC_CODE_LENGTH}}`, "g")) ?? [];
+  return { codes: normalizeCodes(chunks), complete: chunks.every((chunk) => CODE_PATTERN.test(chunk)) };
+}
+
+export function parseFragmentCodes(hash: string, key: "c" | "l"): string[] {
+  return readFragmentCodes(hash, key).codes;
 }
 
 export function buildCodeFragmentUrl(origin: string, path: "/import" | "/list", key: "c" | "l", codes: string[]): string {
@@ -175,7 +223,10 @@ export function validateTransferLink(value: string, expectedOrigin: string): Tra
   if (candidate.origin !== expected.origin) return { ok: false, error: "wrong-origin" };
   if (candidate.pathname.replace(/\/+$/, "") !== "/import") return { ok: false, error: "wrong-path" };
 
-  const codes = parseFragmentCodes(candidate.hash, TRANSFER_CODE_KEY);
+  const { codes, complete } = readFragmentCodes(candidate.hash, TRANSFER_CODE_KEY);
+  /* Importing whatever survived a cut-off link and reporting success would hide
+     the loss on both devices, so a damaged payload is refused outright. */
+  if (!complete) return { ok: false, error: "damaged" };
   if (codes.length) {
     const canonical = new URL(buildCodeFragmentUrl(expected.origin, "/import", TRANSFER_CODE_KEY, codes));
     return { ok: true, href: `${canonical.pathname}${canonical.hash}`, refs: codes };

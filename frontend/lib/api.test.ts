@@ -32,6 +32,15 @@ async function loadApi(timeoutMs: number) {
   return import("./api");
 }
 
+/** Same, but deliberately leaves API_INTERNAL_TOKEN unset. */
+async function loadApiWithoutToken(nodeEnv: string) {
+  vi.resetModules();
+  vi.stubEnv("API_INTERNAL_URL", "http://api.test");
+  vi.stubEnv("API_INTERNAL_TIMEOUT_MS", "10000");
+  vi.stubEnv("NODE_ENV", nodeEnv);
+  return import("./api");
+}
+
 describe("internal API reads", () => {
   const fetchMock = vi.fn();
 
@@ -196,5 +205,98 @@ describe("internal API reads", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("http://api.test/api/v1/companies/CMPNY001");
     expect(init.headers["X-Internal-API-Token"]).toBe("test-token");
+  });
+
+  it("refuses to substitute the published development token in production", async () => {
+    const { getMasters } = await loadApiWithoutToken("production");
+    await expect(getMasters()).rejects.toThrow(/API_INTERNAL_TOKEN must be set/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps using the development token default outside production", async () => {
+    const { getMasters } = await loadApiWithoutToken("test");
+    fetchMock.mockResolvedValue(jsonResponse({ industries: [] }));
+    await getMasters();
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["X-Internal-API-Token"]).toBe("local-development-internal-token");
+  });
+
+  it("bounds the site-wide fan-out to a fixed number of concurrent requests", async () => {
+    const { getAllOpportunities } = await loadApi(10_000);
+    let active = 0;
+    let maxActive = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return jsonResponse({ items: [{ id: url }], total: 9, page: 1, per_page: 100, total_pages: 9 });
+    });
+
+    const items = await getAllOpportunities();
+    expect(items).toHaveLength(9);
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    // 8 remaining pages fetched 6-at-a-time: the peak is the bound, not the total.
+    expect(maxActive).toBe(6);
+  });
+});
+
+describe("listing query normalization", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    fetchMock.mockReset();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("drops a search term over the API's 100-character limit instead of forwarding it", async () => {
+    const { listingApiParams } = await loadApi(10_000);
+    const overLong = "あ".repeat(101);
+    expect(listingApiParams({ q: overLong }).q).toHaveLength(100);
+    expect(listingApiParams({ q: "普通の検索" }).q).toBe("普通の検索");
+  });
+
+  it("drops a sort value the API does not accept", async () => {
+    const { listingApiParams } = await loadApi(10_000);
+    expect(listingApiParams({ sort: "new" }).sort).toBeUndefined();
+    expect(listingApiParams({ sort: "deadline" }).sort).toBe("deadline");
+  });
+
+  it("drops a page value that is not a positive integer", async () => {
+    const { listingApiParams } = await loadApi(10_000);
+    expect(listingApiParams({ page: "0" }).page).toBeUndefined();
+    expect(listingApiParams({ page: "abc" }).page).toBeUndefined();
+    expect(listingApiParams({ page: "1.5" }).page).toBeUndefined();
+    expect(listingApiParams({ page: "+1" }).page).toBeUndefined();
+    expect(listingApiParams({ page: "3" }).page).toBe("3");
+  });
+
+  it("never forwards an invalid q, sort, or page to the internal API", async () => {
+    const { getOpportunities } = await loadApi(10_000);
+    fetchMock.mockResolvedValue(jsonResponse({ items: [], total: 0, page: 1, per_page: 12, total_pages: 0 }));
+
+    await getOpportunities({ q: "x".repeat(150), sort: "new", page: "0" });
+    const [url] = fetchMock.mock.calls[0];
+    const requested = new URL(url);
+    expect(requested.searchParams.get("q")).toHaveLength(100);
+    expect(requested.searchParams.has("sort")).toBe(false);
+    expect(requested.searchParams.has("page")).toBe(false);
+  });
+
+  it("forwards a valid q, sort, and page untouched", async () => {
+    const { getOpportunities } = await loadApi(10_000);
+    fetchMock.mockResolvedValue(jsonResponse({ items: [], total: 0, page: 2, per_page: 12, total_pages: 5 }));
+
+    await getOpportunities({ q: "エンジニア", sort: "updated", page: "2" });
+    const [url] = fetchMock.mock.calls[0];
+    const requested = new URL(url);
+    expect(requested.searchParams.get("q")).toBe("エンジニア");
+    expect(requested.searchParams.get("sort")).toBe("updated");
+    expect(requested.searchParams.get("page")).toBe("2");
   });
 });

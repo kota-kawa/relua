@@ -10,7 +10,7 @@ import { OpportunityActions } from "@/components/opportunity-actions";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { RecentTracker } from "@/components/recent-tracker";
 import { CONTACT_FORM_URL } from "@/lib/constants";
-import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate } from "@/lib/format";
+import { deadlineCompactLabel, deadlineIsRelative, deadlineLabel, formatDate, formatInstantDate } from "@/lib/format";
 import { opportunityMetadata } from "@/lib/seo";
 import { loadOpportunitySnapshot } from "@/lib/seo-data";
 import { companyPath, opportunityPath } from "@/lib/site";
@@ -146,7 +146,7 @@ export default async function OpportunityDetail({ params }: Props) {
                 {item.homepage_url && <a href={item.homepage_url} target="_blank" rel="noopener noreferrer">公式ページ <ExternalLink size={15} /></a>}
                 <a href={item.source_url} target="_blank" rel="noopener noreferrer">情報源を確認 <ExternalLink size={15} /></a>
               </div>
-              <p className="updated-note">公式情報確認：{formatDate(sourceCheckedAt.slice(0, 10))}</p>
+              <p className="updated-note">公式情報確認：{formatInstantDate(sourceCheckedAt)}</p>
               <a className="correction-link" href={CONTACT_FORM_URL} target="_blank" rel="noopener noreferrer">
                 <Flag size={13} /> 掲載内容の訂正・削除を依頼する
               </a>

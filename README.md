@@ -101,7 +101,9 @@ https://<公開ホスト名>/mcp
 
 リフレッシュトークンは既定で無期限（`MCP_REFRESH_TOKEN_TTL_DAYS=0`）です。アクセストークンは1時間で切れますが、クライアントがリフレッシュトークンで自動更新するため、**一度接続すれば再ログインは不要**です。使うたびにトークンは入れ替わり、古いトークンが再利用された場合はその接続全体を失効させます。
 
-この方式ではMCPエンドポイントをインターネットへ公開します。公開する場合は、前段にTLS終端のリバースプロキシを置き、`FORWARDED_ALLOW_IPS` にそのプロキシのIPを設定してください。ログイン試行回数の集計に接続元IPを使うため、この設定がないと回数制限が全体で1つになります。
+この方式ではMCPエンドポイントをインターネットへ公開します。公開する場合は、前段にTLS終端のリバースプロキシを置き、`FORWARDED_ALLOW_IPS` にそのプロキシの**コンテナから見た接続元**を設定してください。composeのユーザランドプロキシ経由では接続元がdocker bridgeのゲートウェイになるため、既定値は `127.0.0.1,172.16.0.0/12` です。
+
+`FORWARDED_ALLOW_IPS=*` は設定しないでください。`*` を指定するとuvicornが `X-Forwarded-For` の先頭を無条件に信頼するため、ヘッダを差し替えるだけでログイン回数制限を回避できます。ログイン回数制限は接続元IP・client_id・全体の3段で数えるため、接続元IPが解決できない構成でも総当たりは全体上限で止まります。
 
 登録自体は誰でも行えますが、登録しただけでは何も取得できません。トークンを発行できるのは運営者パスワードを入力したときだけです。
 
@@ -299,7 +301,8 @@ ruff check .
 cd ../frontend
 npm ci
 npm run lint
-npm run build
+# next build がこの値を静的ページへ焼き込むため、ビルドには公開originの指定が必要です
+NEXT_PUBLIC_SITE_URL=http://localhost:3100 npm run build
 ```
 
 Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止は `make down` です。
@@ -308,12 +311,13 @@ Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止�
 
 - `.env` のDBパスワードを本番固有値へ変更する
 - `API_INTERNAL_TOKEN`と`MCP_API_TOKEN`に、それぞれ異なる十分に長いランダム値を設定する
-- `ENVIRONMENT=production`を設定する（開発用トークンのままではAPIが起動しない）
+- `ENVIRONMENT`に`development`か`production`のいずれかを設定する（未設定・綴り違い・`staging`のような未知の値は起動失敗になる。`development`を明示したときだけ開発用の既定シークレットが許される）
+- `API_INTERNAL_TOKEN`・`MCP_API_TOKEN`・`NEXT_PUBLIC_SITE_URL`、およびOAuth利用時の`MCP_OPERATOR_PASSWORD`は**未設定だとcomposeが起動しない**（`${VAR:?}`形式）。既定値へ縮退して公開済みの値で動き続けることはない
 - `NEXT_PUBLIC_SITE_URL`をcanonicalのapex origin（本番は`https://relua.net`、末尾pathなし）にする
 - PostgreSQLとRedisの公開ポートを追加しない
 - FastAPIとNext.jsの前段でTLS、CDN、リクエストサイズ制限を設定する
 - `relua.conf`をNginxへ反映して`nginx -t`後にreloadし、通常URLは`www`とHTTPから同じpath/queryを保ったapex HTTPSへ308になることを確認する。旧UUID詳細はNextへ渡し、queryを除去して公開コード詳細へ1回の308で到達することを確認する
-- SEO用の一覧・詳細データは最後の正常取得から最大1時間だけ再利用する。1時間を超えたキャッシュは返さず最新データの取得を待つため、長く訪問のないURLの初回応答はAPI応答時間ぶん遅くなる。API障害時は200＋`noindex`やErrorStateへ縮退せず5xxにする。`/sitemap.xml`も募集APIまたはmaster取得の部分失敗時は503（`Retry-After: 300`）を返し、静的4ページへの縮退は正常な0件の場合だけ許可する
+- SEO用の一覧・詳細データは最後の正常取得から最大1時間だけ再利用する。1時間を超えたキャッシュは返さず最新データの取得を待つため、長く訪問のないURLの初回応答はAPI応答時間ぶん遅くなる。API障害時は200＋`noindex`やErrorStateへ縮退せず5xxにする。`/sitemap.xml`も募集APIまたはmaster取得の部分失敗時は503（`Retry-After: 300`）を返し、静的4ページへの縮退は正常な0件の場合だけ許可する。URLが45,000件を超えると`/sitemap.xml`は自動的にサイトマップインデックスになり、実体は`/sitemaps/1.xml`以降で配信する（`robots.txt`の参照先は変わらない）
 - カテゴリのSEO対象は`frontend/lib/seo.ts`の固定allowlistで管理する。新しいカテゴリや卒年を追加した場合は、正常なデータとページ内容を確認してallowlistを明示的に更新し、サイトマップ件数と代表URLを確認する
 - OAuthを使わない場合は、MCP接続にSSHポートフォワードまたは運営者専用VPNを使用する
 - OAuthを使う場合は、`MCP_PUBLIC_URL`をhttpsの実ホスト名にし、`MCP_OPERATOR_PASSWORD`を推測できない値にする（開発用の値のままではAPIが起動しない）

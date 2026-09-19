@@ -7,6 +7,8 @@ export default function robots(): MetadataRoute.Robots {
   return {
     rules: { userAgent: "*", allow: "/", disallow: ["/api/"] },
     sitemap: `${base}/sitemap.xml`,
-    host: base,
+    // The `Host` directive takes a bare hostname, not a URL with a scheme;
+    // `siteOrigin()` returns the latter for building absolute links.
+    host: new URL(base).host,
   };
 }

@@ -109,13 +109,14 @@ def ensure_company_industry(
             CompanyIndustry.is_primary.is_(True),
         )
     )
-    row = CompanyIndustry(
-        company_id=company.id,
-        industry=industry,
-        sector=sector,
-        is_primary=has_primary is None,
-    )
-    db.add(row)
+    # Append through the relationship instead of constructing with company_id=... + db.add. This
+    # session may already hold company.industries eagerly loaded from an earlier query (e.g. the
+    # collection-target listing that led to this write); a plain db.add() inserts the row in the
+    # database but leaves that already-populated in-memory collection stale, since a later query
+    # with selectinload does not overwrite a collection that is already loaded. Appending through
+    # the relationship keeps both in sync via back_populates, whether or not it was loaded yet.
+    row = CompanyIndustry(industry=industry, sector=sector, is_primary=has_primary is None)
+    company.industries.append(row)
     db.flush()
     return row
 

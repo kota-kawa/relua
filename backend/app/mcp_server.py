@@ -1,4 +1,8 @@
+import functools
+import inspect
 import json
+import logging
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -6,6 +10,7 @@ from urllib.parse import urlsplit
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.types import Tool as MCPTool
 from mcp.types import ToolAnnotations
 from pydantic import Field, ValidationError
@@ -246,12 +251,67 @@ def _validation_error(client_name: str, request_id: str | None, errors: list[dic
     )
 
 
-def _parse_payload(raw: dict[str, Any], model: type[MCPWriteRequest] | type[MCPUpdateRequest]) -> Any:
+def _record_failure(
+    *,
+    action: str,
+    client_name: str,
+    request_id: str | None,
+    errors: list[dict[str, Any]],
+    source_url: str | None = None,
+    entity_type: str = "opportunity",
+    db: Any = None,
+) -> ToolError:
+    """Audit one rejected write and shape the client-facing error, as a single step.
+
+    ADR-0002 requires every rejected write to leave an audit row, and the reply an agent sees has to be
+    built from the same error list. Those two halves used to be spelled out by hand at a dozen raise
+    sites, and the patch path is where that went wrong: three of its four failure branches raised the
+    reply and wrote nothing, so an optimistic-lock conflict or a bad fixed value on patch_opportunity
+    was invisible in audit_logs while the identical failure on update_opportunity was recorded. Keeping
+    the pair inside one helper means a newly added branch cannot record only half of it.
+
+    ``db`` lets a caller that already holds a session reuse it. record_failed_attempt rolls the session
+    back before inserting, so a caller in the middle of a transaction must hand its own session over
+    instead of letting a second one write around it.
+    """
+    if db is not None:
+        record_failed_attempt(
+            db,
+            action=action,
+            request_id=request_id,
+            client_name=client_name,
+            source_url=source_url,
+            errors=errors,
+            entity_type=entity_type,
+        )
+    else:
+        with SessionLocal() as session:
+            record_failed_attempt(
+                session,
+                action=action,
+                request_id=request_id,
+                client_name=client_name,
+                source_url=source_url,
+                errors=errors,
+                entity_type=entity_type,
+            )
+    return _validation_error(client_name, request_id, errors)
+
+
+def _parse_payload(
+    raw: dict[str, Any],
+    model: type[MCPWriteRequest] | type[MCPUpdateRequest],
+    *,
+    persist_failures: bool = True,
+) -> Any:
     """Validate the payload here rather than at the tool boundary.
 
     FastMCP validates typed parameters before the function body runs, and answers a failure with a raw
     pydantic message. Taking the payload as a dict keeps the published JSON Schema intact while the
     errors an agent sees stay in the structured field/expected/example/alternative shape.
+
+    ``persist_failures=False`` is for validate_opportunity, which is annotated readOnlyHint=True and
+    saves nothing, so a rejected payload must not reach audit_logs either.
     """
     action = "update" if model is MCPUpdateRequest else "create"
     request_id = raw.get("request_id") if isinstance(raw, dict) else None
@@ -260,29 +320,25 @@ def _parse_payload(raw: dict[str, Any], model: type[MCPWriteRequest] | type[MCPU
         return model.model_validate(raw)
     except ValidationError as exc:
         errors = pydantic_errors(exc, raw)
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action=action,
-                request_id=request_id,
-                client_name=client_name,
-                source_url=raw.get("source_url") if isinstance(raw, dict) else None,
-                errors=errors,
-            )
-        raise _validation_error(client_name, request_id, errors) from exc
+        if not persist_failures:
+            raise _validation_error(client_name, request_id, errors) from exc
+        raise _record_failure(
+            action=action,
+            client_name=client_name,
+            request_id=request_id,
+            errors=errors,
+            source_url=raw.get("source_url") if isinstance(raw, dict) else None,
+        ) from exc
 
 
 def _domain_error(request: Any, action: str, exc: DomainValidationError) -> ToolError:
-    with SessionLocal() as db:
-        record_failed_attempt(
-            db,
-            action=action,
-            request_id=request.request_id,
-            client_name=request.client_name,
-            source_url=getattr(request, "source_url", None),
-            errors=exc.errors,
-        )
-    return _validation_error(request.client_name, request.request_id, exc.errors)
+    return _record_failure(
+        action=action,
+        client_name=request.client_name,
+        request_id=request.request_id,
+        errors=exc.errors,
+        source_url=getattr(request, "source_url", None),
+    )
 
 
 def _collection_source_url(request: Any) -> str | None:
@@ -299,18 +355,13 @@ def _parse_collection_payload(raw: dict[str, Any], model: type[Any], action: str
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
-        errors = pydantic_errors(exc, raw)
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action=action,
-                request_id=request_id,
-                client_name=client_name,
-                source_url=None,
-                errors=errors,
-                entity_type="collection_target",
-            )
-        raise _validation_error(client_name, request_id, errors) from exc
+        raise _record_failure(
+            action=action,
+            client_name=client_name,
+            request_id=request_id,
+            errors=pydantic_errors(exc, raw),
+            entity_type="collection_target",
+        ) from exc
 
 
 def _parse_company_payload(raw: dict[str, Any], model: type[Any], action: str) -> Any:
@@ -319,32 +370,24 @@ def _parse_company_payload(raw: dict[str, Any], model: type[Any], action: str) -
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
-        errors = pydantic_errors(exc, raw)
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action=action,
-                request_id=request_id,
-                client_name=client_name,
-                source_url=None,
-                errors=errors,
-                entity_type="company",
-            )
-        raise _validation_error(client_name, request_id, errors) from exc
+        raise _record_failure(
+            action=action,
+            client_name=client_name,
+            request_id=request_id,
+            errors=pydantic_errors(exc, raw),
+            entity_type="company",
+        ) from exc
 
 
 def _collection_domain_error(request: Any, action: str, exc: DomainValidationError) -> ToolError:
-    with SessionLocal() as db:
-        record_failed_attempt(
-            db,
-            action=action,
-            request_id=request.request_id,
-            client_name=request.client_name,
-            source_url=_collection_source_url(request),
-            errors=exc.errors,
-            entity_type="collection_target",
-        )
-    return _validation_error(request.client_name, request.request_id, exc.errors)
+    return _record_failure(
+        action=action,
+        client_name=request.client_name,
+        request_id=request.request_id,
+        errors=exc.errors,
+        source_url=_collection_source_url(request),
+        entity_type="collection_target",
+    )
 
 
 def _company_domain_error(
@@ -355,17 +398,14 @@ def _company_domain_error(
     exc: CompanyIdentityValidationError,
     source_url: str | None = None,
 ) -> ToolError:
-    with SessionLocal() as db:
-        record_failed_attempt(
-            db,
-            action=action,
-            request_id=request_id,
-            client_name=client_name,
-            source_url=source_url,
-            errors=exc.errors,
-            entity_type="company",
-        )
-    return _validation_error(client_name, request_id, exc.errors)
+    return _record_failure(
+        action=action,
+        client_name=client_name,
+        request_id=request_id,
+        errors=exc.errors,
+        source_url=source_url,
+        entity_type="company",
+    )
 
 
 def _write_input(request: MCPWriteRequest | MCPUpdateRequest) -> OpportunityInput:
@@ -414,37 +454,48 @@ def _prepare_opportunity_patch(
     request_id: str,
     client_name: str,
     allow_idempotent_replay: bool = False,
+    persist_failures: bool = True,
 ) -> tuple[Any, OpportunityInput]:
+    """Merge a patch onto the stored row and validate the result, for both the preview and the write.
+
+    ``persist_failures`` is what separates the two callers. patch_opportunity writes, so ADR-0002 makes
+    every rejected attempt an audit row. preview_opportunity_patch is annotated readOnlyHint=True and
+    is meant to be retried freely while an agent converges on a valid payload, so it must not append to
+    audit_logs on each try; the repeated-failure signal it still needs comes from the Redis counter in
+    _validation_error, which costs nothing to grow.
+    """
     item = get_opportunity_record(db, opportunity_id)
     if item is None:
         raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"})
+
+    def reject(errors: list[dict[str, Any]], *, source_url: str | None = None) -> ToolError:
+        if not persist_failures:
+            return _validation_error(client_name, request_id, errors)
+        return _record_failure(
+            action="patch",
+            client_name=client_name,
+            request_id=request_id,
+            errors=errors,
+            source_url=source_url if source_url is not None else changes.get("source_url"),
+            db=db,
+        )
+
     if not changes:
-        errors = [{"field": "変更内容", "received": {}, "reason": "変更する項目を1件以上指定してください"}]
-        raise _validation_error(client_name, request_id, errors)
+        raise reject([{"field": "変更内容", "received": {}, "reason": "変更する項目を1件以上指定してください"}])
     try:
         if not allow_idempotent_replay:
             ensure_expected_updated_at(item, expected_updated_at)
         data = OpportunityInput.model_validate(opportunity_input_dict(item) | changes)
     except DomainValidationError as exc:
-        raise _validation_error(client_name, request_id, exc.errors) from exc
+        raise reject(exc.errors) from exc
     except ValidationError as exc:
         merged = opportunity_input_dict(item) | changes
-        errors = pydantic_errors(exc, merged)
-        record_failed_attempt(
-            db,
-            action="patch",
-            request_id=request_id,
-            client_name=client_name,
-            source_url=merged.get("source_url"),
-            errors=errors,
-        )
-        raise _validation_error(client_name, request_id, errors) from exc
+        raise reject(pydantic_errors(exc, merged), source_url=merged.get("source_url")) from exc
     errors = validate_write(db, data=data)
     if errors:
-        raise _validation_error(client_name, request_id, errors)
+        raise reject(errors, source_url=data.source_url)
     if not allow_idempotent_replay and not opportunity_patch_changes(item, data):
-        errors = [{"field": "変更内容", "received": changes, "reason": "現在値から変わる項目がありません"}]
-        raise _validation_error(client_name, request_id, errors)
+        raise reject([{"field": "変更内容", "received": changes, "reason": "現在値から変わる項目がありません"}])
     return item, data
 
 
@@ -461,7 +512,13 @@ def _prepare_opportunity_patch(
 def search_opportunity(
     query: Annotated[
         str | None,
-        Field(description="企業名・イベント名・職種・内容・募集要件に対するキーワード。表記揺れや軽微なタイプミスも検索できます。"),
+        Field(
+            # This tool is anonymous, and one keyword expands into eight ilike patterns plus relevance
+            # scoring, so an unbounded string is an unauthenticated way to buy a very expensive scan.
+            # 200 is the bound the authenticated list_* tools already use for the same kind of keyword.
+            max_length=200,
+            description="企業名・イベント名・職種・内容・募集要件に対するキーワード（200文字以内）。表記揺れや軽微なタイプミスも検索できます。",
+        ),
     ] = None,
     recruitment_status: Annotated[list[RecruitmentStatusValue] | None, Field(description="募集状況で絞り込みます。")] = None,
     industry: Annotated[list[IndustryValue] | None, Field(description="業界で絞り込みます。")] = None,
@@ -536,7 +593,13 @@ def search_opportunity(
 def get_opportunity(
     reference: Annotated[
         str,
-        Field(description="募集情報のid（UUID）または公開コード（8文字）。検索結果のid・public_codeをそのまま渡せます。"),
+        Field(
+            # Anonymous tool: the only valid values are a 36 character UUID or an 8 character public
+            # code, so anything longer is never a lookup that can succeed.
+            min_length=1,
+            max_length=64,
+            description="募集情報のid（UUID）または公開コード（8文字）。検索結果のid・public_codeをそのまま渡せます。",
+        ),
     ],
 ) -> OpportunityResponse:
     with SessionLocal() as db:
@@ -873,10 +936,22 @@ def merge_company_tool(
     annotations=READ_ONLY,
 )
 def find_similar_opportunities_tool(
-    company_name: Annotated[str, Field(description="企業名。「(株)」などの表記ゆれは吸収されます。", examples=["株式会社リルア"])],
+    company_name: Annotated[
+        str,
+        Field(
+            # Anonymous tool, same bound as the authenticated resolve_company takes for a company name.
+            min_length=1,
+            max_length=200,
+            description="企業名。「(株)」などの表記ゆれは吸収されます。",
+            examples=["株式会社リルア"],
+        ),
+    ],
     event_name: Annotated[
         str | None,
-        Field(description="イベント名。指定すると部分一致で絞り込みます。省略するとその企業の全件を返します。"),
+        Field(
+            max_length=200,
+            description="イベント名。指定すると部分一致で絞り込みます。省略するとその企業の全件を返します。",
+        ),
     ] = None,
 ) -> MCPDuplicateResponse:
     with SessionLocal() as db:
@@ -903,7 +978,12 @@ def find_similar_opportunities_tool(
     annotations=READ_ONLY,
 )
 def find_opportunities_by_source_url_tool(
-    source_url: Annotated[str, Field(description="確認する企業公式の一次情報URL（https必須）。")],
+    source_url: Annotated[
+        str,
+        # Anonymous tool. validate_https_url already refuses anything over 2048 characters; declaring it
+        # here stops the oversized string at the schema instead of after it has been parsed.
+        Field(min_length=1, max_length=2048, description="確認する企業公式の一次情報URL（https必須）。"),
+    ],
 ) -> MCPDuplicateResponse:
     try:
         validated = validate_source_host(validate_https_url(source_url) or source_url)
@@ -935,6 +1015,7 @@ def find_opportunities_by_source_url_tool(
         "payloadを保存せずに検証し、固定値の誤りと重複の疑いを返します。"
         "検証に失敗しても登録は行われないため、内容に自信がないときは先にこのツールを使ってください。"
         f"{DESCRIPTION_GUIDANCE}"
+        "認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
@@ -945,12 +1026,16 @@ def validate_opportunity(
         Field(description="更新前提で検証する場合の対象ID。指定するとその1件を重複判定から除外します。"),
     ] = None,
 ) -> MCPValidationResponse:
-    request = _parse_payload(payload, MCPWriteRequest)
+    request = _parse_payload(payload, MCPWriteRequest, persist_failures=False)
     data = _write_input(request)
     with SessionLocal() as db:
         errors = validate_write(db, data=data)
         if errors:
-            raise _domain_error(request, "validate", DomainValidationError(errors))
+            # readOnlyHint=True is the honest annotation for a tool whose whole purpose is to be called
+            # before writing, so it must not insert an audit row: an agent is expected to retry this
+            # freely until the payload validates, and each retry would otherwise grow audit_logs. The
+            # repeated-failure signal still comes from the Redis counter inside _validation_error.
+            raise _validation_error(request.client_name, request.request_id, errors)
         duplicates, probable_duplicates = classify_duplicate_candidates(
             db,
             company_name=data.company_name,
@@ -989,7 +1074,7 @@ def validate_opportunity(
         "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば「同名だが別募集」として登録し、"
         "warningsで既存の登録を知らせます（会社が28卒・29卒で同じイベント名を使い回す場合など）。"
         f"{DESCRIPTION_GUIDANCE}"
-        "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。"
+        "自由記述は出典の文章を転記せず事実だけを要約し、個人名・個人宛の連絡先は含めないでください。認証が必要です。"
     ),
     annotations=APPEND_ONLY,
 )
@@ -1052,6 +1137,7 @@ def add_opportunity(
         "対象学年・実施日・対象職種まで一致する完全な重複を意図的に複数登録したい場合は、"
         "代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
         f"{DESCRIPTION_GUIDANCE}"
+        "認証が必要です。"
     ),
     annotations=APPEND_ONLY,
 )
@@ -1083,7 +1169,12 @@ def upsert_opportunity(
             return MCPUpsertResponse.model_validate(
                 {
                     "result": "created",
-                    "message": "募集情報を登録しました",
+                    "idempotent_replay": replayed,
+                    "message": (
+                        "同じrequest_idの登録は処理済みです。前回登録した募集情報を返します"
+                        if replayed
+                        else "募集情報を登録しました"
+                    ),
                     "opportunity": opportunity_dict(item),
                     "warnings": _write_warnings(db, data=data, opportunity_id=item.id),
                 }
@@ -1102,6 +1193,9 @@ def upsert_opportunity(
             return MCPUpsertResponse.model_validate(
                 {
                     "result": "existing",
+                    # A duplicate match, not a replay of this request_id: nothing was written now and
+                    # nothing was written by an earlier call carrying the same request_id either.
+                    "idempotent_replay": False,
                     "message": "同じ企業の同名イベントが既に登録されているため、既存の登録を返しました",
                     "opportunity": opportunity_dict(existing_item),
                 }
@@ -1119,7 +1213,7 @@ def upsert_opportunity(
         "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
         "更新にあたって一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
         "expected_updated_atが現在値と違う場合は上書きせず拒否します。取得後に別の変更が入っていないか、"
-        "必ずget_opportunityで直前に取得したupdated_atを渡してください。"
+        "必ずget_opportunityで直前に取得したupdated_atを渡してください。認証が必要です。"
     ),
     annotations=REPLACING,
 )
@@ -1175,8 +1269,8 @@ def preview_opportunity_patch_tool(
         datetime,
         Field(description="get_opportunityで取得した現在のupdated_at。取得後の競合更新を検出します。"),
     ],
-    request_id: Annotated[str, Field(min_length=8, max_length=100, description="検証操作を識別する一意なID。")],
-    client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
+    request_id: Annotated[RequestId, Field(description="検証操作を識別する一意なID。")],
+    client_name: ClientName = "mcp-client",
 ) -> MCPOpportunityPreviewResponse:
     with SessionLocal() as db:
         item, data = _prepare_opportunity_patch(
@@ -1186,6 +1280,7 @@ def preview_opportunity_patch_tool(
             expected_updated_at=expected_updated_at,
             request_id=request_id,
             client_name=client_name,
+            persist_failures=False,
         )
         matches = find_source_url_duplicates(db, source_url=data.source_url, exclude_id=item.id)
         warnings = _consistency_warnings(data)
@@ -1214,7 +1309,7 @@ def preview_opportunity_patch_tool(
         f"descriptionを変更する場合は、{DESCRIPTION_GUIDANCE}"
         "このツールはDBの内容を書き換えるだけで、公式情報確認日時（source_checked_at）は変更しません。"
         "タグや分類だけの修正のように、一次情報を読み直していない修正でも安全に使えます。"
-        "一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。"
+        "一次情報を確認した場合は、verify_opportunityまたはrecord_collection_checkで別途記録してください。認証が必要です。"
     ),
     annotations=PATCHING,
 )
@@ -1225,8 +1320,8 @@ def patch_opportunity_tool(
         datetime,
         Field(description="get_opportunityまたはプレビューで取得したupdated_at。"),
     ],
-    request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。")],
-    client_name: Annotated[str, Field(min_length=1, max_length=100)] = "mcp-client",
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。")],
+    client_name: ClientName = "mcp-client",
 ) -> MCPWriteResponse:
     try:
         with SessionLocal() as db:
@@ -1277,7 +1372,7 @@ def patch_opportunity_tool(
         "募集状況と締め切りだけを更新します。他の項目は変更しません。"
         "「締切になった」「募集が始まった」といった保守はこのツールで行い、全項目の再送を避けてください。"
         "get_opportunityで取得したupdated_atを必ず渡し、取得後に別の更新があれば拒否します。"
-        "日付と募集状況が矛盾する場合も保存はしますが、warningsで公式情報の再確認を促します。"
+        "日付と募集状況が矛盾する場合も保存はしますが、warningsで公式情報の再確認を促します。認証が必要です。"
     ),
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
 )
@@ -1288,8 +1383,8 @@ def update_recruitment_status_tool(
         datetime,
         Field(description="get_opportunityで取得した現在のupdated_at。取得後に更新されていた場合は拒否します。"),
     ],
-    request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
-    client_name: Annotated[str, Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。")] = "mcp-client",
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
+    client_name: ClientName = "mcp-client",
     deadline: Annotated[
         str | None,
         Field(description="新しい締め切り（YYYY-MM-DD）。変更しない場合は省略します。"),
@@ -1342,16 +1437,9 @@ def update_recruitment_status_tool(
                 }
             )
     except DomainValidationError as exc:
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action="status_update",
-                request_id=request_id,
-                client_name=client_name,
-                source_url=None,
-                errors=exc.errors,
-            )
-        raise _validation_error(client_name, request_id, exc.errors) from exc
+        raise _record_failure(
+            action="status_update", client_name=client_name, request_id=request_id, errors=exc.errors
+        ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
 
@@ -1363,6 +1451,7 @@ def update_recruitment_status_tool(
         "登録済みの一次情報URLを確認し、募集内容に変更がなかったことを記録します。"
         "source_checked_atだけを更新し、募集内容とupdated_atは変更しません。"
         "募集状況や締め切りが変わった場合はupdate_recruitment_status、他の内容が変わった場合はpatch_opportunityを使ってください。"
+        "認証が必要です。"
     ),
     annotations=APPEND_ONLY,
 )
@@ -1373,8 +1462,8 @@ def verify_opportunity_tool(
         Field(description="公式ページを確認した日時（タイムゾーン付きISO 8601）。未来の日時は指定できません。"),
     ],
     source_url: Annotated[str, Field(description="確認した登録済みの一次情報URL（https）。")],
-    request_id: Annotated[str, Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
-    client_name: Annotated[str, Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。")] = "mcp-client",
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
+    client_name: ClientName = "mcp-client",
 ) -> MCPWriteResponse:
     try:
         source_url = validate_source_host(validate_https_url(source_url) or source_url)
@@ -1388,16 +1477,13 @@ def verify_opportunity_tool(
                 "alternative": "登録済みのsource_urlをget_opportunityで確認してください",
             }
         ]
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action="verify",
-                request_id=request_id,
-                client_name=client_name,
-                source_url=source_url,
-                errors=errors,
-            )
-        raise _validation_error(client_name, request_id, errors) from exc
+        raise _record_failure(
+            action="verify",
+            client_name=client_name,
+            request_id=request_id,
+            errors=errors,
+            source_url=source_url,
+        ) from exc
     try:
         with SessionLocal() as db:
             item, replayed = verify_opportunity(
@@ -1417,16 +1503,13 @@ def verify_opportunity_tool(
                 }
             )
     except DomainValidationError as exc:
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action="verify",
-                request_id=request_id,
-                client_name=client_name,
-                source_url=source_url,
-                errors=exc.errors,
-            )
-        raise _validation_error(client_name, request_id, exc.errors) from exc
+        raise _record_failure(
+            action="verify",
+            client_name=client_name,
+            request_id=request_id,
+            errors=exc.errors,
+            source_url=source_url,
+        ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
 
@@ -1492,14 +1575,8 @@ def delete_opportunity_tool(
         datetime,
         Field(description="get_opportunityで取得した現在のupdated_at。取得後の競合更新を検出します。"),
     ],
-    request_id: Annotated[
-        str,
-        Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。"),
-    ],
-    client_name: Annotated[
-        str,
-        Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。"),
-    ] = "mcp-client",
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
+    client_name: ClientName = "mcp-client",
 ) -> MCPDeleteResponse:
     try:
         with SessionLocal() as db:
@@ -1519,16 +1596,9 @@ def delete_opportunity_tool(
                 }
             )
     except DomainValidationError as exc:
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action="delete",
-                request_id=request_id,
-                client_name=client_name,
-                source_url=None,
-                errors=exc.errors,
-            )
-        raise _validation_error(client_name, request_id, exc.errors) from exc
+        raise _record_failure(
+            action="delete", client_name=client_name, request_id=request_id, errors=exc.errors
+        ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
 
@@ -1548,14 +1618,8 @@ def restore_opportunity_tool(
         str,
         Field(description="delete_opportunityが返した削除済み募集情報のUUID。"),
     ],
-    request_id: Annotated[
-        str,
-        Field(min_length=8, max_length=100, description="操作ごとに一意なID。再試行時のみ同じ値を使います。"),
-    ],
-    client_name: Annotated[
-        str,
-        Field(min_length=1, max_length=100, description="監査ログに記録される呼び出し元の名前。"),
-    ] = "mcp-client",
+    request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
+    client_name: ClientName = "mcp-client",
 ) -> MCPRestoreResponse:
     try:
         with SessionLocal() as db:
@@ -1574,16 +1638,9 @@ def restore_opportunity_tool(
                 }
             )
     except DomainValidationError as exc:
-        with SessionLocal() as db:
-            record_failed_attempt(
-                db,
-                action="restore",
-                request_id=request_id,
-                client_name=client_name,
-                source_url=None,
-                errors=exc.errors,
-            )
-        raise _validation_error(client_name, request_id, exc.errors) from exc
+        raise _record_failure(
+            action="restore", client_name=client_name, request_id=request_id, errors=exc.errors
+        ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された削除済み募集情報が見つかりません"}) from exc
 
@@ -1963,7 +2020,7 @@ def record_collection_check_tool(
     title="直近の書き込み履歴を取得",
     description=(
         "自分を含むクライアントによる直近の登録・更新・削除・復元の記録を返します。"
-        "同じ募集を登録し直していないか、どの入力が失敗したかを確認できます。"
+        "同じ募集を登録し直していないか、どの入力が失敗したかを確認できます。認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
@@ -2014,6 +2071,74 @@ def list_stale_opportunities_tool(
                 ]
             }
         )
+
+
+logger = logging.getLogger(__name__)
+
+#: What an unexpected server-side failure is allowed to tell the caller. Every tool that can be reached
+#: without a token shares this text, so nothing about the query, the schema or the database leaks.
+INTERNAL_ERROR = {
+    "error": "internal_error",
+    "message": "サーバー内部でエラーが発生しました。しばらく待ってから再試行してください。",
+}
+
+
+def _guarded(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Stop an unexpected exception from becoming part of the tool result.
+
+    FastMCP's Tool.run turns anything the tool body raises into ``ToolError(f"... {e}")``, and MCP tool
+    dispatch never reaches main.py's catch-all handler, so whatever ``str(exc)`` produces is handed
+    straight to the caller. A SQLAlchemy error stringifies to the full SQL statement plus its bound
+    parameters, and search_opportunity is anonymous: one oversized or otherwise unlucky query was enough
+    to publish the column list of opportunities, companies, company_aliases and opportunity_jobs to a
+    caller that had never logged in.
+
+    Intentional errors still pass through untouched: every tool raises its domain, validation and
+    not-found replies as ToolError carrying a JSON body that the agent is meant to read, and
+    UrlElicitationRequiredError has to reach the protocol layer to become its own error code. Anything
+    else is logged here with its traceback and answered with one fixed sentence.
+    """
+
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def guarded_async(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await fn(*args, **kwargs)
+            except (ToolError, UrlElicitationRequiredError):
+                raise
+            except Exception:
+                logger.exception("Unhandled error in MCP tool %s", name)
+                raise _json_error(INTERNAL_ERROR) from None
+
+        return guarded_async
+
+    @functools.wraps(fn)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except (ToolError, UrlElicitationRequiredError):
+            raise
+        except Exception:
+            logger.exception("Unhandled error in MCP tool %s", name)
+            raise _json_error(INTERNAL_ERROR) from None
+
+    return guarded
+
+
+def _install_error_boundary() -> None:
+    """Apply _guarded to every registered tool, once, after they are all declared.
+
+    Wrapping here rather than at each of the 37 decorators is what makes the boundary impossible to
+    forget on a tool added later: registration itself is what installs it. FastMCP has already derived
+    each tool's schema from the original signature by this point, so the published contract is unchanged
+    and functools.wraps keeps the wrapper introspectable.
+    """
+    for tool in mcp._tool_manager.list_tools():
+        tool.fn = _guarded(tool.name, tool.fn)
+
+
+_install_error_boundary()
 
 
 async def _list_tools_with_security_schemes() -> list[MCPTool]:

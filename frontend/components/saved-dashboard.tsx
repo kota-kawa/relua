@@ -10,7 +10,8 @@ import { Check, ClipboardPaste, Copy, Download, FileDown, FileUp, History, QrCod
 import { OpportunityCard } from "@/components/opportunity-card";
 import { showToast } from "@/components/toast";
 import { TransferLinkForm } from "@/components/transfer-link-form";
-import { loadOpportunities } from "@/lib/browser-api";
+import { loadOpportunities, type LoadedOpportunities } from "@/lib/browser-api";
+import { formatInstantDate } from "@/lib/format";
 import {
   BOOKMARKS_KEY,
   LOCAL_DATA_EVENT,
@@ -22,8 +23,8 @@ import {
   bookmarkJson,
   buildCodeFragmentUrl,
   clearRecents,
+  idsFromSnapshot,
   mergeBookmarks,
-  normalizeIds,
   parseBookmarkFile,
   readRecents,
   removeBookmarks,
@@ -48,17 +49,69 @@ function recentsSnapshot() {
   try { return window.localStorage.getItem(RECENTS_KEY) ?? "[]"; } catch { return "[]"; }
 }
 
-function parseIds(raw: string) {
-  try { return normalizeIds(JSON.parse(raw)); } catch { return []; }
-}
-
+/**
+ * Saves a generated backup file.
+ *
+ * Firefox only dispatches the download for an anchor that is actually in the
+ * document, and every browser needs the object URL to outlive the click: revoking
+ * it in the same tick cancels the save before it starts. This backup is the only
+ * escape hatch before localStorage is lost, so it must not fail quietly.
+ * components/opportunity-actions.tsx uses the same delayed revoke for .ics files.
+ */
 function download(name: string, content: string, type: string) {
   const url = URL.createObjectURL(new Blob([content], { type }));
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = name;
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+/**
+ * Resolves ids against a shared in-memory cache, fetching only the ones not
+ * already cached.
+ *
+ * A single bookmark toggle changes `ids` by one entry, but without a cache the
+ * effect below refetched the whole saved list through loadOpportunities' 8-at-
+ * a-time batching every time — with 200 saved items that is roughly 25
+ * sequential round trips for one click, and the stale list just sat there
+ * because nothing set `loading` back to true. Fetching only the new ids makes
+ * the common case (one id added or removed) effectively instant instead.
+ * Failed fetches are deliberately left out of the cache so the next run (the
+ * next bookmark change) retries them rather than freezing a fetch error in
+ * place forever.
+ *
+ * Entries expire after `CACHE_TTL_MS`. `loadOne` fetches `no-store` precisely
+ * because a saved entry can close or be withdrawn while this page is open;
+ * caching an id forever would mean a closed opening keeps rendering, never
+ * lands in `missingIds`, and so is never dropped from localStorage or excluded
+ * from a transfer link. The TTL keeps the one-click case cheap while bounding
+ * how stale the list can get.
+ */
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+type CacheEntry = { item: Opportunity; fetchedAt: number };
+
+async function loadCached(
+  cache: Map<string, CacheEntry>,
+  ids: string[],
+  now = Date.now(),
+): Promise<LoadedOpportunities> {
+  const isFresh = (entry: CacheEntry | undefined) => Boolean(entry) && now - entry!.fetchedAt < CACHE_TTL_MS;
+  const stale = ids.filter((id) => !isFresh(cache.get(id)));
+  const fetched = stale.length
+    ? await loadOpportunities(stale)
+    : { items: [], missingIds: [], failedIds: [] };
+  fetched.items.forEach((item) => cache.set(item.id, { item, fetchedAt: now }));
+  // A refetch that came back 404 has to drop the stale copy too, or the caller
+  // would keep rendering an opening the API just said is gone.
+  fetched.missingIds.forEach((id) => cache.delete(id));
+  const items = ids
+    .map((id) => cache.get(id)?.item)
+    .filter((item): item is Opportunity => Boolean(item));
+  return { items, missingIds: fetched.missingIds, failedIds: fetched.failedIds };
 }
 
 async function copyText(value: string) {
@@ -92,6 +145,17 @@ async function shareOrCopy(url: string, title: string): Promise<"shared" | "copi
   return await copyText(url) ? "copied" : "failed";
 }
 
+/*
+ * All three dialogs below share one pattern: the interactive close paths
+ * (the X button, a backdrop click, a copy-success auto-close) call
+ * `dialogRef.current?.close()` rather than the `onClose` prop directly. A
+ * native <dialog> only restores focus to whatever opened it when it is
+ * actually closed via close()/Escape; calling `onClose` straight away just
+ * unmounts the still-"open" <dialog> out from under the browser, so focus
+ * fell back to <body> on every path except Escape. `onClose` itself stays
+ * wired to the dialog's native "close" event, which both close() and Escape
+ * fire, so state teardown happens exactly once regardless of how it closed.
+ */
 function LinkDialog({ url, onClose }: { url: string; onClose: () => void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -101,14 +165,14 @@ function LinkDialog({ url, onClose }: { url: string; onClose: () => void }) {
     inputRef.current?.select();
   }, []);
   return (
-    <dialog ref={dialogRef} className="qr-dialog" aria-labelledby="transfer-link-title" onClose={onClose} onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <dialog ref={dialogRef} className="qr-dialog" aria-labelledby="transfer-link-title" onClose={onClose} onPointerDown={(event) => { if (event.target === event.currentTarget) dialogRef.current?.close(); }}>
       <div className="qr-panel link-panel">
-        <button type="button" className="panel-close" onClick={onClose} aria-label="閉じる"><X size={18} /></button>
+        <button type="button" className="panel-close" onClick={() => dialogRef.current?.close()} aria-label="閉じる"><X size={18} /></button>
         <p className="eyebrow">保存データの引き継ぎ</p>
         <h2 id="transfer-link-title">リンクを手動でコピー</h2>
         <p>下のリンクを選択してコピーし、別の端末で開いてください。</p>
         <input ref={inputRef} className="transfer-url-field" value={url} readOnly aria-label="引き継ぎリンク" onFocus={(event) => event.currentTarget.select()} />
-        <button type="button" className="dialog-copy-button" onClick={async () => { if (await copyText(url)) { showToast("引き継ぎリンクをコピーしました"); onClose(); } }}><Copy size={17} /> コピーする</button>
+        <button type="button" className="dialog-copy-button" onClick={async () => { if (await copyText(url)) { showToast("引き継ぎリンクをコピーしました"); dialogRef.current?.close(); } }}><Copy size={17} /> コピーする</button>
       </div>
     </dialog>
   );
@@ -136,15 +200,15 @@ function QrDialog({ url, onClose, onManualCopy }: { url: string; onClose: () => 
       className="qr-dialog"
       aria-labelledby="qr-dialog-title"
       onClose={onClose}
-      onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      onPointerDown={(event) => { if (event.target === event.currentTarget) dialogRef.current?.close(); }}
     >
       <div className="qr-panel">
-        <button type="button" className="panel-close" onClick={onClose} aria-label="閉じる"><X size={18} /></button>
+        <button type="button" className="panel-close" onClick={() => dialogRef.current?.close()} aria-label="閉じる"><X size={18} /></button>
         <p className="eyebrow">保存データの引き継ぎ</p>
         <h2 id="qr-dialog-title">QRコードを読み取る</h2>
         <p>別の端末で読み取ると、追加前の確認画面が開きます。</p>
         {dataUrl ? <Image src={dataUrl} width={320} height={320} unoptimized alt="端末間移行用QRコード" /> : <div className="qr-placeholder">{error ? "QRコードを生成できませんでした。引き継ぎリンクをご利用ください。" : "生成中…"}</div>}
-        <button type="button" className="qr-copy-button" onClick={async () => { if (await copyText(url)) showToast("引き継ぎリンクをコピーしました"); else { onClose(); onManualCopy(); } }}><Copy size={16} /> リンクをコピー</button>
+        <button type="button" className="qr-copy-button" onClick={async () => { if (await copyText(url)) showToast("引き継ぎリンクをコピーしました"); else { dialogRef.current?.close(); onManualCopy(); } }}><Copy size={16} /> リンクをコピー</button>
       </div>
     </dialog>
   );
@@ -157,9 +221,9 @@ function PasteLinkDialog({ onClose }: { onClose: () => void }) {
     if (dialog && !dialog.open) dialog.showModal();
   }, []);
   return (
-    <dialog ref={dialogRef} className="qr-dialog" aria-labelledby="paste-link-title" onClose={onClose} onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <dialog ref={dialogRef} className="qr-dialog" aria-labelledby="paste-link-title" onClose={onClose} onPointerDown={(event) => { if (event.target === event.currentTarget) dialogRef.current?.close(); }}>
       <div className="qr-panel paste-link-panel">
-        <button type="button" className="panel-close" onClick={onClose} aria-label="閉じる"><X size={18} /></button>
+        <button type="button" className="panel-close" onClick={() => dialogRef.current?.close()} aria-label="閉じる"><X size={18} /></button>
         <p className="eyebrow">保存データの引き継ぎ</p>
         <h2 id="paste-link-title">受け取ったリンクを貼り付ける</h2>
         <p>別の端末でコピーした引き継ぎリンクを貼り付けてください。</p>
@@ -172,7 +236,7 @@ function PasteLinkDialog({ onClose }: { onClose: () => void }) {
 export function SavedDashboard() {
   const rawBookmarks = useSyncExternalStore(subscribe, bookmarksSnapshot, () => "[]");
   const rawRecents = useSyncExternalStore(subscribe, recentsSnapshot, () => "[]");
-  const ids = useMemo(() => parseIds(rawBookmarks), [rawBookmarks]);
+  const ids = useMemo(() => idsFromSnapshot(rawBookmarks), [rawBookmarks]);
   const recentEntries = useMemo(() => {
     const storage = { getItem: () => rawRecents, setItem: () => undefined, removeItem: () => undefined };
     return readRecents(storage);
@@ -181,9 +245,14 @@ export function SavedDashboard() {
   const [recentItems, setRecentItems] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
+  const [failedIds, setFailedIds] = useState<string[]>([]);
   const [showQr, setShowQr] = useState(false);
   const [showPasteLink, setShowPasteLink] = useState(false);
   const [manualCopyUrl, setManualCopyUrl] = useState("");
+  /* Shared by both effects below so viewing then bookmarking the same item (or
+     the reverse) never triggers a second fetch for it. */
+  const cacheRef = useRef<Map<string, CacheEntry>>(new Map());
+  const hasLoadFailures = failedIds.length > 0;
 
   const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
   /* Links carry the server's short code, so they are only ready once the bookmarks have loaded. */
@@ -196,26 +265,34 @@ export function SavedDashboard() {
 
   useEffect(() => {
     let active = true;
-    loadOpportunities(ids).then((result) => {
+    loadCached(cacheRef.current, ids).then((result) => {
       if (!active) return;
       setItems(result.items);
+      setFailedIds(result.failedIds);
       setLoading(false);
+      /* missingIds (404, published items that ended or were deleted) and
+         failedIds (transient errors) get separate notices: removal is
+         permanent and silent otherwise, while a failure is worth explaining
+         even though nothing was removed. Both can happen in the same batch. */
+      const notices: string[] = [];
       if (result.missingIds.length) {
         try {
           removeBookmarks(window.localStorage, result.missingIds);
           notifyLocalDataChanged();
+          notices.push(`公開終了などにより${result.missingIds.length}件を保存一覧から削除しました。`);
         } catch {
-          setNotice("公開終了した募集を保存一覧から削除できませんでした。ブラウザの保存設定を確認してください。");
+          notices.push("公開終了した募集を保存一覧から削除できませんでした。ブラウザの保存設定を確認してください。");
         }
       }
-      if (result.failedIds.length) setNotice(`${result.failedIds.length}件を読み込めませんでした。時間をおいて再度お試しください。`);
+      if (result.failedIds.length) notices.push(`${result.failedIds.length}件を読み込めませんでした。時間をおいて再度お試しください。`);
+      if (notices.length) setNotice(notices.join(" "));
     });
     return () => { active = false; };
   }, [ids]);
 
   useEffect(() => {
     let active = true;
-    loadOpportunities(recentEntries.map((entry) => entry.id)).then((result) => {
+    loadCached(cacheRef.current, recentEntries.map((entry) => entry.id)).then((result) => {
       if (active) setRecentItems(result.items);
     });
     return () => { active = false; };
@@ -276,21 +353,26 @@ export function SavedDashboard() {
           <article className="local-tool-card">
             <div className="local-tool-card-heading"><Smartphone size={21} /><div><h2>保存データを引き継ぐ</h2><p>別の端末のブックマークへ、現在の保存内容を追加します。</p></div></div>
             <div className="local-tool-actions">
-              <button type="button" disabled={!codes.length || !qrAvailable} onClick={() => setShowQr(true)}><QrCode size={18} /> QRコードで読み取る</button>
-              <button type="button" disabled={!codes.length || !transferLinkAvailable} onClick={() => handleShare(importUrl, "reluaの保存データ")}><Share2 size={18} /> 引き継ぎリンクを共有</button>
-              <button type="button" disabled={!codes.length || !transferLinkAvailable} onClick={handleCopyTransferLink}><Copy size={18} /> 引き継ぎリンクをコピー</button>
+              <button type="button" disabled={!codes.length || !qrAvailable || hasLoadFailures} onClick={() => setShowQr(true)}><QrCode size={18} /> QRコードで読み取る</button>
+              <button type="button" disabled={!codes.length || !transferLinkAvailable || hasLoadFailures} onClick={() => handleShare(importUrl, "reluaの保存データ")}><Share2 size={18} /> 引き継ぎリンクを共有</button>
+              <button type="button" disabled={!codes.length || !transferLinkAvailable || hasLoadFailures} onClick={handleCopyTransferLink}><Copy size={18} /> 引き継ぎリンクをコピー</button>
             </div>
             <div className="local-tool-receive"><span>リンクを受け取った場合</span><button type="button" onClick={() => setShowPasteLink(true)}><ClipboardPaste size={18} /> 引き継ぎリンクを貼り付ける</button></div>
             {!!codes.length && !transferLinkAvailable && <p className="tool-limit-note">保存件数が多いため、リンクとQRコードは利用できません。下の「バックアップと復元」からJSONファイルで引き継いでください。</p>}
             {!!codes.length && transferLinkAvailable && !qrAvailable && <p className="tool-limit-note">QRコードには収まらないため、引き継ぎリンクをご利用ください。</p>}
+            {/* codes only ever holds successfully fetched items (see loadCached), so a
+                failure here means the link would silently omit those entries and the
+                receiving device would report a smaller list as a complete success. */}
+            {hasLoadFailures && <p className="tool-limit-note">{failedIds.length}件を読み込めなかったため、リンクとQRコードを一時的に無効にしています。時間をおいて再度お試しください。</p>}
           </article>
 
           <article className="local-tool-card">
             <div className="local-tool-card-heading"><Share2 size={21} /><div><h2>募集リストを共有する</h2><p>現在保存している募集のスナップショットを、ほかの人に共有します。</p></div></div>
             <div className="local-tool-actions">
-              <button type="button" disabled={!codes.length || !sharedListAvailable} onClick={() => handleShare(listUrl, "reluaの共有リスト")}><Share2 size={18} /> 募集リストを共有</button>
+              <button type="button" disabled={!codes.length || !sharedListAvailable || hasLoadFailures} onClick={() => handleShare(listUrl, "reluaの共有リスト")}><Share2 size={18} /> 募集リストを共有</button>
             </div>
             {!!codes.length && !sharedListAvailable && <p className="tool-limit-note">共有リンクの上限を超えています。保存件数を減らしてから作成してください。</p>}
+            {hasLoadFailures && <p className="tool-limit-note">{failedIds.length}件を読み込めなかったため、共有リンクを一時的に無効にしています。時間をおいて再度お試しください。</p>}
           </article>
 
           {/* Backup and restore matter but are rare; folding them keeps the primary actions scannable. */}
@@ -327,7 +409,10 @@ export function SavedDashboard() {
             <ul className="recent-list">
               {recentItems.map((item) => {
                 const entry = recentEntries.find((recent) => recent.id === item.id);
-                return <li key={item.id}><Link href={opportunityPath(item.public_code)}><span>{item.company.name}</span><strong>{item.event_name}</strong></Link><time>{entry ? new Date(entry.viewedAt).toLocaleString("ja-JP") : ""}</time></li>;
+                /* lib/format.ts pins every other timestamp on the site to Asia/Tokyo;
+                   toLocaleString without a timeZone used the browser's local zone
+                   instead, which drifted from the JST convention outside Japan. */
+                return <li key={item.id}><Link href={opportunityPath(item.public_code)}><span>{item.company.name}</span><strong>{item.event_name}</strong></Link><time>{entry ? formatInstantDate(entry.viewedAt) : ""}</time></li>;
               })}
             </ul>
           ) : <p className="local-empty">閲覧履歴はありません。</p>}

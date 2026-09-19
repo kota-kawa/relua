@@ -30,15 +30,26 @@ services:
     env_file:
       - .env
     environment:
+      # ENVIRONMENT decides whether the published `local-development-` secrets are accepted at all, so it
+      # is passed explicitly and defaults to production: an .env that forgets it must fail closed.
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://alljob:alljob_dev_password@db:5432/alljob}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      API_INTERNAL_TOKEN: ${API_INTERNAL_TOKEN:-local-development-internal-token}
-      MCP_API_TOKEN: ${MCP_API_TOKEN:-local-development-mcp-token}
+      # No `:-local-development-...` defaults here. Those values are published in this repository, and
+      # `/mcp` plus the OAuth login are reachable from the internet, so a typo in .env would have handed
+      # out a token anyone can read. `:?` stops the stack instead.
+      API_INTERNAL_TOKEN: ${API_INTERNAL_TOKEN:?set API_INTERNAL_TOKEN in .env}
+      MCP_API_TOKEN: ${MCP_API_TOKEN:?set MCP_API_TOKEN in .env}
       MCP_OAUTH_ENABLED: ${MCP_OAUTH_ENABLED:-false}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8000}
-      MCP_OPERATOR_PASSWORD: ${MCP_OPERATOR_PASSWORD:-local-development-operator-password}
-      SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3100}
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-127.0.0.1}"
+      MCP_OPERATOR_PASSWORD: ${MCP_OPERATOR_PASSWORD:?set MCP_OPERATOR_PASSWORD in .env}
+      SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in .env}
+    # FORWARDED_ALLOW_IPS must name the hop uvicorn actually sees. With `ports: 127.0.0.1:8000:8000` that
+    # hop is the docker bridge gateway (172.16.0.0/12), never 127.0.0.1, so the old default made every
+    # request look like it came from one address and one attacker could spend the operator's login budget.
+    # Never set it to `*`: uvicorn would then trust a client-supplied X-Forwarded-For and the per-IP login
+    # limit could be bypassed by rotating the header.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-127.0.0.1,172.16.0.0/12}"
     depends_on:
       db:
         condition: service_healthy
@@ -52,11 +63,14 @@ services:
       context: ./frontend
       args:
         API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
-        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3100}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in .env}
     environment:
       API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
-      API_INTERNAL_TOKEN: ${API_INTERNAL_TOKEN:-local-development-internal-token}
+      API_INTERNAL_TOKEN: ${API_INTERNAL_TOKEN:?set API_INTERNAL_TOKEN in .env}
       API_INTERNAL_TIMEOUT_MS: ${API_INTERNAL_TIMEOUT_MS:-10000}
+      # canonical URLs, sitemap and structured data are all built from this origin, and the frontend
+      # refuses to start without it rather than silently emitting localhost URLs into production HTML.
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in .env}
     depends_on:
       - api
     ports:

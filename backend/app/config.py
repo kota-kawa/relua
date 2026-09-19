@@ -1,14 +1,22 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: Secrets shipped in `.env.example` and in this repository carry this prefix. Anyone who can read the
+#: repository knows them, so they are treated as "no secret at all" rather than as a weak one.
+DEVELOPMENT_SECRET_PREFIX = "local-development-"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
 
     app_name: str = "All Job API"
-    environment: str = "development"
+    #: A Literal, not a free string: the old `environment.lower() == "production"` check treated every
+    #: typo ("prod", "Production", an unset variable) as development and silently disabled the secret
+    #: guard below. An unknown value must refuse to boot instead of quietly downgrading the checks.
+    environment: Literal["development", "production"] = "development"
     database_url: str = "sqlite:///./alljob.db"
     redis_url: str = "redis://localhost:6379/0"
     api_internal_token: str = Field(default="local-development-internal-token", min_length=16)
@@ -43,16 +51,31 @@ class Settings(BaseSettings):
         return self.site_url.rstrip("/")
 
     @model_validator(mode="after")
-    def reject_development_secrets_in_production(self) -> "Settings":
-        if self.environment.lower() == "production":
-            secrets_in_use = (self.api_internal_token, self.mcp_api_token)
-            if any(secret.startswith("local-development-") for secret in secrets_in_use):
-                raise ValueError("production requires unique API_INTERNAL_TOKEN and MCP_API_TOKEN values")
-            if self.mcp_oauth_enabled:
-                if self.mcp_operator_password.startswith("local-development-"):
-                    raise ValueError("production requires a unique MCP_OPERATOR_PASSWORD value")
-                if not self.mcp_public_url.startswith("https://"):
-                    raise ValueError("production requires an https MCP_PUBLIC_URL")
+    def reject_published_development_secrets(self) -> "Settings":
+        """Refuse to start while a secret that is published in this repository is actually in use.
+
+        `/mcp` and the OAuth login are reachable from the public internet through `relua.conf`, so a
+        `local-development-` token is an open door, not a placeholder. The only escape hatch is an
+        explicit `ENVIRONMENT=development`: the check is written as "development opts in" rather than
+        "production opts out" so that a missing or misspelled ENVIRONMENT fails closed. docker-compose
+        pairs this with `${VAR:?}` forms, so an unset secret stops the stack before this is reached.
+        """
+        if self.environment == "development":
+            return self
+
+        secrets_in_use = {
+            "API_INTERNAL_TOKEN": self.api_internal_token,
+            "MCP_API_TOKEN": self.mcp_api_token,
+        }
+        if self.mcp_oauth_enabled:
+            secrets_in_use["MCP_OPERATOR_PASSWORD"] = self.mcp_operator_password
+        published = sorted(
+            name for name, secret in secrets_in_use.items() if secret.startswith(DEVELOPMENT_SECRET_PREFIX)
+        )
+        if published:
+            raise ValueError(f"{self.environment} requires unique values for: {', '.join(published)}")
+        if self.mcp_oauth_enabled and not self.mcp_public_url.startswith("https://"):
+            raise ValueError(f"{self.environment} requires an https MCP_PUBLIC_URL")
         return self
 
 

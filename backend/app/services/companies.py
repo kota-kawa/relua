@@ -5,7 +5,7 @@ from difflib import SequenceMatcher
 from typing import Any, Literal
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import func, literal, or_, select
+from sqlalchemy import func, literal, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
@@ -14,6 +14,7 @@ from app.models import (
     PUBLIC_CODE_LENGTH,
     AuditLog,
     CollectionCheck,
+    CollectionRequestRecord,
     CollectionSource,
     CollectionTarget,
     Company,
@@ -39,6 +40,26 @@ assert set(COMPANY_PROFILE_FIELDS) == set(COMPANY_PROFILE_FIELD_NAMES)
 
 CompanyMatchType = Literal["canonical_exact", "alias_exact", "partial", "fuzzy"]
 COMPANY_FUZZY_THRESHOLD = 0.3
+
+#: LIKE/ILIKE has no default escape character in either PostgreSQL or SQLite, so one has to be
+#: declared on every comparison that uses a pattern built from user input. Mirrors
+#: services/opportunities.py's LIKE_ESCAPE_CHARACTER/_like_contains rather than importing them:
+#: opportunities.py already imports company_name_filter etc. from this module, so importing back
+#: from it here would be circular.
+LIKE_ESCAPE_CHARACTER = "\\"
+
+
+def _like_contains(value: str) -> str:
+    """Build a ``%...%`` pattern that matches the caller's text literally.
+
+    Without escaping, a company search of "%" matches every row - and is then reported to the user
+    as a keyword hit - while "_" matches any single character, and neither pattern can use an index.
+    Every ilike() given one of these patterns must also pass escape=LIKE_ESCAPE_CHARACTER.
+    """
+    escaped = value.replace(LIKE_ESCAPE_CHARACTER, LIKE_ESCAPE_CHARACTER * 2)
+    for wildcard in ("%", "_"):
+        escaped = escaped.replace(wildcard, LIKE_ESCAPE_CHARACTER + wildcard)
+    return f"%{escaped}%"
 
 
 class CompanyIdentityValidationError(Exception):
@@ -122,9 +143,20 @@ def get_or_create_company(db: Session, name: str) -> Company:
     if company is not None:
         return company
     normalized = normalize_company_name(name)
-    company = Company(name=name, normalized_name=normalized, public_code=_unique_company_public_code(db))
-    db.add(company)
-    db.flush()
+    # Look-then-insert is not atomic: two concurrent postings naming the same new company both miss
+    # above and race into the INSERT, and the loser would otherwise surface companies.name /
+    # normalized_name UNIQUE as a raw IntegrityError, i.e. a 500 for a perfectly ordinary write.
+    # The savepoint keeps that failure from poisoning the outer transaction so the winner's row can
+    # simply be re-read - the same recovery add_company_alias already performs.
+    try:
+        with db.begin_nested():
+            company = Company(name=name, normalized_name=normalized, public_code=_unique_company_public_code(db))
+            db.add(company)
+            db.flush()
+    except IntegrityError:
+        company = find_company(db, name)
+        if company is None:
+            raise
     return company
 
 
@@ -214,7 +246,7 @@ def resolve_company_candidates(
     if alias is not None:
         return [CompanyCandidate(alias.company, "alias_exact", alias.alias, 1.0)]
 
-    normalized_term = f"%{normalized}%"
+    normalized_term = _like_contains(normalized)
     if db.get_bind().dialect.name == "postgresql":
         alias_score = (
             select(func.coalesce(func.max(func.similarity(CompanyAlias.normalized_alias, normalized)), 0.0))
@@ -228,9 +260,11 @@ def resolve_company_candidates(
                 select(Company)
                 .where(
                     or_(
-                        Company.normalized_name.ilike(normalized_term),
+                        Company.normalized_name.ilike(normalized_term, escape=LIKE_ESCAPE_CHARACTER),
                         Company.normalized_name.op("%")(literal(normalized)),
-                        Company.aliases.any(CompanyAlias.normalized_alias.ilike(normalized_term)),
+                        Company.aliases.any(
+                            CompanyAlias.normalized_alias.ilike(normalized_term, escape=LIKE_ESCAPE_CHARACTER)
+                        ),
                         Company.aliases.any(CompanyAlias.normalized_alias.op("%")(literal(normalized))),
                     )
                 )
@@ -512,8 +546,36 @@ def _latest(*values: Any) -> Any:
     return max((value for value in values if value is not None), default=None)
 
 
-def _earliest(*values: Any) -> Any:
-    return min((value for value in values if value is not None), default=None)
+def _earliest_due(*values: Any) -> Any:
+    """Merge two next_check_at values, keeping the soonest re-check.
+
+    A NULL next_check_at is not "unknown, ignore it": list_collection_targets(due_only=True) reads it
+    as "due now", so it is the earliest value there is. Taking MIN over the non-NULL values instead
+    would push a never-checked company's re-check out by the surviving target's whole interval.
+    """
+    if any(value is None for value in values):
+        return None
+    return min(values, default=None)
+
+
+def _remap_collection_request_records(db: Session, *, entity_type: str, old_id: int, new_id: int) -> int:
+    """Point replayable collection writes at the row that survived a merge.
+
+    ``collection_request_records.entity_id`` is a plain string with no foreign key, so deleting the
+    row it names leaves the idempotency record dangling.  Replaying that request_id then makes
+    create_collection_target / add_collection_source resolve an id that no longer exists and raise
+    ``RuntimeError`` - a 500 for a retry that is supposed to be a silent no-op.  ``company_request_records``
+    has always been remapped this way in merge_company; this closes the same gap on the collection side.
+    """
+    result = db.execute(
+        update(CollectionRequestRecord)
+        .where(
+            CollectionRequestRecord.entity_type == entity_type,
+            CollectionRequestRecord.entity_id == str(old_id),
+        )
+        .values(entity_id=str(new_id))
+    )
+    return int(result.rowcount or 0)
 
 
 def _merge_collection_targets(
@@ -531,7 +593,7 @@ def _merge_collection_targets(
         select(CollectionTarget).where(CollectionTarget.company_id == target_company_id).with_for_update()
     )
     summary = {"collection_targets_merged": 0, "collection_sources_moved": 0, "collection_sources_deduplicated": 0,
-               "collection_checks_moved": 0}
+               "collection_checks_moved": 0, "collection_request_records_remapped": 0}
     if source_target is None:
         return summary
 
@@ -543,17 +605,21 @@ def _merge_collection_targets(
     target_sources = list(
         db.scalars(select(CollectionSource).where(CollectionSource.collection_target_id == target_target.id).with_for_update())
     )
-    known_urls = {item.url for item in target_sources}
+    source_by_url = {item.url: item for item in target_sources}
     source_sources = list(
         db.scalars(select(CollectionSource).where(CollectionSource.collection_target_id == source_target.id).with_for_update())
     )
     for item in source_sources:
-        if item.url in known_urls:
+        surviving = source_by_url.get(item.url)
+        if surviving is not None:
+            summary["collection_request_records_remapped"] += _remap_collection_request_records(
+                db, entity_type="collection_source", old_id=item.id, new_id=surviving.id
+            )
             db.delete(item)
             summary["collection_sources_deduplicated"] += 1
         else:
             item.collection_target_id = target_target.id
-            known_urls.add(item.url)
+            source_by_url[item.url] = item
             summary["collection_sources_moved"] += 1
 
     source_checks = list(
@@ -573,12 +639,21 @@ def _merge_collection_targets(
     target_target.check_interval_days = min(target_target.check_interval_days, source_target.check_interval_days)
     target_target.is_active = target_target.is_active or source_target.is_active
     target_target.last_checked_at = _latest(target_target.last_checked_at, source_target.last_checked_at)
-    target_target.next_check_at = _earliest(target_target.next_check_at, source_target.next_check_at)
+    target_target.next_check_at = _earliest_due(target_target.next_check_at, source_target.next_check_at)
     target_target.last_found_at = _latest(target_target.last_found_at, source_target.last_found_at)
     if source_was_latest:
+        # last_checked_at and last_check_result describe the same event, so they move together or not
+        # at all.  Migration 20260820_0012 took MAX(last_checked_at) while leaving the keeper's own
+        # (often NULL) last_check_result behind, which makes _check_status report "needs_review" for a
+        # target that had in fact just been checked; the follow-up revision repairs those rows.
         target_target.last_check_result = source_target.last_check_result
     if target_target.selection_reason is None:
         target_target.selection_reason = source_target.selection_reason
+    # The losing target's id disappears below, so any idempotency record naming it has to follow the
+    # surviving row before the delete.
+    summary["collection_request_records_remapped"] += _remap_collection_request_records(
+        db, entity_type="collection_target", old_id=source_target.id, new_id=target_target.id
+    )
     # CollectionTarget also owns sources/checks through delete-orphan relationships.  Refresh the
     # old collections after moving their rows before deleting the now-redundant target.
     db.flush()
@@ -638,9 +713,20 @@ def merge_company(
     target_aliases = list(
         db.scalars(select(CompanyAlias).where(CompanyAlias.company_id == target.id).with_for_update())
     )
-    source_names = [(source.name, source.normalized_name)] + [
+    # The source's canonical name and one of its own aliases can normalize to the same value
+    # ("ユニ・チャーム株式会社" and "ユニチャーム" both become "ユニチャーム").  Kept as two entries, the
+    # alias loop below re-parents that single alias row on the first pass and then deletes the row it
+    # just moved on the second, losing the old name for resolution.  Deduplicate by normalized value,
+    # keeping the canonical spelling, which is the one worth preserving as the alias text.
+    seen_normalized: set[str] = set()
+    source_names: list[tuple[str, str]] = []
+    for name, normalized in [(source.name, source.normalized_name)] + [
         (alias.alias, alias.normalized_alias) for alias in source_aliases
-    ]
+    ]:
+        if normalized in seen_normalized:
+            continue
+        seen_normalized.add(normalized)
+        source_names.append((name, normalized))
     target_alias_by_normalized = {alias.normalized_alias: alias for alias in target_aliases}
     for _name, normalized in source_names:
         canonical = db.scalar(select(Company).where(Company.normalized_name == normalized))
@@ -773,14 +859,14 @@ def company_name_filter(company_name: str) -> ColumnElement[bool]:
 
 def company_keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
     """Match Company rows by substring and, on PostgreSQL, typo-tolerant trigram similarity."""
-    term = f"%{query}%"
+    term = _like_contains(query)
     normalized_query = normalize_company_name(query)
-    normalized_term = f"%{normalized_query}%"
+    normalized_term = _like_contains(normalized_query)
     matches: list[ColumnElement[bool]] = [
-        Company.name.ilike(term),
-        Company.normalized_name.ilike(normalized_term),
-        Company.aliases.any(CompanyAlias.alias.ilike(term)),
-        Company.aliases.any(CompanyAlias.normalized_alias.ilike(normalized_term)),
+        Company.name.ilike(term, escape=LIKE_ESCAPE_CHARACTER),
+        Company.normalized_name.ilike(normalized_term, escape=LIKE_ESCAPE_CHARACTER),
+        Company.aliases.any(CompanyAlias.alias.ilike(term, escape=LIKE_ESCAPE_CHARACTER)),
+        Company.aliases.any(CompanyAlias.normalized_alias.ilike(normalized_term, escape=LIKE_ESCAPE_CHARACTER)),
     ]
     if db.get_bind().dialect.name == "postgresql" and len(normalized_query) >= 3:
         matches.extend(

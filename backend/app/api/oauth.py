@@ -31,8 +31,10 @@ from app.services.oauth import (
     refresh_access_token,
     register_client,
     revoke_token,
+    validate_scope,
 )
 from app.services.rate_limit import (
+    UNRESOLVED_CLIENT_IP,
     RateLimitExceeded,
     RateLimitUnavailable,
     clear_login_rate_limit,
@@ -66,7 +68,12 @@ def _oauth_json_error(exc: OAuthError) -> JSONResponse:
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    """The peer address uvicorn resolved, after --proxy-headers has been applied.
+
+    This is only a real client address when --forwarded-allow-ips names the proxy in front of us; see
+    the rate limiter, which deliberately does not rely on this value alone.
+    """
+    return request.client.host if request.client else UNRESOLVED_CLIENT_IP
 
 
 def _redirect_with(redirect_uri: str, params: dict[str, str]) -> RedirectResponse:
@@ -353,6 +360,9 @@ def _check_authorize_grant(params: dict[str, str]) -> None:
     challenge = params.get("code_challenge") or ""
     if not 43 <= len(challenge) <= 128:
         raise OAuthError("invalid_request", "PKCE の code_challenge が必要です")
+    # Checked here, before the password form is shown, so an unsupported scope comes back to the client
+    # as a redirect error rather than being stored and then silently ignored at the resource.
+    validate_scope(params.get("scope"))
     check_resource(params.get("resource"))
 
 
@@ -420,7 +430,7 @@ def authorize_submit(
 
     identifier = _client_ip(request)
     try:
-        enforce_login_rate_limit(identifier)
+        enforce_login_rate_limit(identifier, client.client_id)
     except RateLimitExceeded:
         return _error_page("パスワードの試行回数が上限に達しました。しばらく待って再試行してください。", 429)
     except RateLimitUnavailable:
@@ -433,7 +443,7 @@ def authorize_submit(
             fields=params,
             error="パスワードが正しくありません。",
         )
-    clear_login_rate_limit(identifier)
+    clear_login_rate_limit(identifier, client.client_id)
 
     code = issue_authorization_code(
         db,

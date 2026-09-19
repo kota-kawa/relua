@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from pydantic.json_schema import WithJsonSchema
 
+from app.dates import years_ahead_in_tokyo
+
 SHORTENER_HOSTS = {
     "bit.ly",
     "goo.gl",
@@ -331,7 +333,10 @@ class OpportunityInput(BaseModel):
             raise ValueError("締め切りは募集開始日以降にしてください")
         if self.event_format == "オンライン" and self.location:
             raise ValueError("開催形式がオンラインの場合、開催地はnullにしてください")
-        limit = date.today().replace(year=date.today().year + 5)
+        # years_ahead_in_tokyo, not date.today().replace(year=...): the latter raises "day is out of
+        # range for month" on a leap day (2028-02-29 -> 2033), which would fail *every* write with an
+        # unrelated 422, and it reads the server's local date instead of the JST business day.
+        limit = years_ahead_in_tokyo(5)
         for field_name in ("deadline", "event_start_date", "event_end_date", "recruitment_start_date"):
             value = getattr(self, field_name)
             if value and not (date(2000, 1, 1) <= value <= limit):
@@ -987,6 +992,10 @@ class MCPWriteResponse(BaseModel):
 
 class MCPUpsertResponse(BaseModel):
     result: Literal["created", "existing"]
+    #: Carried here for the same reason as on every other write response: without it a retry that the
+    #: idempotency record already absorbed is indistinguishable from a fresh create, and an agent that
+    #: resends the same request_id after a timeout concludes it has written two records.
+    idempotent_replay: bool = False
     message: str
     opportunity: OpportunityResponse
     warnings: list[ErrorItem] = []

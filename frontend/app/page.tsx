@@ -30,8 +30,12 @@ export async function generateMetadata({ searchParams }: { searchParams: Promise
   const { masters, result } = await loadListingSnapshot(params);
   const catalog = getSeoFacetCatalog(masters);
   const preliminary = getListingSeo(params, { catalog });
-  const requestedPage = Number(first(params, "page") ?? 1);
-  if (Number.isSafeInteger(requestedPage) && requestedPage > 1 && requestedPage > result.total_pages) notFound();
+  // Same basis the page body uses (`result.page`, what the API actually
+  // answered) rather than re-parsing the raw `page` query param: the two used
+  // to disagree whenever `listingApiParams` dropped an unusable page value
+  // before the request, which would leave metadata computing 404-worthiness
+  // from a number the API was never asked for.
+  if (result.page > 1 && result.page > result.total_pages) notFound();
   if (preliminary.facet && result.total === 0) notFound();
   return listingMetadata(params, {
     catalog,

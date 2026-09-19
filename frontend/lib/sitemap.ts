@@ -64,6 +64,85 @@ function companyLastModified(company: CompanySummary) {
     .at(-1) ?? company.updated_at;
 }
 
+/**
+ * The sitemap protocol rejects a file outright past 50,000 URLs (or 50MB),
+ * rather than indexing the URLs under the limit and dropping the rest, so a
+ * single-file sitemap has no room to degrade gracefully once inventory crosses
+ * that line. The standard answer is a sitemap index pointing at numbered child
+ * sitemaps, which is what `chunkSitemapEntries` and `sitemapIndexXml` below
+ * exist for.
+ */
+export const SITEMAP_URL_LIMIT = 50_000;
+
+/**
+ * Deliberately under `SITEMAP_URL_LIMIT`. The limit applies to a file as
+ * served, and the 50MB ceiling can bite before the URL count does, so leaving
+ * headroom means inventory growth between two crawls cannot push a child
+ * sitemap over either bound.
+ */
+export const SITEMAP_CHUNK_SIZE = 45_000;
+
+/**
+ * An index may itself list at most `SITEMAP_URL_LIMIT` child sitemaps, so this
+ * is the point where even the split representation runs out. At
+ * `SITEMAP_CHUNK_SIZE` URLs per child that is over two billion URLs — far past
+ * anything this service will hold — but refusing loudly beats emitting a
+ * document search engines discard without telling anyone.
+ */
+export class SitemapTooLargeError extends Error {
+  constructor(count: number) {
+    super(
+      `Sitemap has ${count} URLs, which does not fit in an index of `
+      + `${SITEMAP_URL_LIMIT} child sitemaps at ${SITEMAP_CHUNK_SIZE} URLs each.`,
+    );
+    this.name = "SitemapTooLargeError";
+  }
+}
+
+/** Split a full entry list into child-sitemap-sized pages, numbered from 1. */
+export function chunkSitemapEntries(entries: MetadataRoute.Sitemap): MetadataRoute.Sitemap[] {
+  if (entries.length > SITEMAP_URL_LIMIT * SITEMAP_CHUNK_SIZE) {
+    throw new SitemapTooLargeError(entries.length);
+  }
+  // One empty page rather than none, so an empty dataset still produces a
+  // valid `/sitemap.xml` instead of an index that lists nothing.
+  if (entries.length === 0) return [[]];
+  const pages: MetadataRoute.Sitemap[] = [];
+  for (let index = 0; index < entries.length; index += SITEMAP_CHUNK_SIZE) {
+    pages.push(entries.slice(index, index + SITEMAP_CHUNK_SIZE));
+  }
+  return pages;
+}
+
+/** The path a child sitemap is served at. Page numbers are 1-based. */
+export function childSitemapPath(page: number) {
+  return `/sitemaps/${page}.xml`;
+}
+
+function newestLastModified(entries: MetadataRoute.Sitemap) {
+  return entries
+    .map((entry) => (entry.lastModified instanceof Date
+      ? entry.lastModified.toISOString()
+      : entry.lastModified))
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
+}
+
+/** Render the parent index that points at every child sitemap. */
+export function sitemapIndexXml(pages: MetadataRoute.Sitemap[], base = siteOrigin()) {
+  const body = pages.map((entries, index) => {
+    const lastModified = newestLastModified(entries);
+    return [
+      "<sitemap>",
+      `<loc>${escapeXml(`${base}${childSitemapPath(index + 1)}`)}</loc>`,
+      lastModified ? `<lastmod>${escapeXml(lastModified)}</lastmod>` : "",
+      "</sitemap>",
+    ].filter(Boolean).join("\n");
+  }).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${body}\n</sitemapindex>\n`;
+}
+
 /** Fetch a complete, internally consistent sitemap dataset. */
 export async function getSitemapEntries(): Promise<MetadataRoute.Sitemap> {
   const base = siteOrigin();
@@ -80,7 +159,7 @@ export async function getSitemapEntries(): Promise<MetadataRoute.Sitemap> {
   );
   const categoryPages = categorySitemapEntries(base, activeOpportunities, indexableFacetValues(masters));
 
-  return [
+  const entries = [
     ...staticPages.map((page) => ({ ...page, url: `${base}${page.url}` })),
     ...categoryPages,
     ...companies.map((company) => ({
@@ -96,6 +175,8 @@ export async function getSitemapEntries(): Promise<MetadataRoute.Sitemap> {
       priority: 0.8,
     })),
   ];
+
+  return entries;
 }
 
 function escapeXml(value: string) {

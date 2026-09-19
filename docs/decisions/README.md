@@ -24,5 +24,9 @@
 | [`0016-seo-outage-resilience-and-reviewed-facets.md`](./0016-seo-outage-resilience-and-reviewed-facets.md) | SEOデータを正常スナップショットで保護し、レビュー済みカテゴリallowlistを安定運用する | Accepted |
 | [`0017-company-profile-and-public-company-page.md`](./0017-company-profile-and-public-company-page.md) | 企業の事業内容をMCPだけで記録し、公開コードの企業ページで見せる | Accepted |
 | [`0018-seo-snapshot-blocking-refresh.md`](./0018-seo-snapshot-blocking-refresh.md) | 期限切れSEOスナップショットを例外ではなくブロッキング再取得で置き換える | Accepted |
+| [`0019-fail-closed-secrets-and-trusted-proxy.md`](./0019-fail-closed-secrets-and-trusted-proxy.md) | 公開済みの開発用シークレットと未設定の公開オリジンで起動を止める | Accepted |
+| [`0020-mcp-error-boundary-and-master-generation.md`](./0020-mcp-error-boundary-and-master-generation.md) | MCPツールの失敗を一箇所で処理し、マスタキャッシュをスキーマ世代で回す | Accepted |
+| [`0021-discovered-sources-stay-inactive.md`](./0021-discovered-sources-stay-inactive.md) | 確認記録で見つかった収集元は無効状態で登録する | Accepted |
+| [`0022-sitemap-index-split.md`](./0022-sitemap-index-split.md) | サイトマップを上限超過でインデックス分割する | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

@@ -6,7 +6,7 @@ import { ExternalLink, Flag } from "@/components/icons";
 import { JsonLd } from "@/components/json-ld";
 import { OpportunityCard } from "@/components/opportunity-card";
 import { CONTACT_FORM_URL } from "@/lib/constants";
-import { formatDate } from "@/lib/format";
+import { formatInstantDate } from "@/lib/format";
 import { companyMetadata } from "@/lib/seo";
 import { loadCompanySnapshot } from "@/lib/seo-data";
 import { companyPath } from "@/lib/site";
@@ -142,7 +142,7 @@ export default async function CompanyPage({ params }: Props) {
           </div>
 
           <footer className="company-footer">
-            <p className="updated-note">企業情報の更新：{formatDate(company.updated_at.slice(0, 10))}</p>
+            <p className="updated-note">企業情報の更新：{formatInstantDate(company.updated_at)}</p>
             <a className="correction-link" href={CONTACT_FORM_URL} target="_blank" rel="noopener noreferrer">
               <Flag size={13} /> 掲載内容の訂正・削除を依頼する
             </a>

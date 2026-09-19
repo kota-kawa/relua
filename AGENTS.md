@@ -55,6 +55,10 @@
 | [`docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md`](./docs/decisions/0016-seo-outage-resilience-and-reviewed-facets.md) | SEOデータの障害耐性、レビュー済みカテゴリallowlist、サイトマップ503の理由 |
 | [`docs/decisions/0017-company-profile-and-public-company-page.md`](./docs/decisions/0017-company-profile-and-public-company-page.md) | 企業プロフィールをMCP限定で書く理由と、企業ページのURL・index条件 |
 | [`docs/decisions/0018-seo-snapshot-blocking-refresh.md`](./docs/decisions/0018-seo-snapshot-blocking-refresh.md) | 期限切れSEOスナップショットを待って再取得する理由と、読み取りAPI再試行の条件 |
+| [`docs/decisions/0019-fail-closed-secrets-and-trusted-proxy.md`](./docs/decisions/0019-fail-closed-secrets-and-trusted-proxy.md) | 必須シークレット・公開オリジン未設定で起動を止める理由と、信頼するプロキシの範囲 |
+| [`docs/decisions/0020-mcp-error-boundary-and-master-generation.md`](./docs/decisions/0020-mcp-error-boundary-and-master-generation.md) | MCPの例外境界・失敗記録の一元化と、マスタキャッシュをスキーマ世代で回す理由 |
+| [`docs/decisions/0021-discovered-sources-stay-inactive.md`](./docs/decisions/0021-discovered-sources-stay-inactive.md) | 確認記録で見つけた収集元を無効状態で登録する理由 |
+| [`docs/decisions/0022-sitemap-index-split.md`](./docs/decisions/0022-sitemap-index-split.md) | サイトマップを上限超過でインデックス分割する理由 |
 
 ## 変更時のルール
 
@@ -70,7 +74,9 @@
 
 ```bash
 cd backend && DATABASE_URL=sqlite:// pytest && ruff check .
-cd ../frontend && npm test && npm run lint && npm run build
+cd ../frontend && npm test && npm run lint && NEXT_PUBLIC_SITE_URL=http://localhost:3100 npm run build
 ```
+
+`npm run build` は `NEXT_PUBLIC_SITE_URL` を要求します。`next build` がこの値を静的ページの canonical・OGP・JSON-LD へ焼き込むため、未設定のビルドを通すと localhost を指したままのページが出来上がるからです（ADR-0019）。
 
 PostgreSQL の Alembic と `pg_trgm` の確認は CI の PostgreSQL ジョブを正本とします。環境差異が疑われる場合は [`docs/knowledge/debugging.md`](./docs/knowledge/debugging.md) を参照してください。

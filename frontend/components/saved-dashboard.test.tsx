@@ -65,10 +65,15 @@ describe("SavedDashboard", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    /* `Navigator` declares clipboard/share as required (non-optional, read-only)
+       properties, so `delete` on that type is a compile error under either
+       spelling. Casting through `unknown` to a plain index-signature type
+       satisfies `delete` without touching runtime behavior. */
+    const nav = navigator as unknown as Record<string, unknown>;
     if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
-    else delete (navigator as Navigator & Record<string, unknown>).clipboard;
+    else delete nav.clipboard;
     if (originalShare) Object.defineProperty(navigator, "share", originalShare);
-    else delete (navigator as Navigator & Record<string, unknown>).share;
+    else delete nav.share;
   });
 
   it("copies the transfer link directly without opening the native share dialog", async () => {
@@ -84,5 +89,38 @@ describe("SavedDashboard", () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/import#c=A1B2C3D4`));
     expect(share).not.toHaveBeenCalled();
+  });
+
+  it("revalidates a cached entry once it is older than the cache TTL", async () => {
+    /* Fetching only the ids that changed is what keeps one bookmark toggle from
+       refetching the whole list, but an entry kept forever would mean a closed
+       opening keeps rendering: `loadOne` fetches `no-store` precisely because a
+       saved entry can be withdrawn while this page is open, and a stale hit
+       never reaches `missingIds`, so it is never dropped from localStorage or
+       left out of a transfer link. */
+    const fetchedIds = (): string[][] => loadOpportunities.mock.calls.map((call) => call[0] as string[]);
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<SavedDashboard />);
+      await waitFor(() => expect(fetchedIds()).toContainEqual(["job-1"]));
+      loadOpportunities.mockClear();
+
+      // A second bookmark arriving inside the TTL only costs a fetch for that id.
+      loadOpportunities.mockResolvedValue({ items: [], missingIds: [], failedIds: [] });
+      window.localStorage.setItem("relua.bookmarks.v1", JSON.stringify(["job-1", "job-2"]));
+      window.dispatchEvent(new Event("relua:local-data-changed"));
+      await waitFor(() => expect(fetchedIds()).toContainEqual(["job-2"]));
+      expect(fetchedIds()).not.toContainEqual(["job-1", "job-2"]);
+      loadOpportunities.mockClear();
+
+      // Past the TTL the cached entry is fetched again rather than trusted.
+      vi.advanceTimersByTime(6 * 60 * 1000);
+      window.localStorage.setItem("relua.bookmarks.v1", JSON.stringify(["job-1"]));
+      window.dispatchEvent(new Event("relua:local-data-changed"));
+      await waitFor(() => expect(fetchedIds()).toContainEqual(["job-1"]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -310,18 +310,18 @@ export function opportunityMetadata(item: Opportunity): Metadata {
 
 
 /**
- * A company page earns a place in search only when it says something a listing
- * page does not: a written profile, plus at least one opening a visitor can
- * still act on. Both halves of the profile are required because either alone
- * renders as a heading with almost nothing under it. The API applies the same
- * rule when it lists companies for the sitemap.
+ * A company page earns a place in search on its written profile alone. Both
+ * halves are required because either one on its own renders as a heading with
+ * almost nothing under it; the enforced minimum lengths do the rest.
+ *
+ * Current openings are deliberately not part of this. They come and go on their
+ * own schedule, so requiring one would flip the same URL between indexed and
+ * not — the inventory-driven churn ADR-0016 took out of the category pages —
+ * while the profile that justifies the page stays put the whole time. The API
+ * applies the same rule when it lists companies for the sitemap.
  */
-export function companyProfileIsComplete(company: CompanySummary) {
+export function companyIsIndexable(company: CompanySummary) {
   return Boolean(company.business_summary?.trim()) && Boolean(company.description?.trim());
-}
-
-export function companyIsIndexable(company: CompanyDetail) {
-  return companyProfileIsComplete(company) && company.current_opportunities.some(opportunityIsIndexable);
 }
 
 export function companyMetadata(company: CompanyDetail): Metadata {

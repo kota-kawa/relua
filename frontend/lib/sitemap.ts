@@ -7,6 +7,7 @@ import type { CompanySummary, Opportunity } from "@/lib/types";
 
 const staticPages: MetadataRoute.Sitemap = [
   { url: "", changeFrequency: "daily", priority: 1 },
+  { url: "/companies", changeFrequency: "weekly", priority: 0.6 },
   { url: "/about", changeFrequency: "yearly", priority: 0.5 },
   { url: "/terms", changeFrequency: "yearly", priority: 0.3 },
   { url: "/policy", changeFrequency: "yearly", priority: 0.3 },
@@ -149,8 +150,8 @@ export async function getSitemapEntries(): Promise<MetadataRoute.Sitemap> {
   const [opportunities, masters, companies] = await Promise.all([
     getAllOpportunities(["status-01", "status-02", "status-04"]),
     getMasters(),
-    // The API applies the same "described and currently hiring" rule the pages
-    // use for robots, so this list and companyIsIndexable cannot disagree.
+    // The API applies the same "has a written profile" rule the pages use for
+    // robots, so this list and companyIsIndexable cannot disagree.
     getAllIndexableCompanies(),
   ]);
   const indexableOpportunities = opportunities.filter(opportunityIsIndexable);

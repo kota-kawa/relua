@@ -22,7 +22,7 @@ def list_companies(
     db: Annotated[Session, Depends(get_db)],
     indexable: bool = Query(
         default=True,
-        description="説明文があり現在の募集を持つ企業だけを返す。現在はtrueのみ対応。",
+        description="プロフィールが登録済みの企業だけを返す。現在はtrueのみ対応。",
     ),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),

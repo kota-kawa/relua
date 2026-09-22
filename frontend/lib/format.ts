@@ -108,6 +108,7 @@ export function selected(params: Record<string, string | string[] | undefined>, 
 export function withQuery(
   params: Record<string, string | string[] | undefined>,
   changes: Record<string, string | undefined>,
+  basePath = "/",
 ) {
   const next = new URLSearchParams();
   const omitDefaultStatus = hasDefaultOpenStatus(params);
@@ -120,7 +121,7 @@ export function withQuery(
     if (value) next.set(key, value);
     else next.delete(key);
   });
-  return `/?${next.toString()}`;
+  return `${basePath}?${next.toString()}`;
 }
 
 /** Builds a listing URL from the current filter form and always resets pagination. */

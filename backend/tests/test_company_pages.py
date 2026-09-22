@@ -104,7 +104,9 @@ def test_company_page_splits_current_openings_from_finished_ones(db):
     assert payload["public_code"] == company.public_code
     assert payload["url"].endswith(f"/companies/{company.public_code}")
     assert [item["id"] for item in payload["past_opportunities"]] == [closed.id]
-    assert payload["openings_updated_at"] == max(item.updated_at for item in page.current)
+    # Finished postings count towards the date as well: they are on the page, and leaving them out
+    # would move it backwards on the day a company's last current opening expires.
+    assert payload["openings_updated_at"] == max(item.updated_at for item in page.current + page.past)
 
 
 def test_a_posting_whose_deadline_passed_while_still_marked_open_is_not_current(db):
@@ -123,20 +125,10 @@ def test_a_posting_whose_deadline_passed_while_still_marked_open_is_not_current(
     assert [item.id for item in page.past] == [stale.id]
 
 
-def test_indexable_listing_requires_a_full_profile_and_a_current_opening(db):
+def test_indexable_listing_requires_a_full_profile(db):
     today = today_in_tokyo()
     profiled_and_open = profiled_company(db, "株式会社アイ")
     posting(db, profiled_and_open.name, request_id="idx-1", source_url="https://example.com/idx-1")
-
-    profiled_but_closed = profiled_company(db, "株式会社ロー")
-    posting(
-        db,
-        profiled_but_closed.name,
-        request_id="idx-2",
-        recruitment_status="締切",
-        deadline=(today - timedelta(days=2)).isoformat(),
-        source_url="https://example.com/idx-2",
-    )
 
     unprofiled = profiled_company(db, "株式会社ハー", profile={})
     posting(db, unprofiled.name, request_id="idx-3", source_url="https://example.com/idx-3")
@@ -159,6 +151,60 @@ def test_indexable_listing_requires_a_full_profile_and_a_current_opening(db):
     assert result.total == 1
     assert result.items[0].current_opportunity_count == 1
     assert result.items[0].openings_updated_at is not None
+
+
+def test_a_described_company_stays_listed_after_its_last_opening_ends(db):
+    """The profile is the reason the page exists, so it does not leave the index with the postings.
+
+    The listed last-modified date has to keep spanning the finished postings too: taken from the
+    current openings alone it would jump back to the profile date the day the last one expired.
+    """
+    today = today_in_tokyo()
+    closed = profiled_company(db, "株式会社ロー")
+    finished = posting(
+        db,
+        closed.name,
+        request_id="idx-2",
+        recruitment_status="締切",
+        deadline=(today - timedelta(days=2)).isoformat(),
+        source_url="https://example.com/idx-2",
+    )
+    never_posted = profiled_company(db, "株式会社ワン")
+
+    result = list_indexable_companies(db, today=today)
+    listed = {item.company.id: item for item in result.items}
+
+    assert result.total == 2
+    assert listed[closed.id].current_opportunity_count == 0
+    # Compared without tzinfo: the aggregate reads the column straight back, and SQLite returns it
+    # naive where the mapped attribute is aware.
+    assert listed[closed.id].openings_updated_at.replace(tzinfo=None) == finished.updated_at.replace(tzinfo=None)
+    assert listed[never_posted.id].current_opportunity_count == 0
+    assert listed[never_posted.id].openings_updated_at is None
+
+
+def test_listed_opening_count_excludes_the_finished_postings_it_shares_a_company_with(db):
+    """The aggregate stopped filtering rows when it started including finished ones.
+
+    Current openings are now separated by a CASE inside the count instead, so a company holding
+    both kinds is the case that tells the two apart.
+    """
+    today = today_in_tokyo()
+    company = profiled_company(db, "株式会社マゼ")
+    posting(db, company.name, request_id="mixed-open", source_url="https://example.com/mixed-open")
+    posting(
+        db,
+        company.name,
+        request_id="mixed-closed",
+        recruitment_status="締切",
+        deadline=(today - timedelta(days=4)).isoformat(),
+        source_url="https://example.com/mixed-closed",
+    )
+
+    result = list_indexable_companies(db, today=today)
+
+    assert [item.company.id for item in result.items] == [company.id]
+    assert result.items[0].current_opportunity_count == 1
 
 
 def test_indexable_listing_pages_through_results_without_repeating_companies(db):

@@ -45,6 +45,7 @@ Next.js frontend              FastAPI backend
 | --- | --- | --- |
 | `/` | `frontend/app/page.tsx` | 公開一覧、検索、絞り込み、並び替え、カード／リスト／カレンダー表示 |
 | `/opportunities/[id]` | `frontend/app/opportunities/[id]/page.tsx` | 公開コードをcanonicalとする詳細、SEOメタデータ、構造化データ、保存、カレンダー登録。旧UUIDはproxyで転送 |
+| `/companies` | `frontend/app/companies/page.tsx` | プロフィールを持つ全企業のディレクトリ。名前順、1ページ100件、範囲外と不正な`page`は404 |
 | `/companies/[code]` | `frontend/app/companies/[code]/page.tsx` | 公開コードをcanonicalとする企業ページ。一言説明、事業内容の本文、主な事業、現在の募集、過去の募集、SEOメタデータ、構造化データ |
 | `/saved` | `frontend/app/saved/page.tsx`, `components/saved-dashboard.tsx` | ブックマーク、最近見た募集、JSON/CSV、共有・QR |
 | `/import` | `frontend/app/import/page.tsx`, `components/import-bookmarks.tsx` | 引き継ぎリンクの確認と localStorage へのマージ |
@@ -53,7 +54,7 @@ Next.js frontend              FastAPI backend
 | `/sitemap.xml`, `/sitemaps/[page].xml`, `/robots.txt` | `app/sitemap.xml/route.ts`, `app/sitemaps/[page]/route.ts`, `lib/sitemap.ts`, `robots.ts` | 実行時の募集データと固定allowlistカテゴリから作るcanonical公開URL。45,000件までは単一 `urlset`、超過時は同じURLがサイトマップインデックスになる。部分失敗は503 |
 | エラー境界 | `app/error.tsx` | 想定外の上流失敗を500ではなく再試行可能な画面に落とす |
 
-企業ページは、一言説明（`business_summary`）と事業内容の本文（`description`）の両方が登録済みで、かつ現在の募集（募集予定・募集中・通年募集で締切前／未定）が1件以上ある企業だけをindex対象にし、それ以外は`noindex, follow`とする。
+企業ページは、一言説明（`business_summary`）と事業内容の本文（`description`）の両方が登録済みの企業だけをindex対象にし、それ以外は`noindex, follow`とする。現在の募集の有無は条件に含めない。募集の増減で同じURLがindexと`noindex`を往復しないためで、`/companies`のディレクトリが全企業ページへの恒久的な内部リンクを持つ（ADR-0023）。
 
 一覧の自由検索、並び替え、複合ファセットは`noindex, follow`とし、範囲外ページは404とする。業界、業種、職種、募集種別、開催形式、卒業年度は、`frontend/lib/seo.ts`のレビュー済みallowlistにある単一条件だけをindex対象にし、正常結果が0件なら404とする。件数の5／8閾値は使わず、説明とカテゴリディレクトリをSSRする。詳細は募集予定・募集中・通年募集かつ締切前／未定だけをindex対象にする。
 
@@ -116,7 +117,7 @@ PC幅（921px以上）の一覧画面には独立したスクローラーが2つ
 | `GET /api/v1/opportunities` | `backend/app/api/opportunities.py` | 内部トークン | 公開対象の検索・ページング |
 | `GET /api/v1/opportunities/{id}` | 同上 | 内部トークン | UUIDまたは公開コードによる詳細 |
 | `GET /api/v1/opportunities/{id}/same-company` | 同上 | 内部トークン | 同じ企業の公開募集 |
-| `GET /api/v1/companies` | `backend/app/api/companies.py` | 内部トークン | index対象企業（一言説明と本文あり・現在の募集あり）の一覧 |
+| `GET /api/v1/companies` | `backend/app/api/companies.py` | 内部トークン | index対象企業（一言説明と本文あり）の一覧 |
 | `GET /api/v1/companies/{public_code}` | 同上 | 内部トークン | 公開コードによる企業と、現在／過去の募集 |
 
 RESTの検索はページ番号を返します。既定では公開中かつ東京時間の当日以降が対象で、`q` がある場合は関連度、ない場合は締切順が基本です。MCPの検索は同じドメインサービスを使い、条件シグネチャとスナップショットを含む opaque cursor を返します。
@@ -303,7 +304,7 @@ MCP client
 | 変更したいもの | 最初に読むコード | 同時に確認するもの |
 | --- | --- | --- |
 | 公開一覧・詳細 | `frontend/app/`, `frontend/components/`, `frontend/lib/api.ts` | `backend/app/api/opportunities.py`, frontend tests |
-| 企業ページ・企業プロフィール | `frontend/app/companies/[code]/page.tsx`, `backend/app/services/company_pages.py`, `backend/app/api/companies.py` | `services/companies.py` の `update_company_profile`, `test_company_pages.py`, ADR-0017 |
+| 企業ページ・企業プロフィール | `frontend/app/companies/page.tsx`, `frontend/app/companies/[code]/page.tsx`, `backend/app/services/company_pages.py`, `backend/app/api/companies.py` | `services/companies.py` の `update_company_profile`, `test_company_pages.py`, ADR-0017, ADR-0023 |
 | canonical・index対象 | `frontend/proxy.ts`, `frontend/lib/site.ts`, `frontend/lib/seo.ts`, `frontend/lib/seo-data.ts`, `frontend/lib/sitemap.ts`, `frontend/app/sitemap.xml/route.ts`, `frontend/app/sitemaps/[page]/route.ts` | `relua.conf`, SEO/sitemap tests、ADR-0016、ADR-0018、ADR-0022 |
 | 起動時の必須設定・信頼するプロキシ | `backend/app/config.py`, `docker-compose.yml`, `frontend/lib/site.ts`, `frontend/lib/api.ts` | `.env.example`, `relua.conf`, `test_security.py`, `test_rate_limit.py`、ADR-0019 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |

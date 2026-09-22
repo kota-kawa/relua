@@ -30,9 +30,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Directories that are never committed; a reference into them cannot be checked out in CI.
-UNCHECKABLE_PREFIXES = (".venv/", "node_modules/", ".next/", ".playwright-mcp/", "backend/.venv/", "frontend/node_modules/", "frontend/.next/")
-UNCHECKABLE_NAMES = {".env"}
+# Path segments that are never committed (see .gitignore); a reference through them cannot be
+# checked out in CI, whether written as ``backend/.venv`` or ``backend/.venv/bin/pytest``.
+UNCHECKABLE_PARTS = {".venv", "node_modules", ".next", ".playwright-mcp", ".env"}
 
 # A token without "/" is only a path when it ends with one of these.
 ROOT_FILE_SUFFIXES = (".md", ".yml", ".yaml", ".toml", ".conf", ".example", ".ini", ".json", ".mjs", "Makefile")
@@ -82,8 +82,6 @@ def tracked_markdown_files() -> list[Path]:
 
 
 def looks_like_path(token: str) -> bool:
-    if token in UNCHECKABLE_NAMES:
-        return False
     if not PATH_TOKEN_RE.match(token):
         return False
     if "/" in token:
@@ -95,7 +93,7 @@ def looks_like_path(token: str) -> bool:
 
 
 def is_uncheckable(token: str) -> bool:
-    return token.startswith(UNCHECKABLE_PREFIXES) or Path(token).name in UNCHECKABLE_NAMES
+    return any(part in UNCHECKABLE_PARTS for part in Path(token).parts)
 
 
 def resolve(token: str, document: Path) -> bool:

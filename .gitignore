@@ -13,3 +13,4 @@ frontend/out/
 postgres_data/
 redis_data/
 .DS_Store
+.playwright-mcp/

@@ -295,7 +295,7 @@ MCP client
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) の正本は次の3段階です。
 
 - backend: Ruff、SQLite単体テスト、PostgreSQL Alembic upgrade、`pg_trgm`／関連度の確認。
-- frontend: `npm ci`、lint、production build。
+- frontend: `npm ci`、lint、`tsc --noEmit`、Vitest、production build。
 - main push: SSH先で `docker compose up -d --build`、サービス状態を確認し、失敗時は直前コミットへ戻して再起動する。
 - daily schedule: SSH先で論理削除済み募集の完全削除を実行し、終了コードと `purged=<件数>` markerを検証する。
 
@@ -321,6 +321,8 @@ MCP client
 
 - 構造を探すときはこの文書。
 - コマンドや運用手順を実行するときは [`README.md`](./README.md)。
+- コードを変更する前の規約（構成、コマンド、同期すべきもの、命名、テスト方針）は [`docs/knowledge/development_conventions.md`](./docs/knowledge/development_conventions.md)。
+- 契約やマイグレーションを変えるときは [`docs/knowledge/contracts-and-migrations.md`](./docs/knowledge/contracts-and-migrations.md)。
 - 同じ問題を再現・切り分けるときは [`docs/knowledge/debugging.md`](./docs/knowledge/debugging.md)。
 - 設計を変えるか迷ったときは [`docs/decisions/README.md`](./docs/decisions/README.md) と関連ADR。
 

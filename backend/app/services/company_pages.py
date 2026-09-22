@@ -89,15 +89,18 @@ def _openings_aggregate(today: date) -> Any:
     """Current-opening count and newest update per company, as one grouped subquery.
 
     Joining this is what keeps a listing page to a fixed number of queries instead of one per
-    company, and the join itself expresses "has at least one current opening".
+    company. The count is narrowed to current openings by a CASE rather than by the subquery's own
+    WHERE, because ``openings_updated_at`` has to span finished postings too: a company whose last
+    opening closed keeps its page, and a last-modified date computed from current openings alone
+    would jump backwards to the profile date on the day that opening expired.
     """
     return (
         select(
             Opportunity.company_id.label("company_id"),
-            func.count(Opportunity.id).label("current_count"),
+            func.count(case((current_opening_filter(today), Opportunity.id))).label("current_count"),
             func.max(Opportunity.updated_at).label("openings_updated_at"),
         )
-        .where(current_opening_filter(today))
+        .where(Opportunity.deleted_at.is_(None))
         .group_by(Opportunity.company_id)
         .subquery()
     )
@@ -126,7 +129,12 @@ def get_company_page(db: Session, company: Company, *, today: date) -> CompanyPa
 
 
 def list_indexable_companies(db: Session, *, today: date, page: int = 1, per_page: int = 20) -> CompanySummaryList:
-    """Companies whose page carries its own content: a full profile plus at least one open posting.
+    """Companies whose page carries its own content: a written profile.
+
+    Current openings are counted but not required. The enforced profile minimums already guarantee
+    the page has something to say, while requiring an opening would flip the same URL between
+    indexed and not as postings expire — the churn ADR-0016 removed from the category pages. The
+    aggregate is therefore an outer join: it supplies the count, it no longer filters.
 
     This is the same condition the frontend uses to decide indexability, so a sitemap built from
     this list and the pages themselves cannot disagree.
@@ -134,8 +142,12 @@ def list_indexable_companies(db: Session, *, today: date, page: int = 1, per_pag
     openings = _openings_aggregate(today)
     condition = _profile_is_complete()
     stmt = (
-        select(Company, openings.c.current_count, openings.c.openings_updated_at)
-        .join(openings, openings.c.company_id == Company.id)
+        select(
+            Company,
+            func.coalesce(openings.c.current_count, 0),
+            openings.c.openings_updated_at,
+        )
+        .outerjoin(openings, openings.c.company_id == Company.id)
         .options(
             selectinload(Company.industries).selectinload(CompanyIndustry.industry),
             selectinload(Company.industries).selectinload(CompanyIndustry.sector),
@@ -145,9 +157,7 @@ def list_indexable_companies(db: Session, *, today: date, page: int = 1, per_pag
         .offset((page - 1) * per_page)
         .limit(per_page)
     )
-    count_stmt = select(func.count()).select_from(
-        select(Company.id).join(openings, openings.c.company_id == Company.id).where(condition).subquery()
-    )
+    count_stmt = select(func.count()).select_from(select(Company.id).where(condition).subquery())
     rows = db.execute(stmt).all()
     return CompanySummaryList(
         items=[
@@ -184,8 +194,11 @@ def company_summary_dict(
 
 
 def company_detail_dict(page: CompanyPage) -> dict[str, Any]:
+    # Finished postings count here as well as in the listing aggregate: they are on the page, and a
+    # date taken from the current openings alone would move backwards once the last one expired.
+    # ``page.past`` is ordered newest-first, so the limit cannot hide the newest finished posting.
     openings_updated_at = max(
-        (item.updated_at for item in page.current if item.updated_at is not None), default=None
+        (item.updated_at for item in page.current + page.past if item.updated_at is not None), default=None
     )
     return company_summary_dict(
         page.company,

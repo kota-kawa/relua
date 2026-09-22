@@ -204,7 +204,7 @@ const company = {
 } satisfies CompanyDetail;
 
 describe("companyMetadata", () => {
-  it("self-canonicals on the public code and indexes a described, hiring company", () => {
+  it("self-canonicals on the public code and indexes a described company", () => {
     expect(companyIsIndexable(company)).toBe(true);
     expect(companyMetadata(company)).toMatchObject({
       title: "テスト株式会社のインターン・本選考情報",
@@ -228,20 +228,18 @@ describe("companyMetadata", () => {
       .toContain("業務システムの受託開発と自社SaaSの提供を行っている。");
   });
 
-  it("keeps a company with no current opening out of search", () => {
+  // The profile is what the page is for, and it does not expire with the
+  // postings; dropping in and out of the index as openings come and go was the
+  // inventory churn ADR-0016 removed from the category pages.
+  it("keeps indexing a described company whose openings have all ended", () => {
     const closed = {
       ...company,
       current_opportunity_count: 0,
       current_opportunities: [],
+      past_opportunities: [opportunity],
     } satisfies CompanyDetail;
-    expect(companyIsIndexable(closed)).toBe(false);
+    expect(companyIsIndexable(closed)).toBe(true);
+    expect(companyMetadata(closed).robots).toMatchObject({ index: true, follow: true });
     expect(companyMetadata(closed).description).toContain("現在掲載中の募集はありません");
-  });
-
-  it("does not index a company whose only opening has already ended", () => {
-    expect(companyIsIndexable({
-      ...company,
-      current_opportunities: [{ ...opportunity, deadline: "2020-01-01" }],
-    })).toBe(false);
   });
 });

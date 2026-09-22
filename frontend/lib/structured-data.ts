@@ -1,5 +1,5 @@
 import { absoluteUrl, companyPath, opportunityPath, siteOrigin } from "@/lib/site";
-import type { CompanyDetail, Opportunity } from "@/lib/types";
+import type { CompanyDetail, CompanySummary, Opportunity } from "@/lib/types";
 
 function latestTimestamp(item: Opportunity) {
   return [item.updated_at, item.source_checked_at]
@@ -49,6 +49,21 @@ export function listingStructuredData(items: Opportunity[], page: number, perPag
       position: (page - 1) * perPage + index + 1,
       name: `${item.company.name} ${item.event_name}`,
       url: absoluteUrl(opportunityPath(item.public_code)),
+    })),
+  };
+}
+
+export function companyDirectoryStructuredData(companies: CompanySummary[], page: number, perPage: number) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    name: "掲載企業一覧",
+    itemListOrder: "https://schema.org/ItemListOrderAscending",
+    itemListElement: companies.map((company, index) => ({
+      "@type": "ListItem",
+      position: (page - 1) * perPage + index + 1,
+      name: company.name,
+      url: absoluteUrl(companyPath(company.public_code)),
     })),
   };
 }

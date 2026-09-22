@@ -59,6 +59,12 @@ describe("public listing links", () => {
   it("keeps paging links free of the listing anchor", () => {
     expect(withQuery({ q: "AI", view: "list" }, { page: "3" })).toBe("/?q=AI&view=list&page=3");
   });
+
+  /* The company directory pages the same way the listing does, so it pages
+     through the same builder rather than assembling its own hrefs. */
+  it("pages a route other than the listing when given its path", () => {
+    expect(withQuery({}, { page: "2" }, "/companies")).toBe("/companies?page=2");
+  });
 });
 
 describe("deadlineCompactLabel", () => {

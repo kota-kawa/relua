@@ -223,10 +223,15 @@ export async function getCompany(publicCode: string): Promise<CompanyDetail> {
   return apiFetch<CompanyDetail>(`/companies/${encodeURIComponent(publicCode)}`, { retry: true });
 }
 
+/** One page of the companies whose profile makes them indexable, ordered by name. */
+export async function getCompanies(page: number, perPage: number): Promise<CompanyList> {
+  return apiFetch<CompanyList>(`/companies?indexable=true&per_page=${perPage}&page=${page}`, { retry: true });
+}
+
 /**
- * Every company whose page carries its own content: a description plus at least
- * one current opening. The API decides that, so the sitemap and the pages cannot
- * disagree about which companies belong in search.
+ * Every company whose page carries its own content: a written profile. The API
+ * decides that, so the sitemap and the pages cannot disagree about which
+ * companies belong in search.
  */
 export async function getAllIndexableCompanies(): Promise<CompanySummary[]> {
   const perPage = 100;

@@ -696,6 +696,32 @@ button, summary, select { cursor: pointer; }
 .company-empty { max-width: 46em; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.9; }
 .company-footer { margin-top: 66px; padding-top: 26px; border-top: 1px solid var(--line); }
 
+/* Company directory. Every company page is one hop from here, so the entry is
+   built to be read as much as crawled: the name, then the one sentence that
+   says what the company does. Rules rather than cards, because a hundred cards
+   in a grid is a texture, not a list you can run your eye down. */
+.directory-page { padding-bottom: 100px; }
+.directory-intro { padding: 44px 0 34px; border-bottom: 1px solid var(--line); background: #f6f2e9; }
+.directory-intro .eyebrow { margin-bottom: 8px; color: var(--orange-text); font-size: 10px; }
+.directory-intro h1 { margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: clamp(25px, 3.2vw, 33px); font-weight: 600; }
+.directory-lead { max-width: 46em; margin: 12px 0 0; color: #5d665f; font-size: 13px; line-height: 1.95; }
+.directory-count { margin: 18px 0 0; color: var(--muted); font-size: 12px; }
+.directory-count strong { color: var(--orange-text); font-family: Georgia, "Yu Mincho", serif; font-size: 21px; }
+.directory-body { padding-top: 12px; }
+.company-entry-list { margin: 0; padding: 0; list-style: none; }
+.company-entry { padding: 26px 0; border-bottom: 1px solid var(--line); }
+.company-entry h2 { margin: 0; font-family: Georgia, "Yu Mincho", serif; font-size: 19px; font-weight: 600; }
+.company-entry h2 a { color: var(--ink-deep); }
+.company-entry h2 a:hover { color: var(--orange-text); }
+.company-entry-summary { max-width: 52em; margin: 9px 0 0; color: #4d545e; font-size: 13px; line-height: 1.9; }
+.company-entry-meta { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+.company-entry-meta > span { padding: 4px 9px; border: 1px solid #ddddd7; border-radius: 99px; background: rgba(255,255,255,.62); font-weight: 700; }
+.company-entry-openings { color: var(--orange-text); }
+@media (max-width: 720px) {
+  .directory-intro { padding: 32px 0 26px; }
+  .company-entry { padding: 20px 0; }
+}
+
 /* A crawlable, human-facing directory complements form controls, which search
    crawlers do not submit to discover every useful single-facet landing page. */
 .category-directory { padding: 72px 0 82px; border-top: 1px solid var(--line); background: #f3f0e8; }

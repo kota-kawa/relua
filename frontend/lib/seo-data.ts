@@ -5,6 +5,7 @@ import { cache } from "react";
 
 import {
   ApiError,
+  getCompanies,
   getCompany,
   getMasters,
   getOpportunity,
@@ -13,7 +14,7 @@ import {
 } from "@/lib/api";
 import { withDefaultOpenStatus } from "@/lib/format";
 import { getListingSeo } from "@/lib/seo";
-import type { CompanyDetail, Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
+import type { CompanyDetail, CompanyList, Masters, Opportunity, OpportunityList, SearchParams } from "@/lib/types";
 
 export const SEO_DATA_REVALIDATE_SECONDS = 60;
 export const SEO_DATA_MAX_STALE_MS = 60 * 60 * 1000;
@@ -49,6 +50,19 @@ export type CompanySnapshot = {
   company: CompanyDetail | null;
   fetchedAt: number;
 };
+
+export type CompanyDirectorySnapshot = {
+  result: CompanyList;
+  fetchedAt: number;
+};
+
+/**
+ * The directory exists to put every company page one crawlable hop from the
+ * site root, so its page size is set for link density rather than for reading:
+ * a hundred entries keep the whole directory to a couple of pages at the scale
+ * a hand-written profile per company allows.
+ */
+export const COMPANY_DIRECTORY_PAGE_SIZE = 100;
 
 /**
  * These are the values that affect the public listing response. Unknown query
@@ -233,6 +247,11 @@ async function fetchCompanySnapshot(publicCode: string): Promise<CompanySnapshot
   return { company, fetchedAt: Date.now() };
 }
 
+async function fetchCompanyDirectorySnapshot(page: string): Promise<CompanyDirectorySnapshot> {
+  const result = await getCompanies(Number(page), COMPANY_DIRECTORY_PAGE_SIZE);
+  return { result, fetchedAt: Date.now() };
+}
+
 const loadListingSnapshotByKey = snapshotLoader("seo-listing-snapshot-v2", fetchListingSnapshot);
 const NON_CACHEABLE_LISTING_PREFIX = "seo-listing-snapshot-direct-v1";
 /**
@@ -250,6 +269,11 @@ function loadListingSnapshotDirectly(key: string): Promise<ListingSnapshot> {
 }
 const loadOpportunitySnapshotById = snapshotLoader("seo-opportunity-snapshot-v2", fetchOpportunitySnapshot);
 const loadCompanySnapshotByCode = snapshotLoader("seo-company-snapshot-v1", fetchCompanySnapshot);
+const loadCompanyDirectorySnapshotByPage = snapshotLoader(
+  "seo-company-directory-snapshot-v1",
+  fetchCompanyDirectorySnapshot,
+);
+const NON_CACHEABLE_DIRECTORY_PREFIX = "seo-company-directory-snapshot-direct-v1";
 
 /**
  * Metadata and the page body call this with the same normalized key.
@@ -269,6 +293,22 @@ export async function loadListingSnapshot(params: SearchParams): Promise<Listing
 
 export async function loadOpportunitySnapshot(id: string): Promise<OpportunitySnapshot> {
   return loadOpportunitySnapshotById(id);
+}
+
+/**
+ * Metadata and the page body call this with the same page number.
+ *
+ * Depth is bounded for the same reason `listingSnapshotIsCacheable` bounds it:
+ * `/companies?page=<any integer>` is a URL a visitor mints, and every distinct
+ * Data Cache key is a file on disk that nothing evicts. Past the bound the page
+ * is still served, just fetched per request.
+ */
+export async function loadCompanyDirectorySnapshot(page: number): Promise<CompanyDirectorySnapshot> {
+  const key = String(page);
+  if (page > MAX_CACHEABLE_LISTING_PAGE) {
+    return sharedSnapshot(`${NON_CACHEABLE_DIRECTORY_PREFIX}:${key}`, () => fetchCompanyDirectorySnapshot(key));
+  }
+  return loadCompanyDirectorySnapshotByPage(key);
 }
 
 /** Metadata and the page body call this with the same normalized code. */

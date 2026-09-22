@@ -182,7 +182,11 @@ describe("sitemap", () => {
     });
     const response = await GET();
     expect(response.status).toBe(200);
-    expect((await response.text()).match(/<url>/g)).toHaveLength(4);
+    const body = await response.text();
+    expect(body.match(/<url>/g)).toHaveLength(5);
+    // The company directory is a static page: it is the crawlable path to every
+    // company page, so it ships even when there is nothing to list yet.
+    expect(body).toContain("<loc>https://relua.example/companies</loc>");
   });
 
   it("lets a shared cache answer repeats instead of re-running the fan-out on every hit", async () => {

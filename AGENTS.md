@@ -59,6 +59,7 @@
 | [`docs/decisions/0020-mcp-error-boundary-and-master-generation.md`](./docs/decisions/0020-mcp-error-boundary-and-master-generation.md) | MCPの例外境界・失敗記録の一元化と、マスタキャッシュをスキーマ世代で回す理由 |
 | [`docs/decisions/0021-discovered-sources-stay-inactive.md`](./docs/decisions/0021-discovered-sources-stay-inactive.md) | 確認記録で見つけた収集元を無効状態で登録する理由 |
 | [`docs/decisions/0022-sitemap-index-split.md`](./docs/decisions/0022-sitemap-index-split.md) | サイトマップを上限超過でインデックス分割する理由 |
+| [`docs/decisions/0023-company-pages-indexed-on-profile-alone.md`](./docs/decisions/0023-company-pages-indexed-on-profile-alone.md) | 企業ページのindexを募集在庫から切り離し、`/companies` ディレクトリを置く理由 |
 
 ## 変更時のルール
 

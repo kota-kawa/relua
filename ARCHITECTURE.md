@@ -274,7 +274,7 @@ MCP client
 - 以降の migration は既存DBへ段階的に適用する。特に関連コードが新規DBで既に存在し得るため、後続 migration は存在確認や dialect 分岐を持つ。
 - `20260814_0009_add_relevance_search.py` と `20260820_0013_add_company_identity_tools.py` は PostgreSQL の `pg_trgm` と GIN index を使う。SQLiteのテストは近似検索へフォールバックするため、移行と本番検索を同一視しない。
 - `20260820_0012_add_company_industries.py` は、旧来の業界単位収集対象を1社1対象へ統合し、分類を `company_industries` へ移すデータ移行である。
-- `20260919_0015_repair_normalization_and_add_indexes.py` は、正規化ルールの変更に追随していなかった `companies.normalized_name` / `company_aliases.normalized_alias` を現行ルールで再計算し、`collection_checks` から `last_check_result` を再導出し、ダングリングな `collection_request_records` を整理したうえで、`models.py` が先行して持っていた索引を追加する。正規化の再計算で衝突が起きた場合は、統合ロジックを二重実装せず例外で停止し、`merge_company` による手動解消を促す。
+- `20260919_0015_repair_normalization_and_add_indexes.py` は、正規化ルールの変更に追随していなかった `companies.normalized_name` / `company_aliases.normalized_alias` を現行ルールで再計算し、`collection_checks` から `last_check_result` を再導出し、ダングリングな `collection_request_records` を整理したうえで、`models.py` が先行して持っていた索引を追加する。正規化の再計算で一意制約に衝突する行は修復せず据え置き、WARNING で対象グループを名指しする（例外で停止すると `alembic upgrade head && uvicorn` の起動が止まるため）。名指しされた行は `merge_company` で手動解消してから再実行する。
 
 スキーマを変更するときは ORM、migration、fresh DB、既存DB upgrade、必要な回帰テストを一緒に確認します。
 
@@ -295,7 +295,7 @@ MCP client
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) の正本は次の3段階です。
 
 - backend: Ruff、SQLite単体テスト、PostgreSQL Alembic upgrade、`pg_trgm`／関連度の確認。
-- frontend: `npm ci`、lint、production build。
+- frontend: `npm ci`、lint、`tsc --noEmit`、Vitest、production build。
 - main push: SSH先で `docker compose up -d --build`、サービス状態を確認し、失敗時は直前コミットへ戻して再起動する。
 - daily schedule: SSH先で論理削除済み募集の完全削除を実行し、終了コードと `purged=<件数>` markerを検証する。
 
@@ -321,6 +321,8 @@ MCP client
 
 - 構造を探すときはこの文書。
 - コマンドや運用手順を実行するときは [`README.md`](./README.md)。
+- コードを変更する前の規約（構成、コマンド、同期すべきもの、命名、テスト方針）は [`docs/knowledge/development_conventions.md`](./docs/knowledge/development_conventions.md)。
+- 契約やマイグレーションを変えるときは [`docs/knowledge/contracts-and-migrations.md`](./docs/knowledge/contracts-and-migrations.md)。
 - 同じ問題を再現・切り分けるときは [`docs/knowledge/debugging.md`](./docs/knowledge/debugging.md)。
 - 設計を変えるか迷ったときは [`docs/decisions/README.md`](./docs/decisions/README.md) と関連ADR。
 

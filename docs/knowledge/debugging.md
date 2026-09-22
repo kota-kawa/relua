@@ -35,7 +35,8 @@ cd frontend
 npm ci
 npm test
 npm run lint
-npm run build
+npm run typecheck
+NEXT_PUBLIC_SITE_URL=http://localhost:3100 npm run build
 ```
 
 `frontend/lib/api.ts` は `server-only` です。Node側の `API_INTERNAL_URL` と `API_INTERNAL_TOKEN` が必要なコードをブラウザテストから直接呼ばないでください。localStorage、URLフラグメント、整形関数は Vitest の対象です。
@@ -100,6 +101,8 @@ MCPの公開エンドポイントは `/mcp` と `/mcp/` を同じ意味として
 `backend/tests/test_mcp_tools.py` はこれらの境界を直接検証するため、MCPのpayloadを変更したときの回帰確認に使います。
 
 ## 5. マイグレーションで起きやすい問題
+
+マイグレーションを書くときの規則（番号、連鎖、新規DBと既存DBの両立、データ移行、適用済みファイルの扱い）は [`contracts-and-migrations.md`](./contracts-and-migrations.md) にあります。ここでは切り分けの観点だけを書きます。
 
 - 新規DBは最初の migration が live ORM metadata を作るため、後続 migration が追加するテーブル・列をすでに持つ場合がある。後続 migration が「存在するならスキップ」する理由を壊さない。
 - 既存DBは migration の順番に依存する。`models.py` だけを変更して起動時に自動反映されるとは考えない。

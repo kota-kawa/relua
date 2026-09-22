@@ -301,8 +301,14 @@ ruff check .
 cd ../frontend
 npm ci
 npm run lint
+npm run typecheck
+npm test
 # next build がこの値を静的ページへ焼き込むため、ビルドには公開originの指定が必要です
 NEXT_PUBLIC_SITE_URL=http://localhost:3100 npm run build
+
+cd ..
+python3 scripts/check_doc_paths.py
+python3 scripts/check_env_documentation.py
 ```
 
 Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止は `make down` です。

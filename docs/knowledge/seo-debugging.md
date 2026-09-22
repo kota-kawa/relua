@@ -43,7 +43,7 @@ frontend imageのbuild時は、同じComposeで起動するAPIがまだ到達不
 
 - `<loc>`件数が現在の募集予定・募集中・通年募集の詳細＋静的ページ＋固定allowlist内で正常1件以上のカテゴリになる。
 - 詳細URLは公開コードだけになる。
-- 企業URLは`/companies/<公開コード>`で、`GET /api/v1/companies?indexable=true`の件数と一致する。`noindex`の企業ページは含まれない。ページのrobotsとサイトマップが食い違う場合は、企業APIの条件（一言説明と本文の有無・現行募集の有無）とページ側の`companyIsIndexable`のどちらが古いかを比べる。
+- 企業URLは`/companies/<公開コード>`で、`GET /api/v1/companies?indexable=true`の件数と一致する。`noindex`の企業ページは含まれない。ページのrobotsとサイトマップが食い違う場合は、企業APIの条件（一言説明と本文の有無。現行募集の有無は条件ではない、ADR-0023）とページ側の`companyIsIndexable`のどちらが古いかを比べる。
 - `lastmod`は内容更新と公式情報確認日時の新しい方になる。
 - カテゴリ件数をカテゴリごとのAPI呼び出しで数えず、取得済み全件から集計する。
 - 募集API・master API・企業APIのいずれかの取得に失敗したときは、4ページだけの200ではなく503、`Retry-After: 300`、`Cache-Control: no-store`になる。正常な0件のときだけ静的4ページの200になる。

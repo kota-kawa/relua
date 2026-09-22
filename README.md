@@ -193,7 +193,7 @@ IT・通信/Webサービスを同じ企業へ登録できます。指定した�
 必ず渡してください。保存されるのは上の4項目だけで、確認したページは監査ログに残ります。
 
 登録した内容は `/companies/{公開コード}` の企業ページと、募集詳細の企業名リンク先に表示されます。
-企業ページが検索対象になるのは `business_summary` と `description` の両方があり、現在の募集が1件以上ある場合だけです。
+企業ページが検索対象になるのは `business_summary` と `description` の両方がある場合です。現在の募集の有無は件数として表示するだけで、index可否には使いません（ADR-0023）。
 
 `add_opportunity` と `update_opportunity` の `payload` では、日付を `YYYY-MM-DD`、URLを `https` で指定します。更新は部分更新ではなく全項目置換のため、`get_opportunity` で現在値を取得してから送ってください。状況や締め切りだけを直す場合も、`get_opportunity` の `updated_at` を `expected_updated_at` として `update_recruitment_status` へ渡します。公式ページを再確認して内容が変わっていない場合は、登録済みの一次情報URLと確認日時を `verify_opportunity` へ渡してください。これは `source_checked_at` のみを更新し、監査ログでは状況更新と区別されます。status更新自体は一次情報確認とは見なさず、`source_checked_at` を変更しません。
 
@@ -249,7 +249,7 @@ GET /api/v1/companies/{public_code}
 
 一覧では `q`、`status`、`industry`、`sector`、`event_type`、`event_format`、`job_category`、`graduation_year`、`degree`、`sort`、`page`、`per_page` を利用できます。複数選択する条件は同じクエリ名を繰り返します。
 
-企業一覧は `indexable=true`（既定）で、一言説明と本文の両方が登録済みかつ現在の募集を持つ企業だけを `page`、`per_page` 付きで返します。サイトマップがこの一覧を使うため、企業ページのindex可否と収録範囲が食い違いません。企業詳細は8文字の公開コードで取得し、現在の募集と過去の募集を分けて返します。
+企業一覧は `indexable=true`（既定）で、一言説明と本文の両方が登録済みの企業だけを `page`、`per_page` 付きで返します（現在の募集件数は含まれますが、条件にはしません）。サイトマップがこの一覧を使うため、企業ページのindex可否と収録範囲が食い違いません。企業詳細は8文字の公開コードで取得し、現在の募集と過去の募集を分けて返します。
 
 ## ローカル保存と共有
 

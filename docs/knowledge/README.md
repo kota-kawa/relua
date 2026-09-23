@@ -8,6 +8,7 @@
 - 起動・運用コマンドを確認する: [`../../README.md`](../../README.md)
 - なぜその構成になっているかを確認する: [`../decisions/README.md`](../decisions/README.md)
 - コードを変更する前に規約を確認する: [`development_conventions.md`](./development_conventions.md)（構成、コマンド、同期すべきもの、命名、責務分割、テスト方針、サブエージェントの指定、過去の障害から決めた規約）
+- 利用者・利用の流れ・用語・同一性・状態を確認する: [`domain_glossary.md`](./domain_glossary.md)
 - 再現・切り分け方法を確認する: [`debugging.md`](./debugging.md)
 - 検索流入、canonical、index対象の回帰を確認する: [`seo-debugging.md`](./seo-debugging.md)
 - REST／MCP の契約や Alembic migration を変える: [`contracts-and-migrations.md`](./contracts-and-migrations.md)

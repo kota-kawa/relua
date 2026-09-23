@@ -322,6 +322,7 @@ MCP client
 - 構造を探すときはこの文書。
 - コマンドや運用手順を実行するときは [`README.md`](./README.md)。
 - コードを変更する前の規約（構成、コマンド、同期すべきもの、命名、テスト方針）は [`docs/knowledge/development_conventions.md`](./docs/knowledge/development_conventions.md)。
+- 利用者、利用の流れ、用語の対応、状態を確認するときは [`docs/knowledge/domain_glossary.md`](./docs/knowledge/domain_glossary.md)。
 - 契約やマイグレーションを変えるときは [`docs/knowledge/contracts-and-migrations.md`](./docs/knowledge/contracts-and-migrations.md)。
 - 同じ問題を再現・切り分けるときは [`docs/knowledge/debugging.md`](./docs/knowledge/debugging.md)。
 - 設計を変えるか迷ったときは [`docs/decisions/README.md`](./docs/decisions/README.md) と関連ADR。

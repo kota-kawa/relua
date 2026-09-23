@@ -1,6 +1,6 @@
 # 開発規約
 
-コードを変更する作業では、着手前にこの文書を読みます。構造の説明は [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md)、切り分け手順は [`debugging.md`](./debugging.md)、判断の理由は [`../decisions/README.md`](../decisions/README.md) にあり、ここには「どう作業するか」だけを書きます。
+コードを変更する作業では、着手前にこの文書を読みます。用語と状態は [`domain_glossary.md`](./domain_glossary.md)、構造の説明は [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md)、切り分け手順は [`debugging.md`](./debugging.md)、判断の理由は [`../decisions/README.md`](../decisions/README.md) にあり、ここには「どう作業するか」だけを書きます。
 
 ## 1. プロジェクト構成
 
@@ -109,6 +109,21 @@ PostgreSQL 固有の確認（Alembic の `upgrade head`、`pg_trgm`、関連度�
 - 書き込みの唯一の入口は MCP です。REST と公開画面からは書きません。
 - ブラウザ内保存（ブックマーク、引き継ぎ）はサーバーに持たず、公開コードで共有します（ADR-0003）。
 - 運用ジョブ（完全削除、MCP 接続の管理、デモ投入）は `backend/app/scripts/` に置き、GitHub Actions から SSH で実行します。アプリのリクエスト処理に混ぜません。
+
+### ドメインの境界と業務ルールの置き場所
+
+用語・同一性・状態の対応は [`domain_glossary.md`](./domain_glossary.md) にあります。
+
+- 層は「入口（`api/`、`mcp_server.py`、Next.js の `app/`・`components/`）→ ドメイン（`services/`、`frontend/lib/` の純粋関数）→ 保存・外部（`models.py`、Redis、FastAPI への呼び出し）」の順に依存させ、逆向きに呼びません。
+- ドメインの境界は `services/` のモジュール単位です（募集、企業、企業分類、企業ページ、収集対象、固定値、OAuth）。新しい関心事は、境界を名指しできるなら既存モジュールに足さず別モジュールにします。すでに大きい `services/opportunities.py` と `mcp_server.py` に、募集や MCP の入口と関係のない責務を足しません。
+- 業務ルール（書き込み可否、同一企業の判定、重複判定、再確認の対象、日付と募集状況の矛盾、index 条件）はドメインの関数に 1 か所だけ置き、入口の if 文で書き直しません。frontend の判定（index 可否、保存データの検証）も `frontend/lib/` の純粋関数に置き、コンポーネントは結果を表示するだけにします。
+- 現在のコードには、同じ業務ルールが backend と frontend などに重複している箇所があります。変えるときはすべてを同じ変更で直し、片方だけ直して済ませません。
+  - 企業ページの index 条件: `services/company_pages.py` の `_profile_is_complete` と `frontend/lib/seo.ts` の `companyIsIndexable`
+  - 現行募集とみなす募集状況: `services/opportunities.py` の `RECONFIRMABLE_RECRUITMENT_STATUSES`、`api/opportunities.py` の類似募集取得に直書きした一覧、`frontend/lib/seo.ts` の `INDEXABLE_OPPORTUNITY_STATUS_SLUGS`
+- 状態を増やす、または遷移に制約を加えるときは、状態の一覧と遷移を先に書き出して合意し、ADR に残します。現在の状態と、システムが強制している範囲は [`domain_glossary.md`](./domain_glossary.md) の「状態」にあります。
+- 外部との接点は専用のモジュールを 1 つ挟みます。Redis は `services/rate_limit.py` と `services/master_cache.py`、FastAPI への呼び出しと内部 API の接続設定（`API_INTERNAL_*`）は `frontend/lib/api.ts`（例外は旧 UUID の転送だけを行う `frontend/proxy.ts`）、ブラウザから BFF への呼び出しは `frontend/lib/browser-api.ts`、backend の設定値は `config.py`、公開 origin は `frontend/lib/site.ts` を通します。新しい外部サービス（メール、外部 API など）を足すときも、仕様をその adapter モジュールの中に閉じ込め、設定を 1 か所に置き、テストでは adapter をモックします。外部サービスの追加は依存関係と公開面の変更なので、ADR と PR 本文での説明を伴います。
+- 読み取りと書き込みの要求が大きく違うもの（企業ページ、SEO データ、サイトマップ）は、`services/company_pages.py` のように読み取り専用の関数・モジュールへ分けて構いません。読み取り専用の DB や同期の仕組み（CQRS の基盤）は、単一の PostgreSQL で要件を満たせない根拠が出るまで入れません。
+- 履歴は現在の行、監査ログ（`audit_logs`）、冪等記録、確認記録（`collection_checks`）で持ちます。Event Sourcing は現時点では入れず、必要になったら ADR で判断します。監査ログを書き換える経路は作りません。
 
 ## 7. テスト方針
 

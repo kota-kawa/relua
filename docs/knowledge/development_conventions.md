@@ -137,6 +137,7 @@ PostgreSQL 固有の確認（Alembic の `upgrade head`、`pg_trgm`、関連度�
 ## 8. サブエージェントの指定
 
 役割ごとに別の担当を使い、各担当にはその役割に必要な情報だけを渡します。
+以下のモデル指定は、調査・実装・レビューのいずれでサブエージェントを使う場合にも適用します。
 Claude Code のサブエージェントは `sonnet5 high` を指定します。
 Codex のサブエージェントは `gpt-6-luna` を指定し、reasoning effort を `max` にします。
 

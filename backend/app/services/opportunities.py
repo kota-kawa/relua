@@ -98,6 +98,10 @@ def _search_signature(
     graduation_year: list[str] | None,
     degree: list[str] | None,
     deadline_on_or_after: date | None,
+    created_at_after: datetime | None,
+    created_at_before: datetime | None,
+    updated_at_after: datetime | None,
+    updated_at_before: datetime | None,
     sort: str,
 ) -> str:
     filters = {
@@ -111,6 +115,10 @@ def _search_signature(
         "graduation_year": sorted(graduation_year or []),
         "degree": sorted(degree or []),
         "deadline_on_or_after": deadline_on_or_after.isoformat() if deadline_on_or_after else None,
+        "created_at_after": _as_utc(created_at_after).isoformat() if created_at_after else None,
+        "created_at_before": _as_utc(created_at_before).isoformat() if created_at_before else None,
+        "updated_at_after": _as_utc(updated_at_after).isoformat() if updated_at_after else None,
+        "updated_at_before": _as_utc(updated_at_before).isoformat() if updated_at_before else None,
         "sort": sort,
     }
     encoded = json.dumps(filters, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -367,6 +375,10 @@ def search_opportunities(
     graduation_year: list[str] | None = None,
     degree: list[str] | None = None,
     deadline_on_or_after: date | None = None,
+    created_at_after: datetime | None = None,
+    created_at_before: datetime | None = None,
+    updated_at_after: datetime | None = None,
+    updated_at_before: datetime | None = None,
     sort: str | None = None,
     page: int | None = 1,
     per_page: int = 20,
@@ -388,6 +400,10 @@ def search_opportunities(
         graduation_year=graduation_year,
         degree=degree,
         deadline_on_or_after=deadline_on_or_after,
+        created_at_after=created_at_after,
+        created_at_before=created_at_before,
+        updated_at_after=updated_at_after,
+        updated_at_before=updated_at_before,
         sort=effective_sort,
     )
     snapshot_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
@@ -461,6 +477,14 @@ def search_opportunities(
                 Opportunity.deadline >= deadline_on_or_after,
             )
         )
+    if created_at_after:
+        filters.append(Opportunity.created_at >= _as_utc(created_at_after))
+    if created_at_before:
+        filters.append(Opportunity.created_at <= _as_utc(created_at_before))
+    if updated_at_after:
+        filters.append(Opportunity.updated_at >= _as_utc(updated_at_after))
+    if updated_at_before:
+        filters.append(Opportunity.updated_at <= _as_utc(updated_at_before))
     if filters:
         stmt = stmt.where(*filters)
         count_stmt = count_stmt.where(*filters)

@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from sqlalchemy import select
 
@@ -24,6 +26,8 @@ from app.services.companies import (
     delete_company_alias,
     get_company_by_public_code,
     get_or_create_company,
+    list_companies_missing_profile,
+    list_company_profile_history,
     merge_company,
     resolve_company_candidates,
     update_company_profile,
@@ -209,6 +213,73 @@ def test_company_keyword_filter_treats_percent_and_underscore_as_literal_charact
 
     assert list(db.scalars(select(Company).where(company_keyword_filter(db, "%")))) == []
     assert list(db.scalars(select(Company).where(company_keyword_filter(db, "_")))) == []
+
+
+def test_profile_gap_listing_matches_null_or_blank_fields_and_ignores_collection_targets(db):
+    summary_missing = company(db, "株式会社プロフィール要約欠落")
+    summary_missing.business_summary = None
+    summary_missing.description = "事業内容は登録済みです。"
+
+    description_missing = company(db, "株式会社プロフィール本文欠落")
+    description_missing.business_summary = "事業概要は登録済みです。"
+    description_missing.description = None
+
+    blank_summary = company(db, "株式会社プロフィール空欄")
+    blank_summary.business_summary = "\t\n"
+    blank_summary.description = "事業内容は登録済みです。"
+
+    blank_description = company(db, "株式会社プロフィール本文空欄")
+    blank_description.business_summary = "事業概要は登録済みです。"
+    blank_description.description = "\r\n"
+
+    complete = company(db, "株式会社プロフィール完備")
+    complete.business_summary = "事業概要は登録済みです。"
+    complete.description = "事業内容は登録済みです。"
+    db.add(CollectionTarget(company_id=summary_missing.id))
+    db.flush()
+
+    result = list_companies_missing_profile(db)
+
+    assert result.total == 4
+    assert result.total_pages == 1
+    assert {item.id for item in result.items} == {
+        summary_missing.id,
+        description_missing.id,
+        blank_summary.id,
+        blank_description.id,
+    }
+    assert [item.name for item in result.items] == sorted(item.name for item in result.items)
+
+
+def test_profile_gap_listing_filters_by_name_and_industry_and_pages_results(db):
+    it = db.scalar(select(Industry).where(Industry.name == "IT・通信"))
+    finance = db.scalar(select(Industry).where(Industry.name == "金融"))
+    assert it is not None and finance is not None
+
+    targets = [company(db, f"株式会社プロフィール検索対象{index}") for index in range(4)]
+    for item in targets:
+        item.description = "事業内容は登録済みです。"
+        db.add(CompanyIndustry(company_id=item.id, industry_id=it.id, is_primary=True))
+
+    other_industry = company(db, "株式会社プロフィール検索金融")
+    other_industry.description = "事業内容は登録済みです。"
+    db.add(CompanyIndustry(company_id=other_industry.id, industry_id=finance.id, is_primary=True))
+    complete = company(db, "株式会社プロフィール検索完備")
+    complete.business_summary = "事業概要は登録済みです。"
+    complete.description = "事業内容は登録済みです。"
+    db.add(CompanyIndustry(company_id=complete.id, industry_id=it.id, is_primary=True))
+    db.flush()
+
+    first = list_companies_missing_profile(db, industry=it.slug, page=1, per_page=2)
+    second = list_companies_missing_profile(db, industry=it.slug, page=2, per_page=2)
+    name_search = list_companies_missing_profile(db, query="検索対象2", industry=it.name)
+    other_industry_result = list_companies_missing_profile(db, industry=finance.slug)
+
+    assert (first.total, first.total_pages, len(first.items)) == (4, 2, 2)
+    assert (second.total, second.total_pages, len(second.items)) == (4, 2, 2)
+    assert {item.id for item in first.items + second.items} == {item.id for item in targets}
+    assert [item.id for item in name_search.items] == [targets[2].id]
+    assert [item.id for item in other_industry_result.items] == [other_industry.id]
 
 
 def test_merge_company_moves_references_keeps_old_names_and_is_idempotent(db):
@@ -542,3 +613,90 @@ def test_merge_company_keeps_the_target_profile_and_inherits_only_missing_fields
     assert merged.business_summary == "統合先が確認済みの一言説明。"
     assert merged.description == "統合先が確認済みの説明。"
     assert merged.website_url == "https://old-eta.example.com/"
+
+
+def _profile_audit(db, *, company_id: int, request_id: str, created_at: datetime, success: bool = True):
+    log = AuditLog(
+        action="company_profile_update",
+        entity_type="company",
+        entity_id=str(company_id),
+        request_id=request_id,
+        client_name="pytest",
+        source_url="https://example.com/company",
+        success=success,
+        changes={
+            "before": {
+                "business_summary": "以前の説明です。",
+                "description": "以前の本文です。",
+                "business_areas": [],
+                "website_url": None,
+                "updated_at": created_at.isoformat(),
+            },
+            "after": {
+                "business_summary": "更新後の説明です。",
+                "description": "更新後の本文です。",
+                "business_areas": [],
+                "website_url": "https://example.com/",
+                "updated_at": (created_at + timedelta(seconds=1)).isoformat(),
+            },
+        },
+        created_at=created_at,
+    )
+    db.add(log)
+    db.flush()
+    return log
+
+
+def test_company_profile_history_returns_successful_updates_newest_first(db):
+    target = company(db, "株式会社プロフィール履歴")
+    other = company(db, "株式会社別企業")
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    oldest = _profile_audit(db, company_id=target.id, request_id="profile-history-old", created_at=now)
+    newest = _profile_audit(
+        db, company_id=target.id, request_id="profile-history-new", created_at=now + timedelta(days=1)
+    )
+    _profile_audit(
+        db,
+        company_id=target.id,
+        request_id="profile-history-failed",
+        created_at=now + timedelta(days=2),
+        success=False,
+    )
+    _profile_audit(db, company_id=other.id, request_id="other-profile-history", created_at=now + timedelta(days=3))
+    db.commit()
+
+    result = list_company_profile_history(db, company_id=target.id)
+
+    assert result.total == 2
+    assert [item.id for item in result.items] == [newest.id, oldest.id]
+    assert result.total_pages == 1
+
+
+def test_company_profile_history_paginates_and_returns_empty_page_metadata(db):
+    target = company(db, "株式会社プロフィール履歴ページ")
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    logs = [
+        _profile_audit(
+            db,
+            company_id=target.id,
+            request_id=f"profile-history-page-{index}",
+            created_at=now + timedelta(minutes=index),
+        )
+        for index in range(3)
+    ]
+    db.commit()
+
+    first_page = list_company_profile_history(db, company_id=target.id, page=1, per_page=2)
+    second_page = list_company_profile_history(db, company_id=target.id, page=2, per_page=2)
+    empty_page = list_company_profile_history(db, company_id=target.id, page=3, per_page=2)
+
+    assert first_page.total == second_page.total == empty_page.total == 3
+    assert first_page.total_pages == second_page.total_pages == empty_page.total_pages == 2
+    assert [item.id for item in first_page.items] == [logs[2].id, logs[1].id]
+    assert [item.id for item in second_page.items] == [logs[0].id]
+    assert empty_page.items == []
+
+
+def test_company_profile_history_rejects_unknown_company(db):
+    with pytest.raises(LookupError, match="company_not_found"):
+        list_company_profile_history(db, company_id=999999)

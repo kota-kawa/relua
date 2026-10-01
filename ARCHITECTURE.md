@@ -128,11 +128,11 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 
 | ツール群 | 主な処理 | 認証 |
 | --- | --- | --- |
-| 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応） |
-| 重複・企業同一性 | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `set_company_industries`, `update_company_profile`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要、企業の候補確認・別名・カテゴリ設定・プロフィール更新・物理統合の書き込みは必要。保守コンテキストは認証が必要 |
+| 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応）。募集検索は登録・最終編集日時の両端を含む範囲指定ができる |
+| 重複・企業同一性・プロフィール | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `set_company_industries`, `update_company_profile`, `list_companies_missing_profile`, `list_company_profile_history`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要。企業の候補確認、プロフィール欠落一覧、プロフィール履歴、保守コンテキストと書き込みは認証が必要 |
 | 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status/verify | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
-| 収集キュー | target/source/check の一覧、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
+| 収集キュー | target/source/check の一覧、確認状況フィルター、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
 | OAuth接続管理 | `backend/app/scripts/mcp_connections.py` | サーバー上の運用コマンド |
 
 書き込みツールは、入力を [`backend/app/schemas.py`](./backend/app/schemas.py) で検証し、ドメインエラーを構造化して返します。実際の保存や整合性処理は `mcp_server.py` に複製せず `backend/app/services/` へ委譲します。
@@ -141,11 +141,11 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 
 | ファイル | 責務 |
 | --- | --- |
-| `services/opportunities.py` | 検索、関連度、カーソル、固定値解決、重複検出、書き込み、論理削除・復元、監査、MCP保守キューの対象状態判定 |
-| `services/companies.py` | 企業名の正規化、正式名・別名の完全一致、候補提示、公開コードの発行と解決、別名・複数カテゴリ・プロフィールの冪等書き込み |
+| `services/opportunities.py` | 検索、登録・最終編集日時フィルターと条件付きカーソル、関連度、固定値解決、重複検出、書き込み、論理削除・復元、監査、MCP保守キューの対象状態判定 |
+| `services/companies.py` | 企業名の正規化、正式名・別名の完全一致、候補提示、公開コードの発行と解決、プロフィール欠落の検索、プロフィール変更履歴の読み取り、別名・複数カテゴリ・プロフィールの冪等書き込み |
 | `services/company_pages.py` | 企業ページの読み取り。現在／過去の募集の分割、index対象企業の一覧と現行募集件数の集計 |
 | `services/company_industries.py` | 企業と複数業界・業種の分類を維持 |
-| `services/collection_targets.py` | 企業単位の収集対象、情報源、確認履歴、優先度・次回確認日 |
+| `services/collection_targets.py` | 企業単位の収集対象、情報源、確認履歴、導出される確認状況の絞り込み、優先度・次回確認日 |
 | `services/masters.py` / `master_cache.py` | 固定値の解決とキャッシュ |
 | `services/normalization.py` | 企業名、タグ、一次情報URLの正規化 |
 | `services/oauth.py` | OAuth client、PKCE認可コード、access/refresh token、grant失効 |
@@ -309,9 +309,9 @@ MCP client
 | 起動時の必須設定・信頼するプロキシ | `backend/app/config.py`, `docker-compose.yml`, `frontend/lib/site.ts`, `frontend/lib/api.ts` | `.env.example`, `relua.conf`, `test_security.py`, `test_rate_limit.py`、ADR-0019 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
-| 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py` |
-| 企業同一性・別名 | `services/companies.py`, `company_industries.py` | `models.py`, identity/collection tests、関連ADR |
-| 収集キュー | `services/collection_targets.py` | `models.py`, `test_collection_targets.py`, MCP tool definitions |
+| 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py`。日時フィルターはカーソル条件にも含める |
+| 企業同一性・プロフィール履歴 | `services/companies.py`, `company_industries.py` | `models.py` の `AuditLog`, identity/collection tests、関連ADR |
+| 収集キュー | `services/collection_targets.py` | `models.py`, `test_collection_targets.py`, MCP tool definitions。確認状況は履歴列から導出する |
 | OAuth・MCP認証 | `main.py`, `api/oauth.py`, `services/oauth.py`, `mcp_server.py` | `test_oauth.py`, `test_oauth_endpoints.py`, `relua.conf` |
 | 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、`.github/workflows/maintenance.yml`、該当サービスのテスト |
 | DBスキーマ | `models.py`, 最新 migration | 0001 fresh DB、全 upgrade、PostgreSQL CI |

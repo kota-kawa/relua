@@ -13,7 +13,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.types import Tool as MCPTool
 from mcp.types import ToolAnnotations
-from pydantic import Field, ValidationError
+from pydantic import BeforeValidator, Field, ValidationError
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -27,6 +27,7 @@ from app.schemas import (
     CollectionSourceCreateRequest,
     CollectionSourceUpdatePayload,
     CollectionSourceUpdateRequest,
+    CollectionTargetCheckStatus,
     CollectionTargetCreatePayload,
     CollectionTargetCreateRequest,
     CollectionTargetResponse,
@@ -53,6 +54,8 @@ from app.schemas import (
     MCPCompanyIndustryWriteResponse,
     MCPCompanyMaintenanceContextResponse,
     MCPCompanyMergeResponse,
+    MCPCompanyProfileGapListResponse,
+    MCPCompanyProfileHistoryResponse,
     MCPCompanyProfileWriteResponse,
     MCPCompanyResolutionResponse,
     MCPDeletePreviewResponse,
@@ -105,7 +108,10 @@ from app.services.companies import (
     CompanyIdentityValidationError,
     add_company_alias,
     company_identity_dict,
+    company_profile_missing_fields,
     delete_company_alias,
+    list_companies_missing_profile,
+    list_company_profile_history,
     merge_company,
     replace_company_industries,
     resolve_company_candidates,
@@ -149,6 +155,16 @@ from app.services.rate_limit import register_validation_failure
 from app.services.serialization import detail_url, master_dict, opportunity_dict, opportunity_summary
 
 settings = get_settings()
+MAX_SEARCH_DATETIME_LENGTH = 64
+
+
+def _validate_search_datetime_length(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > MAX_SEARCH_DATETIME_LENGTH:
+        raise ValueError(f"日時は{MAX_SEARCH_DATETIME_LENGTH}文字以内で指定してください")
+    return value
+
+
+BoundedSearchDatetime = Annotated[datetime | None, BeforeValidator(_validate_search_datetime_length)]
 public_url = urlsplit(settings.mcp_public_url)
 public_host = public_url.hostname
 
@@ -502,7 +518,7 @@ def _prepare_opportunity_patch(
 @mcp.tool(
     title="募集情報を検索",
     description=(
-        "登録済みの募集情報をキーワードと固定値で検索し、概要の一覧を返します。ログインは不要です。"
+        "登録済みの募集情報をキーワード、固定値、登録日時、最終編集日時で検索し、概要の一覧を返します。ログインは不要です。"
         "続きがある場合はnext_cursorを同じ検索条件でcursorへ渡すため、一覧の途中でレコードが削除されても"
         "ページ境界の重複や取得漏れが起きません。説明文は冒頭のみ返るため、全文が必要な1件は"
         "get_opportunityで取得してください。"
@@ -531,6 +547,38 @@ def search_opportunity(
     job_category: Annotated[list[JobCategoryValue] | None, Field(description="対象職種で絞り込みます。")] = None,
     graduation_year: Annotated[list[GraduationYearValue] | None, Field(description="対象卒業年で絞り込みます。")] = None,
     degree: Annotated[list[DegreeValue] | None, Field(description="対象学位で絞り込みます。")] = None,
+    created_at_after: Annotated[
+        BoundedSearchDatetime,
+        Field(
+            description="募集の登録日時の下限（日時文字列は64文字以内）。ISO 8601日時で指定し、指定境界を含みます。タイムゾーン省略時はUTCとして扱います。",
+            examples=["2026-10-01T00:00:00+09:00"],
+            json_schema_extra={"maxLength": MAX_SEARCH_DATETIME_LENGTH},
+        ),
+    ] = None,
+    created_at_before: Annotated[
+        BoundedSearchDatetime,
+        Field(
+            description="募集の登録日時の上限（日時文字列は64文字以内）。ISO 8601日時で指定し、指定境界を含みます。タイムゾーン省略時はUTCとして扱います。",
+            examples=["2026-10-31T23:59:59+09:00"],
+            json_schema_extra={"maxLength": MAX_SEARCH_DATETIME_LENGTH},
+        ),
+    ] = None,
+    updated_at_after: Annotated[
+        BoundedSearchDatetime,
+        Field(
+            description="募集の最終編集日時の下限（日時文字列は64文字以内）。ISO 8601日時で指定し、指定境界を含みます。タイムゾーン省略時はUTCとして扱います。",
+            examples=["2026-10-01T00:00:00+09:00"],
+            json_schema_extra={"maxLength": MAX_SEARCH_DATETIME_LENGTH},
+        ),
+    ] = None,
+    updated_at_before: Annotated[
+        BoundedSearchDatetime,
+        Field(
+            description="募集の最終編集日時の上限（日時文字列は64文字以内）。ISO 8601日時で指定し、指定境界を含みます。タイムゾーン省略時はUTCとして扱います。",
+            examples=["2026-10-31T23:59:59+09:00"],
+            json_schema_extra={"maxLength": MAX_SEARCH_DATETIME_LENGTH},
+        ),
+    ] = None,
     sort: Annotated[
         SortValue,
         Field(
@@ -565,6 +613,10 @@ def search_opportunity(
                 job_category=job_category,
                 graduation_year=graduation_year,
                 degree=degree,
+                created_at_after=created_at_after,
+                created_at_before=created_at_before,
+                updated_at_after=updated_at_after,
+                updated_at_before=updated_at_before,
                 sort=sort,
                 page=None,
                 per_page=per_page,
@@ -1651,6 +1703,7 @@ def restore_opportunity_tool(
     description=(
         "運営者用の情報収集対象を企業名、業界、業種、優先度、確認期限で絞り込みます。"
         "source_gap=trueで、採用・インターンページが未登録の対象だけを取り出せます。"
+        "check_statusesで未確認・募集発見・募集なし・情報源を確認できない・要確認の状態を絞り込めます。"
         "返却する募集一覧は定期再確認対象（募集予定・募集中・通年募集）だけで、締切などの終了状態は含みません。"
         "無効化済みの対象はinclude_inactive=trueの場合だけ返します。認証が必要です。"
     ),
@@ -1674,6 +1727,10 @@ def list_collection_targets_tool(
             )
         ),
     ] = False,
+    check_statuses: Annotated[
+        list[CollectionTargetCheckStatus] | None,
+        Field(description="現在の確認状況で絞り込みます。複数指定した場合はいずれかに一致する対象を返します。"),
+    ] = None,
     include_inactive: Annotated[bool, Field(description="無効化済みの対象も含めます。")] = False,
     page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
     per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数。")] = 20,
@@ -1687,6 +1744,7 @@ def list_collection_targets_tool(
             priority_tier=priority_tier,
             due_only=due_only,
             source_gap=source_gap,
+            check_statuses=check_statuses,
             include_inactive=include_inactive,
             page=page,
             per_page=per_page,
@@ -1793,6 +1851,90 @@ def list_unmonitored_companies_tool(
         return MCPUnmonitoredCompanyListResponse.model_validate(
             {
                 "items": [unmonitored_company_dict(item) for item in result.items],
+                "total": result.total,
+                "page": result.page,
+                "per_page": result.per_page,
+                "total_pages": result.total_pages,
+            }
+        )
+
+
+@mcp.tool(
+    name="list_companies_missing_profile",
+    title="プロフィール未登録の企業を一覧",
+    description=(
+        "企業ページの掲載に必要な一言説明（business_summary）または事業内容本文（description）が"
+        "未登録・空欄の企業を一覧します。収集対象の有無にかかわらず確認できます。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def list_companies_missing_profile_tool(
+    query: Annotated[str | None, Field(description="企業名または登録済み別名の部分一致キーワード。", max_length=200)] = None,
+    industry: Annotated[IndustryValue | None, Field(description="企業分類の業界。省略すると全業界。")] = None,
+    page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
+    per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数（1〜50）。")] = 20,
+) -> MCPCompanyProfileGapListResponse:
+    with SessionLocal() as db:
+        result = list_companies_missing_profile(db, query=query, industry=industry, page=page, per_page=per_page)
+        items = []
+        for company in result.items:
+            missing_profile_fields = company_profile_missing_fields(company)
+            items.append(company_identity_dict(company) | {"missing_profile_fields": missing_profile_fields})
+        return MCPCompanyProfileGapListResponse.model_validate(
+            {
+                "items": items,
+                "total": result.total,
+                "page": result.page,
+                "per_page": result.per_page,
+                "total_pages": result.total_pages,
+            }
+        )
+
+
+@mcp.tool(
+    name="list_company_profile_history",
+    title="企業プロフィールの変更履歴を一覧",
+    description=(
+        "企業IDに紐づく成功済みのプロフィール更新履歴を新しい順に返します。"
+        "各履歴には確認した公式ページ、更新前後のプロフィール、記録日時を含みます。認証が必要です。"
+    ),
+    annotations=READ_ONLY,
+)
+def list_company_profile_history_tool(
+    company_id: Annotated[int, Field(ge=1, description="履歴を確認する企業ID。resolve_companyなどが返すidを指定します。")],
+    page: Annotated[int, Field(ge=1, description="1から始まるページ番号。最新の履歴が1ページ目にあります。")] = 1,
+    per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数（1〜50）。")] = 20,
+) -> MCPCompanyProfileHistoryResponse:
+    with SessionLocal() as db:
+        try:
+            result = list_company_profile_history(db, company_id=company_id, page=page, per_page=per_page)
+        except LookupError as exc:
+            raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"}) from exc
+
+        def snapshot(data: Any) -> dict[str, Any]:
+            value = data if isinstance(data, dict) else {}
+            return {
+                "business_summary": value.get("business_summary"),
+                "description": value.get("description"),
+                "business_areas": value.get("business_areas") or [],
+                "website_url": value.get("website_url"),
+                "updated_at": value.get("updated_at"),
+            }
+
+        return MCPCompanyProfileHistoryResponse.model_validate(
+            {
+                "items": [
+                    {
+                        "id": item.id,
+                        "request_id": item.request_id,
+                        "client_name": item.client_name,
+                        "source_url": item.source_url,
+                        "changed_at": item.created_at,
+                        "before": snapshot((item.changes or {}).get("before")),
+                        "after": snapshot((item.changes or {}).get("after")),
+                    }
+                    for item in result.items
+                ],
                 "total": result.total,
                 "page": result.page,
                 "per_page": result.per_page,

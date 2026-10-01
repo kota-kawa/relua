@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from app.schemas import (
@@ -655,6 +657,45 @@ def test_check_status_maps_last_check_result(db, result, expected_status):
     )
     refreshed = get_collection_target(db, target.id)
     assert collection_target_dict(db, refreshed)["check_status"] == expected_status
+
+
+def test_list_collection_targets_filters_derived_check_status_before_count_and_pagination(db):
+    targets = {}
+    for status, result in (
+        ("unreviewed", None),
+        ("found", "found"),
+        ("no_active_opportunity", "no_opening"),
+        ("source_unavailable", "unreachable"),
+        ("needs_review", "needs_review"),
+    ):
+        target, _ = create_collection_target(
+            db,
+            target_payload(
+                company_name=f"株式会社確認フィルター{status}",
+                sources=[{"source_type": "recruit", "url": f"https://example.com/filter-{status}"}],
+                request_id=f"check-filter-target-{status}",
+            ),
+        )
+        if result is not None:
+            target.last_checked_at = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+            target.last_check_result = result
+        targets[status] = target
+    db.flush()
+
+    selected_statuses = ["no_active_opportunity", "source_unavailable"]
+    first_page = list_collection_targets(db, check_statuses=selected_statuses, page=1, per_page=1)
+    second_page = list_collection_targets(db, check_statuses=selected_statuses, page=2, per_page=1)
+    expected_ids = {targets["no_active_opportunity"].id, targets["source_unavailable"].id}
+
+    assert first_page.total == 2
+    assert second_page.total == 2
+    assert len(first_page.items) == len(second_page.items) == 1
+    assert {first_page.items[0].id, second_page.items[0].id} == expected_ids
+
+    # The unfiltered first row is unreviewed, so this also verifies filtering occurs before LIMIT/OFFSET.
+    needs_review = list_collection_targets(db, check_statuses=["needs_review"], page=1, per_page=1)
+    assert needs_review.total == 1
+    assert [item.id for item in needs_review.items] == [targets["needs_review"].id]
 
 
 def test_undercovered_collection_targets_orders_by_ascending_linked_opportunities(db):

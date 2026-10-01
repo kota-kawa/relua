@@ -26,9 +26,9 @@ relua にはアカウント・会員・ログインがありません。relua �
 
 ### 運営者
 
-| 段階 | 確認する企業を選ぶ | 公式ページを確認する | 確認を記録する | 募集を登録・更新する | 矛盾・重複を直す |
+| 段階 | 確認する企業を選ぶ | 過去のプロフィールを確認する | 公式ページを確認する | 確認を記録する | 募集を登録・更新する | 矛盾・重複を直す |
 | --- | --- | --- | --- | --- | --- |
-| MCP ツール | `get_collection_queue`、`list_unmonitored_companies`、`list_undercovered_companies` | `get_company_maintenance_context`、`get_collection_target` | `record_collection_check`、`verify_opportunity` | `resolve_company`、`upsert_opportunity`、`patch_opportunity`、`update_recruitment_status` | `list_stale_opportunities`、`find_similar_opportunities`、`find_opportunities_by_source_url`、`merge_company`、`delete_opportunity` |
+| MCP ツール | `get_collection_queue`、`list_unmonitored_companies`、`list_undercovered_companies`、`list_companies_missing_profile` | `list_company_profile_history` | `get_company_maintenance_context`、`get_collection_target` | `record_collection_check`、`verify_opportunity` | `resolve_company`、`upsert_opportunity`、`patch_opportunity`、`update_recruitment_status` | `list_stale_opportunities`、`find_similar_opportunities`、`find_opportunities_by_source_url`、`merge_company`、`delete_opportunity` |
 
 ツールの一覧と認証要否の正本は [`../../README.md`](../../README.md) の「MCPツール」表です。
 
@@ -40,11 +40,14 @@ relua にはアカウント・会員・ログインがありません。relua �
 | --- | --- | --- | --- | --- |
 | 募集（インターン、本選考、説明会など 1 件の機会） | 募集、募集情報 | `opportunity`、`*_opportunity` | `opportunities` | `Opportunity`、`services/opportunities.py` |
 | 企業 | 企業 | `company`、`company_id` | `companies` | `Company`、`services/companies.py` |
+| プロフィール欠落企業 | プロフィール未登録・空欄 | `list_companies_missing_profile`、`missing_profile_fields` | `companies.business_summary`、`companies.description` | `services/companies.py` のプロフィール欠落条件 |
+| 企業プロフィール変更履歴 | プロフィール変更履歴 | `list_company_profile_history` | `audit_logs` の `company_profile_update` | `AuditLog`、`services/companies.py` |
 | 企業別名（略称・英語名・旧社名） | 別名 | `alias` | `company_aliases` | `CompanyAlias` |
 | 公開コード（URL・共有に使う 8 文字） | 公開コード | `public_code` | `public_code` 列 | `models.py` の `public_code_string`、公開 URL は `services/serialization.py` |
 | 業界／業種 | 業界／業種 | `industry`／`sector` | `industries`／`sectors` | `Industry`／`Sector` |
 | 企業の業界分類（多対多） | 業界・業種カテゴリ | `set_company_industries` | `company_industries` | `CompanyIndustry` |
 | 募集状況 | 募集状況 | `recruitment_status` | `recruitment_statuses` | `RecruitmentStatus` |
+| 募集の登録・編集日時 | 登録日時・最終編集日時 | `created_at`、`updated_at`、`search_opportunity` の `*_at_after`／`*_at_before` | `opportunities.created_at`、`opportunities.updated_at` | `Opportunity`、`services/opportunities.py` |
 | 種別（インターン、本選考など） | 種別（画面では「募集種別」） | `event_type` | `event_types` | `EventType` |
 | 開催形式 | 開催形式 | `event_format` | `event_formats` | `EventFormat` |
 | 対象卒業年 | 対象卒業年 | `graduation_years` | `graduation_years` | `GraduationYear` |

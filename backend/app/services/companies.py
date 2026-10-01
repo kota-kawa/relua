@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Literal
@@ -21,6 +22,7 @@ from app.models import (
     CompanyAlias,
     CompanyIndustry,
     CompanyRequestRecord,
+    Industry,
     Opportunity,
     public_code_string,
 )
@@ -40,6 +42,7 @@ assert set(COMPANY_PROFILE_FIELDS) == set(COMPANY_PROFILE_FIELD_NAMES)
 
 CompanyMatchType = Literal["canonical_exact", "alias_exact", "partial", "fuzzy"]
 COMPANY_FUZZY_THRESHOLD = 0.3
+PROFILE_TEXT_WHITESPACE = " \t\n\r\v\f\u00a0\u3000"
 
 #: LIKE/ILIKE has no default escape character in either PostgreSQL or SQLite, so one has to be
 #: declared on every comparison that uses a pattern built from user input. Mirrors
@@ -74,6 +77,30 @@ class CompanyCandidate:
     match_type: CompanyMatchType
     matched_name: str
     score: float
+
+
+@dataclass
+class CompanyProfileGapList:
+    items: list[Company]
+    total: int
+    page: int
+    per_page: int
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, math.ceil(self.total / self.per_page))
+
+
+@dataclass
+class CompanyProfileHistoryPage:
+    items: list[AuditLog]
+    total: int
+    page: int
+    per_page: int
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, math.ceil(self.total / self.per_page))
 
 
 def company_identity_dict(company: Company) -> dict[str, Any]:
@@ -878,3 +905,96 @@ def company_keyword_filter(db: Session, query: str) -> ColumnElement[bool]:
             ]
         )
     return or_(*matches)
+
+
+def company_profile_missing_fields(company: Company) -> list[Literal["business_summary", "description"]]:
+    """Return required public-page profile text fields that are empty or whitespace-only."""
+    return [
+        field
+        for field in ("business_summary", "description")
+        if not (getattr(company, field) or "").strip(PROFILE_TEXT_WHITESPACE)
+    ]
+
+
+def _company_profile_has_gaps(db: Session) -> ColumnElement[bool]:
+    """Match companies missing either profile text field used by company pages."""
+    # SQLite's trim(X, Y) and PostgreSQL's btrim(X, Y) both strip the listed edge characters.
+    # The default SQL trim only strips ASCII spaces, which would disagree with Python's whitespace
+    # check for tab/newline-only legacy values.
+    trim = func.btrim if db.get_bind().dialect.name == "postgresql" else func.trim
+    return or_(
+        Company.business_summary.is_(None),
+        func.length(trim(Company.business_summary, PROFILE_TEXT_WHITESPACE)) == 0,
+        Company.description.is_(None),
+        func.length(trim(Company.description, PROFILE_TEXT_WHITESPACE)) == 0,
+    )
+
+
+def list_companies_missing_profile(
+    db: Session,
+    *,
+    query: str | None = None,
+    industry: str | None = None,
+    page: int = 1,
+    per_page: int = 20,
+) -> CompanyProfileGapList:
+    """List every company missing a summary or description, regardless of collection target."""
+    filters: list[ColumnElement[bool]] = [_company_profile_has_gaps(db)]
+    if query:
+        filters.append(company_keyword_filter(db, query.strip()))
+    if industry:
+        industry_ids = select(Industry.id).where(or_(Industry.name == industry, Industry.slug == industry))
+        filters.append(
+            select(CompanyIndustry.id)
+            .where(
+                CompanyIndustry.company_id == Company.id,
+                CompanyIndustry.industry_id.in_(industry_ids),
+            )
+            .correlate(Company)
+            .exists()
+        )
+
+    count_stmt = select(func.count(Company.id)).where(*filters)
+    stmt = (
+        company_profile_query()
+        .options(selectinload(Company.aliases))
+        .where(*filters)
+        .order_by(Company.name)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    items = list(db.scalars(stmt).unique())
+    return CompanyProfileGapList(
+        items=items,
+        total=int(db.scalar(count_stmt) or 0),
+        page=page,
+        per_page=per_page,
+    )
+
+
+def list_company_profile_history(
+    db: Session, *, company_id: int, page: int = 1, per_page: int = 20
+) -> CompanyProfileHistoryPage:
+    if db.get(Company, company_id) is None:
+        raise LookupError("company_not_found")
+
+    filters = (
+        AuditLog.entity_type == "company",
+        AuditLog.entity_id == str(company_id),
+        AuditLog.action == "company_profile_update",
+        AuditLog.success.is_(True),
+    )
+    count_stmt = select(func.count(AuditLog.id)).where(*filters)
+    stmt = (
+        select(AuditLog)
+        .where(*filters)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    return CompanyProfileHistoryPage(
+        items=list(db.scalars(stmt)),
+        total=int(db.scalar(count_stmt) or 0),
+        page=page,
+        per_page=per_page,
+    )

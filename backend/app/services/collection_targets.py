@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import case, func, or_, select, text
+from sqlalchemy import and_, case, false, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -26,6 +26,7 @@ from app.schemas import (
     CollectionCheckRequest,
     CollectionSourceCreateRequest,
     CollectionSourceUpdateRequest,
+    CollectionTargetCheckStatus,
     CollectionTargetCreateRequest,
     CollectionTargetUpdateRequest,
     CompanyIndustryInput,
@@ -214,6 +215,38 @@ def _check_status(target: CollectionTarget) -> str:
     return _CHECK_STATUS_BY_RESULT.get(target.last_check_result, "needs_review")
 
 
+def _check_status_clause(statuses: list[CollectionTargetCheckStatus]):
+    """Match the derived check status using its persisted source columns."""
+    selected = set(statuses)
+    conditions = []
+    if "unreviewed" in selected:
+        conditions.append(CollectionTarget.last_checked_at.is_(None))
+
+    result_values = [
+        result for result, status in _CHECK_STATUS_BY_RESULT.items() if status in selected
+    ]
+    if result_values:
+        conditions.append(
+            and_(
+                CollectionTarget.last_checked_at.is_not(None),
+                CollectionTarget.last_check_result.in_(result_values),
+            )
+        )
+    if "needs_review" in selected:
+        # _check_status defaults unknown and NULL results to needs_review. The DB constraint
+        # currently limits non-NULL values, but keep this predicate equivalent to the derived view.
+        conditions.append(
+            and_(
+                CollectionTarget.last_checked_at.is_not(None),
+                or_(
+                    CollectionTarget.last_check_result.is_(None),
+                    CollectionTarget.last_check_result.not_in(tuple(_CHECK_STATUS_BY_RESULT)),
+                ),
+            )
+        )
+    return or_(*conditions) if conditions else false()
+
+
 #: The source types that actually carry openings. A target monitoring only the corporate top page
 #: (source_type='other') technically has a source, but nothing that a new posting would appear on,
 #: so it silently produces no_opening forever. These two decide has_primary_source below.
@@ -361,6 +394,7 @@ def list_collection_targets(
     priority_tier: int | None = None,
     due_only: bool = False,
     source_gap: bool = False,
+    check_statuses: list[CollectionTargetCheckStatus] | None = None,
     include_inactive: bool = False,
     page: int = 1,
     per_page: int = 20,
@@ -378,6 +412,8 @@ def list_collection_targets(
         filters.append(CollectionTarget.priority_tier == priority_tier)
     if source_gap:
         filters.append(~_has_primary_source_clause())
+    if check_statuses:
+        filters.append(_check_status_clause(check_statuses))
     if not include_inactive:
         filters.append(CollectionTarget.is_active.is_(True))
     if due_only:

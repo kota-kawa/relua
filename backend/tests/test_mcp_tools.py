@@ -104,6 +104,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "list_stale_opportunities",
         "list_collection_targets",
         "list_unmonitored_companies",
+        "list_companies_missing_profile",
+        "list_company_profile_history",
         "get_collection_target",
         "get_company_maintenance_context",
         "get_collection_queue",
@@ -140,6 +142,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["get_company_maintenance_context"]["annotations"]["readOnlyHint"] is True
     assert tools["get_company_maintenance_context"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
     assert tools["list_unmonitored_companies"]["annotations"]["readOnlyHint"] is True
+    assert tools["list_companies_missing_profile"]["annotations"]["readOnlyHint"] is True
+    assert tools["list_company_profile_history"]["annotations"]["readOnlyHint"] is True
     assert tools["update_collection_target"]["annotations"]["destructiveHint"] is False
     assert tools["patch_opportunity"]["annotations"]["destructiveHint"] is False
     assert tools["preview_opportunity_patch"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
@@ -164,6 +168,9 @@ def test_search_filters_publish_their_allowed_values():
     assert properties["sort"]["enum"] == ["relevance", "deadline", "updated", "created"]
     assert properties["sort"]["default"] == "relevance"
     assert "募集中" in properties["recruitment_status"]["anyOf"][0]["items"]["enum"]
+    assert properties["created_at_after"]["anyOf"][0]["format"] == "date-time"
+    assert properties["created_at_after"]["maxLength"] == 64
+    assert properties["updated_at_before"]["anyOf"][0]["format"] == "date-time"
     assert set(properties) == {
         "query",
         "recruitment_status",
@@ -174,6 +181,10 @@ def test_search_filters_publish_their_allowed_values():
         "job_category",
         "graduation_year",
         "degree",
+        "created_at_after",
+        "created_at_before",
+        "updated_at_after",
+        "updated_at_before",
         "sort",
         "cursor",
         "per_page",
@@ -218,6 +229,7 @@ def test_search_returns_summaries_with_a_citable_url(tools, db):
     hit = result["items"][0]
     assert hit["url"] == f"http://localhost:3100/opportunities/{hit['public_code']}"
     assert hit["company_name"] == "株式会社テスト"
+    assert hit["created_at"]
     assert "description" not in hit
     assert hit["description_excerpt"].startswith("プロダクト開発")
 
@@ -302,6 +314,66 @@ def test_search_cursor_rejects_changed_search_conditions(tools, db):
     )
 
     assert error["error"] == "invalid_cursor"
+
+
+def test_search_cursor_rejects_changed_timestamp_filters(tools, db):
+    seed(db, event_name="日時条件1", source_url="https://example.com/cursor-time-1")
+    seed(db, event_name="日時条件2", source_url="https://example.com/cursor-time-2")
+    first_page = call("search_opportunity", {"created_at_after": "2026-01-01T00:00:00Z", "per_page": 1})
+
+    error = tool_error(
+        "search_opportunity",
+        {
+            "created_at_after": "2026-02-01T00:00:00Z",
+            "per_page": 1,
+            "cursor": first_page["next_cursor"],
+        },
+    )
+
+    assert error["error"] == "invalid_cursor"
+
+
+def test_search_filters_by_inclusive_created_and_updated_at_bounds(tools, db):
+    postings = [
+        seed(db, event_name=f"日時境界{index}", source_url=f"https://example.com/time-bound-{index}")
+        for index in range(1, 4)
+    ]
+    timestamps = [
+        (
+            datetime(2024, 9, 1, tzinfo=timezone.utc),  # noqa: UP017 -- tests also support Python 3.10
+            datetime(2024, 10, 1, tzinfo=timezone.utc),  # noqa: UP017 -- tests also support Python 3.10
+        ),
+        (
+            datetime(2024, 10, 1, tzinfo=timezone.utc),  # noqa: UP017 -- tests also support Python 3.10
+            datetime(2024, 10, 2, tzinfo=timezone.utc),  # noqa: UP017 -- tests also support Python 3.10
+        ),
+        (
+            datetime(2024, 10, 2, tzinfo=timezone.utc),  # noqa: UP017 -- tests also support Python 3.10
+            datetime(2024, 10, 3, tzinfo=timezone.utc),  # noqa: UP017 -- tests also support Python 3.10
+        ),
+    ]
+    for item, (created_at, updated_at) in zip(postings, timestamps, strict=True):
+        item.created_at = created_at
+        item.updated_at = updated_at
+    db.commit()
+
+    by_creation = call(
+        "search_opportunity",
+        {
+            "created_at_after": "2024-10-01T09:00:00+09:00",
+            "created_at_before": "2024-10-02T00:00:00Z",
+        },
+    )
+    by_edit = call(
+        "search_opportunity",
+        {
+            "updated_at_after": "2024-10-02T00:00:00Z",
+            "updated_at_before": "2024-10-02T09:00:00+09:00",
+        },
+    )
+
+    assert {item["id"] for item in by_creation["items"]} == {postings[1].id, postings[2].id}
+    assert {item["id"] for item in by_edit["items"]} == {postings[1].id}
 
 
 def test_search_accepts_the_filters_the_rest_api_has(tools, db):
@@ -423,6 +495,94 @@ def test_mcp_writes_a_company_profile_and_replays_the_same_request(tools, db):
     assert [area["name"] for area in patched["company"]["business_areas"]] == ["自社SaaS事業"]
     assert patched["company"]["business_summary"] == COMPANY_SUMMARY
     assert patched["company"]["website_url"] == "https://profile.example.com/"
+
+
+def test_mcp_lists_companies_missing_either_profile_text_field(tools, db):
+    missing_both = seed(db, company_name="株式会社説明なし", event_name="説明なし募集")
+    summary_only = seed(
+        db,
+        company_name="株式会社本文なし",
+        event_name="本文なし募集",
+        source_url="https://example.com/no-body",
+    )
+    full_profile = seed(
+        db,
+        company_name="株式会社プロフィール完了",
+        event_name="プロフィール完了募集",
+        source_url="https://example.com/full-profile",
+    )
+    whitespace_profile = seed(
+        db,
+        company_name="株式会社空白プロフィール",
+        event_name="空白プロフィール募集",
+        source_url="https://example.com/whitespace-profile",
+    )
+    whitespace_profile.company.business_summary = "\t\n"
+    whitespace_profile.company.description = COMPANY_DESCRIPTION
+    db.commit()
+    call(
+        "add_collection_target",
+        collection_target_args(
+            company_id=missing_both.company_id,
+            company_name=None,
+            request_id="profile-gap-existing-target-1",
+        ),
+    )
+    call(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=summary_only.company_id,
+            description=None,
+            business_areas=None,
+            website_url=None,
+            source_url="https://profile.example.com/company/summary-only",
+            request_id="profile-gap-summary-only-1",
+        ),
+    )
+    call(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=full_profile.company_id,
+            request_id="profile-gap-full-1",
+        ),
+    )
+
+    result = call("list_companies_missing_profile", {"per_page": 50})
+    missing = {item["id"]: item["missing_profile_fields"] for item in result["items"]}
+
+    assert result["total"] == 3
+    assert missing[missing_both.company_id] == ["business_summary", "description"]
+    assert missing[summary_only.company_id] == ["description"]
+    assert missing[whitespace_profile.company_id] == ["business_summary"]
+    assert full_profile.company_id not in missing
+
+
+def test_mcp_lists_company_profile_history_newest_first(tools, db):
+    item = seed(db, company_name="株式会社履歴確認", event_name="履歴確認募集")
+    call(
+        "update_company_profile",
+        company_profile_payload(company_id=item.company_id, request_id="profile-history-mcp-0001"),
+    )
+    call(
+        "update_company_profile",
+        company_profile_payload(
+            company_id=item.company_id,
+            business_summary="プロフィールの要点を更新し、提供サービスと対象顧客を具体的に説明します。",
+            request_id="profile-history-mcp-0002",
+            source_url="https://profile.example.com/company/updated",
+        ),
+    )
+
+    history = call("list_company_profile_history", {"company_id": item.company_id})
+
+    assert history["total"] == 2
+    assert history["items"][0]["request_id"] == "profile-history-mcp-0002"
+    assert history["items"][0]["source_url"] == "https://profile.example.com/company/updated"
+    assert history["items"][0]["before"]["business_summary"] == COMPANY_SUMMARY
+    assert history["items"][0]["after"]["business_summary"].startswith("プロフィールの要点を更新")
+    assert history["items"][1]["request_id"] == "profile-history-mcp-0001"
+    assert history["items"][1]["after"]["description"] == COMPANY_DESCRIPTION
+    assert tool_error("list_company_profile_history", {"company_id": item.company_id + 1000})["error"] == "not_found"
 
 
 def test_mcp_company_profile_refuses_a_thin_profile(tools, db):
@@ -1377,6 +1537,38 @@ def collection_target_args(**overrides) -> dict:
     return {"payload": payload | overrides}
 
 
+def test_list_collection_targets_filters_by_current_check_status(tools):
+    unreviewed = call(
+        "add_collection_target",
+        collection_target_args(company_name="株式会社未確認", request_id="status-filter-target-1"),
+    )["target"]
+    no_opening = call(
+        "add_collection_target",
+        collection_target_args(company_name="株式会社募集なし", request_id="status-filter-target-2"),
+    )["target"]
+    call(
+        "record_collection_check",
+        {
+            "target_id": no_opening["id"],
+            "payload": {
+                "result": "no_opening",
+                "source_url": "https://example.com/recruit",
+                "request_id": "status-filter-check-0001",
+                "client_name": "pytest",
+            },
+        },
+    )
+
+    unreviewed_result = call("list_collection_targets", {"check_statuses": ["unreviewed"]})
+    no_opening_result = call("list_collection_targets", {"check_statuses": ["no_active_opportunity"]})
+    combined = call("list_collection_targets", {"check_statuses": ["unreviewed", "no_active_opportunity"]})
+
+    assert [item["id"] for item in unreviewed_result["items"]] == [unreviewed["id"]]
+    assert [item["id"] for item in no_opening_result["items"]] == [no_opening["id"]]
+    assert {item["id"] for item in combined["items"]} == {unreviewed["id"], no_opening["id"]}
+    assert combined["total"] == 2
+
+
 def test_collection_targets_allow_large_operator_imports(tools):
     for index in range(100):
         created = call(
@@ -1480,6 +1672,14 @@ def test_collection_target_schema_is_actionable_for_mcp_clients():
     assert any(item.get("minimum") == 1 for item in payload["properties"]["company_id"]["anyOf"])
     assert "company_name" in payload["properties"]
     assert payload["properties"]["sources"]["items"]["properties"]["url"]["description"]
+    target_filters = schemas["list_collection_targets"]["properties"]
+    assert target_filters["check_statuses"]["anyOf"][0]["items"]["enum"] == [
+        "unreviewed",
+        "found",
+        "no_active_opportunity",
+        "source_unavailable",
+        "needs_review",
+    ]
     assert schemas["record_collection_check"]["properties"]["payload"]["properties"]["result"]["enum"] == [
         "found",
         "no_opening",
@@ -1758,7 +1958,7 @@ def test_the_boundary_lets_the_intentional_json_errors_through(tools, db):
 
 
 def test_anonymous_tools_bound_every_string_they_accept():
-    """One keyword becomes eight ilike patterns plus relevance scoring.
+    """Anonymous inputs must be bounded before query work or datetime parsing.
 
     Unbounded, that is an unauthenticated way to buy an arbitrarily expensive scan, so the anonymous
     tools carry the same bounds the authenticated list_* tools already had.
@@ -1782,7 +1982,10 @@ def test_anonymous_tools_bound_every_string_they_accept():
         for field, prop in schemas[name]["properties"].items():
             options = prop.get("anyOf") or [prop]
             for option in options:
-                if option.get("type") == "string" and "enum" not in option:
+                if option.get("format") == "date-time":
+                    assert prop.get("maxLength") == mcp_server.MAX_SEARCH_DATETIME_LENGTH
+                    continue
+                if option.get("type") == "string" and "enum" not in option and option.get("format") != "date-time":
                     assert option.get("maxLength"), f"{name}.{field} accepts an unbounded string"
 
 
@@ -1793,6 +1996,16 @@ def test_an_oversized_anonymous_query_is_refused_before_the_database_sees_it(too
     monkeypatch.setattr(mcp_server, "search_opportunities", unreachable)
     with pytest.raises(ToolError):
         asyncio.run(mcp_server.mcp.call_tool("search_opportunity", {"query": "あ" * 201}))
+
+
+def test_an_oversized_anonymous_datetime_is_refused_before_parsing(tools, db, monkeypatch):
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("the search service must not be reached")
+
+    monkeypatch.setattr(mcp_server, "search_opportunities", unreachable)
+    long_fraction = "2026-10-01T00:00:00." + "1" * 100_000 + "Z"
+    with pytest.raises(ToolError):
+        asyncio.run(mcp_server.mcp.call_tool("search_opportunity", {"created_at_after": long_fraction}))
 
 
 # --- ADR-0002: every rejected write is audited ----------------------------------------------------

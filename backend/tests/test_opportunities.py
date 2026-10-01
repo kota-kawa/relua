@@ -22,6 +22,7 @@ from app.services.normalization import normalize_company_name, normalize_tag
 from app.services.opportunities import (
     COMPANY_CANDIDATE_LIMIT,
     DomainValidationError,
+    InvalidSearchCursor,
     delete_opportunity,
     find_exact_duplicates,
     find_probable_duplicates,
@@ -39,6 +40,29 @@ from app.services.opportunities import (
     write_opportunity,
 )
 from tests.test_validation import valid_payload
+
+
+def _create_search_timestamped_opportunities(db, count=3):
+    created = []
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    for index in range(count):
+        item, _ = write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(
+                valid_payload()
+                | {
+                    "event_name": f"日時検索{index}",
+                    "source_url": f"https://example.com/search-timestamp-{index}",
+                }
+            ),
+            request_id=f"search-timestamp-{index:04d}",
+            client_name="pytest",
+        )
+        item.created_at = base + timedelta(days=index)
+        item.updated_at = base + timedelta(days=10 + index)
+        created.append(item)
+    db.commit()
+    return created
 
 
 def test_create_search_and_idempotent_replay(db):
@@ -65,6 +89,102 @@ def test_create_search_and_idempotent_replay(db):
     assert result.items[0].company.name == "株式会社テスト"
     assert search_opportunities(db, degree=["degree-01"]).total == 1
     assert search_opportunities(db, degree=["degree-06"]).total == 0
+
+
+def test_search_filters_created_and_updated_at_with_inclusive_boundaries(db):
+    items = _create_search_timestamped_opportunities(db)
+    base = items[0].created_at
+    created_at_mid = items[1].created_at
+    updated_at_mid = items[1].updated_at
+
+    assert [
+        item.id
+        for item in search_opportunities(db, created_at_after=created_at_mid, sort="created").items
+    ] == [items[2].id, items[1].id]
+    assert [
+        item.id
+        for item in search_opportunities(db, created_at_before=created_at_mid, sort="created").items
+    ] == [items[1].id, items[0].id]
+    assert [
+        item.id
+        for item in search_opportunities(db, updated_at_after=updated_at_mid, sort="created").items
+    ] == [items[2].id, items[1].id]
+    assert [
+        item.id
+        for item in search_opportunities(db, updated_at_before=updated_at_mid, sort="created").items
+    ] == [items[1].id, items[0].id]
+
+    exact = search_opportunities(
+        db,
+        created_at_after=created_at_mid,
+        created_at_before=created_at_mid,
+        updated_at_after=updated_at_mid,
+        updated_at_before=updated_at_mid,
+        sort="created",
+    )
+    assert [item.id for item in exact.items] == [items[1].id]
+    assert exact.total == 1
+    assert items[0].created_at == base
+
+
+def test_search_cursor_binds_all_timestamp_filters_and_keeps_its_snapshot(db):
+    items = _create_search_timestamped_opportunities(db)
+    bounds = {
+        "created_at_after": items[0].created_at,
+        "created_at_before": items[2].created_at,
+        "updated_at_after": items[0].updated_at,
+        "updated_at_before": items[2].updated_at,
+    }
+    first_page = search_opportunities(db, **bounds, sort="created", page=None, per_page=1)
+    assert first_page.next_cursor is not None
+
+    for field, value in bounds.items():
+        with pytest.raises(InvalidSearchCursor):
+            search_opportunities(
+                db,
+                **(bounds | {field: value + timedelta(seconds=1)}),
+                sort="created",
+                page=None,
+                per_page=1,
+                cursor=first_page.next_cursor,
+            )
+
+    new_item, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(
+            valid_payload()
+            | {
+                "event_name": "日時検索スナップショット後",
+                "source_url": "https://example.com/search-timestamp-after-snapshot",
+            }
+        ),
+        request_id="search-timestamp-after-snapshot",
+        client_name="pytest",
+    )
+    future = datetime.now(timezone.utc) + timedelta(days=1)  # noqa: UP017 -- tests also support Python 3.10
+    new_item.created_at = future
+    new_item.updated_at = future
+    db.commit()
+
+    seen = [item.id for item in first_page.items]
+    totals = [first_page.total]
+    cursor = first_page.next_cursor
+    while cursor is not None:
+        page = search_opportunities(
+            db,
+            **bounds,
+            sort="created",
+            page=None,
+            per_page=1,
+            cursor=cursor,
+        )
+        seen.extend(item.id for item in page.items)
+        totals.append(page.total)
+        cursor = page.next_cursor
+
+    assert seen == [item.id for item in reversed(items)]
+    assert totals == [len(items)] * len(totals)
+    assert new_item.id not in seen
 
 
 @pytest.mark.parametrize("cursor_mode", [False, True])

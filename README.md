@@ -111,7 +111,7 @@ https://<公開ホスト名>/mcp
 
 | ツール | 認証 | 用途 |
 | --- | --- | --- |
-| `search_opportunity` | 不要 | キーワードを関連度順で検索し、固定値で絞り込んだ概要をカーソル方式で返す |
+| `search_opportunity` | 不要 | キーワード・固定値・登録日時・最終編集日時で絞り込んだ概要をカーソル方式で返す |
 | `get_opportunity` | 不要 | IDまたは公開コードで1件を全項目取得する |
 | `get_master_values` | 不要 | 選択可能な固定値マスタを全件返す |
 | `get_sectors` | 不要 | 指定した業界に属する業種だけを返す |
@@ -121,6 +121,8 @@ https://<公開ホスト名>/mcp
 | `add_company_alias` | 必要 | 公式情報で同一企業と確認した略称・英語名・旧社名を登録する |
 | `set_company_industries` | 必要 | 既存企業の業界・業種カテゴリを複数件まとめて設定する（収集対象の有無を問わない） |
 | `update_company_profile` | 必要 | 企業の一言説明・事業内容の本文・主な事業・公式サイトURLを設定する。企業ページに表示される |
+| `list_companies_missing_profile` | 必要 | 一言説明または事業内容本文が未登録・空欄の企業を、収集対象の有無を問わず一覧する |
+| `list_company_profile_history` | 必要 | 企業IDを指定し、プロフィールの変更日時・出典URL・変更前後の内容を新しい順で取得する |
 | `merge_company` | 必要 | 公式情報で同一と確認した重複企業を、募集・別名・分類・収集対象ごと統合する |
 | `delete_company_alias` | 必要 | 誤登録された企業別名を削除する |
 | `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
@@ -135,7 +137,7 @@ https://<公開ホスト名>/mcp
 | `restore_opportunity` | 必要 | 論理削除した募集を同じID・公開コードのまま復元する |
 | `list_recent_writes` | 必要 | 直近の登録・更新・削除・復元の記録を返す |
 | `list_stale_opportunities` | 必要 | 日付と「募集中」の矛盾を最優先に、公式情報の再確認が必要な募集を取得する |
-| `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧する（採用ページ未登録の対象だけの抽出を含む） |
+| `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧し、採用ページ未登録や現在の確認状況で絞り込む |
 | `list_unmonitored_companies` | 必要 | 企業マスタにあり、まだ情報収集対象を持たない企業を一覧する |
 | `get_collection_target` | 必要 | 収集対象、公式ページ、登録済み募集を1件取得する |
 | `get_company_maintenance_context` | 必要 | 企業の全募集、公式URL、各募集の最終確認日時をまとめて取得する |
@@ -147,7 +149,11 @@ https://<公開ホスト名>/mcp
 | `update_collection_source` | 必要 | 公式ページのURL・種類・有効状態を部分更新する |
 | `record_collection_check` | 必要 | 確認URLを照合し、募集の有無や確認不能などの結果と次回確認日を記録する |
 
-`search_opportunity` の続きを取得するときは、応答の `next_cursor` を検索条件を変えずに次の呼び出しの `cursor` へ渡します。`next_cursor` が `null` になれば終端です。カーソルは検索開始時点と並び順を保持するため、取得済みの募集を途中で削除してもページ境界がずれません。
+`search_opportunity` の登録日時・最終編集日時は `created_at_after`／`created_at_before` と `updated_at_after`／`updated_at_before` で絞り込みます。境界は両端を含み、64文字以内のISO 8601日時で指定します。タイムゾーンを省略した値はUTCとして扱います。応答の `created_at` と `updated_at` で登録・編集時刻を確認できます。
+
+続きを取得するときは、応答の `next_cursor` を検索条件を変えずに次の呼び出しの `cursor` へ渡します。日時範囲を含むすべての条件がカーソルに結び付くため、条件を変えたカーソルは拒否されます。`next_cursor` が `null` になれば終端です。カーソルは検索開始時点と並び順を保持するため、取得済みの募集を途中で削除してもページ境界がずれません。
+
+企業ページのプロフィールを整備するときは、`list_companies_missing_profile` で一言説明または本文が未登録・空欄の企業を探します。`list_company_profile_history` でこれまでの変更日時、公式ページURL、変更前後の内容を確認してから `update_company_profile` を使います。
 
 書き込みツールは運営者本人の認証済み接続だけが呼べるため、1分あたりの操作上限は設けていません。大量登録・一括更新でも各操作の入力検証、request IDによる冪等化、監査ログは通常どおり適用されます。OAuthのログイン試行と動的クライアント登録には、公開エンドポイントを保護するための回数制限を引き続き適用します。
 
@@ -233,6 +239,8 @@ IT・通信/Webサービスを同じ企業へ登録できます。指定した�
 収集対象の更新は部分更新です。省略した項目は維持され、`selection_reason` は明示的に `null` を指定すると解除されます。`industries` だけは例外で、指定した内容で分類を全置換します（業界を追加する場合は既存の業界も併せて送ります）。収集を止める場合はデータを削除せず、`update_collection_target` で `is_active` を `false` にします。公式ページも同様に `update_collection_source` で無効化できます。すべての書き込みは `request_id` で冪等化され、監査ログに記録されます。
 
 企業トップページしか登録されていない収集対象は、巡回しても新しい募集が現れないため `has_primary_source: false` として報告されます。`list_collection_targets` に `source_gap=true` を渡すとその対象だけを取り出せ、`missing_source_types` が未登録の公式ページ種別（`recruit`、`internship`、`event`、`news`）を示します。確認中に採用ページを見つけた場合は、`record_collection_check` の `discovered_sources` へ渡すと確認結果の記録と同時に情報源として追加されます。
+
+同ツールの `check_statuses` は現在の確認状況でOR絞り込みを行います。値は `unreviewed`（未確認）、`found`（募集あり）、`no_active_opportunity`（募集なし）、`source_unavailable`（情報源を確認できない）、`needs_review`（要確認）です。`due_only` と併用すると、選んだ確認状況のうち次回確認期限を過ぎた対象だけを取得できます。
 
 ## 内部REST API
 

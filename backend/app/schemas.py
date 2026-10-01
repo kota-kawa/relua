@@ -952,6 +952,7 @@ class OpportunitySummary(BaseModel):
     tags: list[str]
     entry_url: str | None
     source_url: str
+    created_at: datetime
     updated_at: datetime
     source_checked_at: datetime | None = Field(
         default=None, description="公式情報（source_url）を最後に確認できた日時。未確認の古いレコードはnull。"
@@ -1087,6 +1088,20 @@ class CompanyIdentityResponse(BaseModel):
     )
 
 
+class CompanyProfileGapResponse(CompanyIdentityResponse):
+    missing_profile_fields: list[Literal["business_summary", "description"]] = Field(
+        description="未登録または空欄のプロフィール項目。"
+    )
+
+
+class MCPCompanyProfileGapListResponse(BaseModel):
+    items: list[CompanyProfileGapResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
 class CompanyCandidateResponse(BaseModel):
     company: CompanyIdentityResponse
     match_type: Literal["canonical_exact", "alias_exact", "partial", "fuzzy"]
@@ -1124,6 +1139,32 @@ class MCPCompanyProfileWriteResponse(BaseModel):
     changed: bool
     message: str
     company: CompanyIdentityResponse
+
+
+class CompanyProfileHistorySnapshot(BaseModel):
+    business_summary: str | None
+    description: str | None
+    business_areas: list[CompanyBusinessAreaItem]
+    website_url: str | None
+    updated_at: datetime | None
+
+
+class CompanyProfileHistoryItem(BaseModel):
+    id: int
+    request_id: str
+    client_name: str
+    source_url: str | None
+    changed_at: datetime
+    before: CompanyProfileHistorySnapshot
+    after: CompanyProfileHistorySnapshot
+
+
+class MCPCompanyProfileHistoryResponse(BaseModel):
+    items: list[CompanyProfileHistoryItem]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
 
 
 class CompanyMergeSummary(BaseModel):

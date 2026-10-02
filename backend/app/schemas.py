@@ -429,8 +429,10 @@ RequestId = Annotated[
         description=(
             "操作ごとにクライアントが発行する一意なID（8〜100文字）。"
             "同じ操作を再試行するときだけ同じ値を使うと、二重登録されずに前回の結果が返ります。"
+            "過去の会話・別の日・別のツールで使った値とも重複できないため、連番や日付だけで作らず、"
+            "UUIDなどのランダムな値を含めてください。"
         ),
-        examples=["chatgpt-20260806-0001"],
+        examples=["chatgpt-3f9a1c2e-7b4d-4e8a-9c61-0d5b2e8f4a17"],
     ),
 ]
 ClientName = Annotated[
@@ -1209,8 +1211,15 @@ class MCPSectorsResponse(BaseModel):
     sectors: list[MasterItem]
 
 
+WriteHistoryEntityType = Literal[
+    "opportunity", "company", "collection_target", "collection_source", "collection_check"
+]
+
+
 class MCPWriteHistoryItem(BaseModel):
     action: str
+    entity_type: str
+    entity_id: str | None
     request_id: str | None
     client_name: str
     success: bool

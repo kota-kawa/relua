@@ -555,6 +555,35 @@ def test_company_profile_request_id_cannot_be_reused_for_another_change(db):
     assert error.value.errors[0]["field"] == "request_id"
 
 
+def test_company_profile_request_id_reused_for_another_company_says_to_issue_a_new_one(db):
+    """Sequential ids like chatgpt-<date>-0001 collide across runs; the reply must not read as a content error."""
+    first = company(db, "株式会社エー")
+    second = company(db, "株式会社ビー")
+    update_company_profile(
+        db,
+        company_id=first.id,
+        changes=dict(GAMMA_PROFILE),
+        source_url="https://a.example.com/company/",
+        request_id="chatgpt-20261002-0001",
+        client_name="pytest",
+    )
+
+    with pytest.raises(CompanyIdentityValidationError) as error:
+        update_company_profile(
+            db,
+            company_id=second.id,
+            changes=dict(GAMMA_PROFILE),
+            source_url="https://b.example.com/company/",
+            request_id="chatgpt-20261002-0001",
+            client_name="pytest",
+        )
+    rejection = error.value.errors[0]
+    assert rejection["field"] == "request_id"
+    assert "使用済み" in rejection["reason"]
+    assert "新しいrequest_id" in rejection["alternative"]
+    assert db.get(Company, second.id).business_summary is None
+
+
 def test_update_company_profile_rejects_unknown_fields_and_missing_companies(db):
     target = company(db, "株式会社ゼータ")
     with pytest.raises(CompanyIdentityValidationError):

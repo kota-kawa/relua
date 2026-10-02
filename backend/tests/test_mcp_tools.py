@@ -1474,6 +1474,50 @@ def test_list_recent_writes_reports_successes_and_failures(tools, db):
     assert call("list_recent_writes", {"client_name": "nobody"})["items"] == []
 
 
+def test_list_recent_writes_reports_company_profile_updates_and_their_rejections(tools, db):
+    """A rejected company profile write was invisible here, so an agent reported that none had failed."""
+    item = seed(db, company_name="株式会社プロフィール")
+    call("update_company_profile", company_profile_payload(company_id=item.company_id))
+    tool_error(
+        "update_company_profile",
+        company_profile_payload(company_id=item.company_id, business_summary="短い", request_id="mcp-company-profile-0002"),
+    )
+
+    history = call("list_recent_writes", {"limit": 10})["items"]
+    assert [(entry["entity_type"], entry["success"]) for entry in history] == [
+        ("company", False),
+        ("company", True),
+        ("opportunity", True),
+    ]
+    rejected = history[0]
+    assert rejected["action"] == "company_profile_update"
+    assert rejected["errors"][0]["field"] == FIELD_LABELS["business_summary"]
+    assert rejected["opportunity_id"] is None
+    assert rejected["url"] is None
+    assert history[1]["entity_id"] == str(item.company_id)
+    assert history[1]["url"] is None
+    assert history[2]["opportunity_id"] == history[2]["entity_id"] == item.id
+
+    companies = call("list_recent_writes", {"entity_type": "company"})["items"]
+    assert [entry["request_id"] for entry in companies] == ["mcp-company-profile-0002", "mcp-company-profile-0001"]
+    assert [entry["entity_type"] for entry in call("list_recent_writes", {"entity_type": "opportunity"})["items"]] == [
+        "opportunity"
+    ]
+
+
+def test_list_recent_writes_reports_collection_writes(tools):
+    target = call("add_collection_target", collection_target_args(request_id="history-collection-0001"))["target"]
+
+    history = call("list_recent_writes", {"limit": 10})["items"]
+    assert "collection_target" in {entry["entity_type"] for entry in history}
+
+    targets = call("list_recent_writes", {"entity_type": "collection_target"})["items"]
+    assert [(entry["request_id"], entry["entity_id"]) for entry in targets] == [
+        ("history-collection-0001", str(target["id"]))
+    ]
+    assert targets[0]["opportunity_id"] is None
+
+
 def test_list_stale_opportunities_flags_records_not_recently_confirmed(tools, db):
     fresh = seed(db, company_name="株式会社新着", source_url="https://example.com/stale-tool-fresh")
     stale = seed(

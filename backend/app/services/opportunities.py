@@ -2012,23 +2012,33 @@ def restore_opportunity(
     return response, False
 
 
-def recent_write_logs(db: Session, *, client_name: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-    """Recent creates, updates, deletes, and restores for reviewing write history."""
-    stmt = select(AuditLog).where(AuditLog.entity_type == "opportunity")
+def recent_write_logs(
+    db: Session, *, client_name: str | None = None, entity_type: str | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Recent MCP writes of every entity_type (opportunity, company, collection_*), successes and rejections alike.
+
+    ``opportunity_id`` and ``url`` are filled only for opportunity rows.
+    """
+    stmt = select(AuditLog)
     if client_name:
         stmt = stmt.where(AuditLog.client_name == client_name)
+    if entity_type:
+        stmt = stmt.where(AuditLog.entity_type == entity_type)
     logs = db.scalars(stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit))
     items = []
     for log in logs:
-        after = (log.changes or {}).get("after") or {}
-        public_code = after.get("public_code")
+        is_opportunity = log.entity_type == "opportunity"
+        # A company snapshot carries its own public_code, which is not an opportunity detail page.
+        public_code = ((log.changes or {}).get("after") or {}).get("public_code") if is_opportunity else None
         items.append(
             {
                 "action": log.action,
+                "entity_type": log.entity_type,
+                "entity_id": log.entity_id,
                 "request_id": log.request_id,
                 "client_name": log.client_name,
                 "success": log.success,
-                "opportunity_id": log.entity_id,
+                "opportunity_id": log.entity_id if is_opportunity else None,
                 "url": public_detail_url(public_code) if public_code else None,
                 "source_url": log.source_url,
                 "errors": log.errors,

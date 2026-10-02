@@ -135,7 +135,7 @@ https://<公開ホスト名>/mcp
 | `preview_delete_opportunity` | 必要 | 削除対象と公開表示・関連履歴への影響を保存せず確認する |
 | `delete_opportunity` | 必要 | 楽観ロック付きで募集情報を公開データから論理削除する |
 | `restore_opportunity` | 必要 | 論理削除した募集を同じID・公開コードのまま復元する |
-| `list_recent_writes` | 必要 | 直近の登録・更新・削除・復元の記録を返す |
+| `list_recent_writes` | 必要 | 募集・企業・収集対象への直近の書き込みを、拒否された理由（`errors`）も含めて返す。`entity_type` で種類を絞り込める |
 | `list_stale_opportunities` | 必要 | 日付と「募集中」の矛盾を最優先に、公式情報の再確認が必要な募集を取得する |
 | `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧し、採用ページ未登録や現在の確認状況で絞り込む |
 | `list_unmonitored_companies` | 必要 | 企業マスタにあり、まだ情報収集対象を持たない企業を一覧する |

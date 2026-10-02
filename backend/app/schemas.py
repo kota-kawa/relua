@@ -1209,8 +1209,15 @@ class MCPSectorsResponse(BaseModel):
     sectors: list[MasterItem]
 
 
+WriteHistoryEntityType = Literal[
+    "opportunity", "company", "collection_target", "collection_source", "collection_check"
+]
+
+
 class MCPWriteHistoryItem(BaseModel):
     action: str
+    entity_type: str
+    entity_id: str | None
     request_id: str | None
     client_name: str
     success: bool

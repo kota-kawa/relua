@@ -80,6 +80,7 @@ from app.schemas import (
     RequestId,
     SortValue,
     UpdatePayload,
+    WriteHistoryEntityType,
     WritePayload,
     validate_https_url,
     validate_source_host,
@@ -2161,8 +2162,11 @@ def record_collection_check_tool(
 @mcp.tool(
     title="直近の書き込み履歴を取得",
     description=(
-        "自分を含むクライアントによる直近の登録・更新・削除・復元の記録を返します。"
-        "同じ募集を登録し直していないか、どの入力が失敗したかを確認できます。認証が必要です。"
+        "自分を含むクライアントによる直近の書き込みの記録を、成功・失敗とも新しい順に返します。"
+        "募集だけでなく、企業（プロフィール・別名・業界カテゴリ・統合）と収集対象・公式情報源・確認記録の書き込みも含みます。"
+        "失敗した記録のerrorsに、拒否された実際の理由が入っています。"
+        "書き込みが失敗した理由を説明するときは、推測せずこのツールで確認してください。"
+        "entity_typeで対象の種類を絞り込めます（企業プロフィール更新はcompany）。認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
@@ -2171,11 +2175,15 @@ def list_recent_writes(
         str | None,
         Field(description="呼び出し元名で絞り込みます。省略すると全クライアントの履歴を返します。"),
     ] = None,
+    entity_type: Annotated[
+        WriteHistoryEntityType | None,
+        Field(description="書き込み対象の種類で絞り込みます。省略するとすべての種類を返します。"),
+    ] = None,
     limit: Annotated[int, Field(ge=1, le=100, description="取得件数（1〜100）。")] = 20,
 ) -> MCPWriteHistoryResponse:
     with SessionLocal() as db:
         return MCPWriteHistoryResponse.model_validate(
-            {"items": recent_write_logs(db, client_name=client_name, limit=limit)}
+            {"items": recent_write_logs(db, client_name=client_name, entity_type=entity_type, limit=limit)}
         )
 
 

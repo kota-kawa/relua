@@ -42,6 +42,7 @@ relua にはアカウント・会員・ログインがありません。relua �
 | 企業 | 企業 | `company`、`company_id` | `companies` | `Company`、`services/companies.py` |
 | プロフィール欠落企業 | プロフィール未登録・空欄 | `list_companies_missing_profile`、`missing_profile_fields` | `companies.business_summary`、`companies.description` | `services/companies.py` のプロフィール欠落条件 |
 | 企業プロフィール変更履歴 | プロフィール変更履歴 | `list_company_profile_history` | `audit_logs` の `company_profile_update` | `AuditLog`、`services/companies.py` |
+| 書き込み履歴（成功と拒否の両方） | 書き込み履歴 | `list_recent_writes`、`entity_type`（`opportunity`／`company`／`collection_target`／`collection_source`／`collection_check`） | `audit_logs` | `AuditLog`、`services/opportunities.py` の `recent_write_logs` |
 | 企業別名（略称・英語名・旧社名） | 別名 | `alias` | `company_aliases` | `CompanyAlias` |
 | 公開コード（URL・共有に使う 8 文字） | 公開コード | `public_code` | `public_code` 列 | `models.py` の `public_code_string`、公開 URL は `services/serialization.py` |
 | 業界／業種 | 業界／業種 | `industry`／`sector` | `industries`／`sectors` | `Industry`／`Sector` |

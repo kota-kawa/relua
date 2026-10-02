@@ -331,9 +331,9 @@ def _request_id_error(request_id: str) -> dict[str, Any]:
     return {
         "field": "request_id",
         "received": request_id,
-        "reason": "同じrequest_idが異なる企業名操作で使用されています",
-        "expected": "操作ごとに一意なrequest_id",
-        "alternative": "新しいrequest_idを発行してください",
+        "reason": "このrequest_idは別の企業操作（別の企業、別の内容、または別のツール）で使用済みです",
+        "expected": "これまでに使っていない一意なrequest_id",
+        "alternative": "入力内容の問題ではありません。新しいrequest_idを発行して同じ内容を再送してください",
     }
 
 

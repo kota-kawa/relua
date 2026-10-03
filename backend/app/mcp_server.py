@@ -35,6 +35,9 @@ from app.schemas import (
     CollectionTargetUpdateRequest,
     CompanyIndustryUpdatePayload,
     CompanyIndustryUpdateRequest,
+    CompanyProfileBatchItemRequest,
+    CompanyProfileBatchResult,
+    CompanyProfileBatchUpdates,
     CompanyProfileUpdatePayload,
     CompanyProfileUpdateRequest,
     DegreeValue,
@@ -54,6 +57,7 @@ from app.schemas import (
     MCPCompanyIndustryWriteResponse,
     MCPCompanyMaintenanceContextResponse,
     MCPCompanyMergeResponse,
+    MCPCompanyProfileBatchWriteResponse,
     MCPCompanyProfileGapListResponse,
     MCPCompanyProfileHistoryResponse,
     MCPCompanyProfileWriteResponse,
@@ -191,7 +195,7 @@ mcp = FastMCP(
     instructions=(
         "日本のインターン・本選考情報を検索・登録・更新・削除・復元するMCPです。"
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
-        "追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
+        "募集の追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
         "同じ募集が登録済みでないかfind_similar_opportunitiesで確かめてください。"
         "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として登録されます"
         "（例: 同じイベント名を28卒・29卒で使い回す企業）。allow_duplicateは全く同じ日程・コースを"
@@ -203,6 +207,12 @@ mcp = FastMCP(
         "企業の事業内容はupdate_company_profileで登録します。企業ページに表示され、就活生がその企業を理解する主な材料になるため、"
         "一言説明・300文字以上の本文・主な事業ごとの説明をまとめて登録してください。"
         "企業自身の会社概要・事業紹介・IR資料で確認できた事実だけを書き、source_urlにそのページを指定してください。"
+        "複数社のプロフィール整備ではlist_companies_missing_profileでid・現在のプロフィール・updated_atをまとめて取得し、"
+        "update_company_profilesで最大50社を1回の呼び出しで保存してください。取得済みのIDをresolve_companyで再取得する必要はありません。"
+        "過去の変更理由を確認する必要がある企業だけlist_company_profile_historyを使います。"
+        "公式情報の確認が済んだ企業から少数ずつ保存することもできます。全社の調査完了まで書き込みを待つ必要はありません。"
+        "一括更新は各社を個別に保存し、成功・失敗・変更・再試行の件数を返します。一部失敗でも成功分は保存済みです。"
+        "プロフィール整備だけなら募集用の固定値・重複・収集対象の確認は不要です。"
         "自信がない入力はvalidate_opportunityで先に検証できます。"
         "締切など状況だけを直す場合はupdate_recruitment_statusを使い、全項目の再送は避けてください。"
         "公式ページを確認して内容が変わっていない場合はverify_opportunityを使って確認だけを記録してください。"
@@ -381,18 +391,27 @@ def _parse_collection_payload(raw: dict[str, Any], model: type[Any], action: str
         ) from exc
 
 
-def _parse_company_payload(raw: dict[str, Any], model: type[Any], action: str) -> Any:
+def _company_audit_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    """Keep rejected inputs from exceeding the audit columns' storage bounds."""
     request_id = raw.get("request_id") if isinstance(raw, dict) else None
-    client_name = (raw.get("client_name") if isinstance(raw, dict) else None) or "mcp-client"
+    client_name = raw.get("client_name") if isinstance(raw, dict) else None
+    source_url = raw.get("source_url") if isinstance(raw, dict) else None
+    return {
+        "request_id": request_id if isinstance(request_id, str) and len(request_id) <= 100 else None,
+        "client_name": client_name if isinstance(client_name, str) and 0 < len(client_name) <= 100 else "mcp-client",
+        "source_url": source_url if isinstance(source_url, str) and len(source_url) <= 2048 else None,
+    }
+
+
+def _parse_company_payload(raw: dict[str, Any], model: type[Any], action: str) -> Any:
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
         raise _record_failure(
             action=action,
-            client_name=client_name,
-            request_id=request_id,
             errors=pydantic_errors(exc, raw),
             entity_type="company",
+            **_company_audit_metadata(raw),
         ) from exc
 
 
@@ -848,7 +867,8 @@ def set_company_industries_tool(payload: CompanyIndustryUpdatePayload) -> MCPCom
         "就活生が一目で判断できる分量で伝えるための項目です。"
         "business_summary（1〜2文の一言説明）、description（300文字以上の本文）、business_areas（主な事業ごとの説明）、"
         "website_url（公式サイト）を指定できます。企業ページを検索対象にするにはbusiness_summaryとdescriptionの両方が必要です。"
-        "resolve_companyで企業IDを確認し、company_idと、更新する項目だけを指定してください。"
+        "企業一覧またはresolve_companyが返したidをcompany_idへ指定してください。取得済みのIDを再取得する必要はありません。"
+        "複数社を整備する場合はupdate_company_profilesを使うと最大50社を1回で保存できます。"
         "指定しなかった項目は現在の値を維持し、nullを明示した項目だけ削除されます。business_areasだけは指定した内容で全置換します。"
         "各項目には最小文字数があり、一言だけの登録は受け付けません。事前に公式サイトの会社概要・事業紹介・IR資料などを読み、"
         "確認できた事実をまとめてから呼んでください。"
@@ -858,7 +878,13 @@ def set_company_industries_tool(payload: CompanyIndustryUpdatePayload) -> MCPCom
     annotations=PATCHING,
 )
 def update_company_profile_tool(payload: CompanyProfileUpdatePayload) -> MCPCompanyProfileWriteResponse:
-    request = _parse_company_payload(payload, CompanyProfileUpdateRequest, "company_profile_update")
+    return _update_company_profile(payload, CompanyProfileUpdateRequest)
+
+
+def _update_company_profile(
+    payload: dict[str, Any], model: type[CompanyProfileUpdateRequest]
+) -> MCPCompanyProfileWriteResponse:
+    request = _parse_company_payload(payload, model, "company_profile_update")
     # exclude_unset keeps "leave this field alone" distinguishable from "clear this field".
     changes = request.model_dump(include=COMPANY_PROFILE_FIELD_NAMES, exclude_unset=True)
     try:
@@ -870,6 +896,7 @@ def update_company_profile_tool(payload: CompanyProfileUpdatePayload) -> MCPComp
                 source_url=request.source_url,
                 request_id=request.request_id,
                 client_name=request.client_name,
+                expected_updated_at=getattr(request, "expected_updated_at", None),
             )
             return MCPCompanyProfileWriteResponse.model_validate(
                 {
@@ -893,7 +920,78 @@ def update_company_profile_tool(payload: CompanyProfileUpdatePayload) -> MCPComp
             source_url=request.source_url,
         ) from exc
     except LookupError as exc:
+        _record_failure(
+            action="company_profile_update",
+            client_name=request.client_name,
+            request_id=request.request_id,
+            source_url=request.source_url,
+            entity_type="company",
+            errors=[{"field": "企業ID", "received": request.company_id, "reason": "指定された企業が見つかりません"}],
+        )
         raise _json_error({"error": "not_found", "message": "指定された企業が見つかりません"}) from exc
+
+
+@mcp.tool(
+    name="update_company_profiles",
+    title="複数企業のプロフィールを更新",
+    description=(
+        "公式情報を確認済みの企業プロフィールを1〜50社、1回の呼び出しで更新します。複数社の整備にはこのツールを使ってください。"
+        "list_companies_missing_profile等が返したidとupdated_atを、各社のcompany_idとexpected_updated_atへ指定します。"
+        "一覧には現在のプロフィールと公式サイトURLも含まれます。IDの再取得は不要で、履歴は過去の変更理由の確認が必要な場合だけ取得します。"
+        "各社に更新項目、確認した企業公式ページのsource_url、固有のrequest_idを指定してください。"
+        "一言説明は30〜200文字、本文は300〜4000文字です。省略した項目は維持し、nullは削除、主な事業は全置換します。"
+        "企業ごとに検証・保存・監査を行い、失敗した企業があっても他社を処理して成功分を保持します。"
+        "応答のitemsは入力順で、success、changed、idempotent_replayとエラーを返します。本文は再送しません。"
+        "succeeded_countは再試行と変更なしを含む成功数、changed_countは今回変更した数、failed_countは拒否数です。"
+        "unknown_countとsuccess=nullは内部エラーで保存結果が未確認の項目であり、未保存と断定せず同じ内容で再試行してください。"
+        "通信失敗時は同じ内容と各社のrequest_idで再送できます。入力を直す場合は新しいrequest_idを使ってください。"
+        "調査済みの少数社から保存しても構いません。未保存の説明を次回へ持ち越せると仮定しないでください。認証が必要です。"
+    ),
+    annotations=PATCHING,
+)
+def update_company_profiles_tool(updates: CompanyProfileBatchUpdates) -> MCPCompanyProfileBatchWriteResponse:
+    execute = _guarded(
+        "update_company_profiles.item", lambda raw: _update_company_profile(raw, CompanyProfileBatchItemRequest)
+    )
+    items = []
+    for index, raw in enumerate(updates):
+        company_id = raw.get("company_id")
+        request_id = raw.get("request_id")
+        result = CompanyProfileBatchResult(
+            index=index,
+            company_id=company_id if isinstance(company_id, int) and not isinstance(company_id, bool) else None,
+            request_id=request_id if isinstance(request_id, str) else None,
+            success=False,
+        )
+        try:
+            written = execute(raw)
+        except ToolError as exc:
+            result.error = json.loads(str(exc))
+            if result.error["error"] == "internal_error":
+                result.success = None
+                _record_failure(
+                    action="company_profile_update",
+                    entity_type="company",
+                    errors=[{"field": "入力全体", "reason": INTERNAL_ERROR["message"]}],
+                    **_company_audit_metadata(raw),
+                )
+        else:
+            result.company_id = written.company.id
+            result.success = written.success
+            result.changed = written.changed
+            result.idempotent_replay = written.idempotent_replay
+            result.url = written.company.url
+            result.updated_at = written.company.updated_at
+        items.append(result)
+    return MCPCompanyProfileBatchWriteResponse(
+        total=len(items),
+        succeeded_count=sum(item.success is True for item in items),
+        failed_count=sum(item.success is False for item in items),
+        unknown_count=sum(item.success is None for item in items),
+        changed_count=sum(item.changed for item in items),
+        replayed_count=sum(item.idempotent_replay for item in items),
+        items=items,
+    )
 
 
 @mcp.tool(
@@ -1865,12 +1963,17 @@ def list_unmonitored_companies_tool(
     title="プロフィール未登録の企業を一覧",
     description=(
         "企業ページの掲載に必要な一言説明（business_summary）または事業内容本文（description）が"
-        "未登録・空欄の企業を一覧します。収集対象の有無にかかわらず確認できます。認証が必要です。"
+        "未登録・空欄の企業を一覧します。収集対象の有無にかかわらず確認できます。"
+        "各企業のid、現在のプロフィール、website_url、updated_at、欠落項目をまとめて返します。"
+        "公式情報を確認後、返されたidとupdated_atでupdate_company_profilesを呼べます。"
+        "プロフィール更新で対象から外れるため、更新後はpage=1から残りを取得してください。認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
 def list_companies_missing_profile_tool(
-    query: Annotated[str | None, Field(description="企業名または登録済み別名の部分一致キーワード。", max_length=200)] = None,
+    query: Annotated[
+        str | None, Field(description="企業名または登録済み別名の部分一致キーワード。", max_length=200)
+    ] = None,
     industry: Annotated[IndustryValue | None, Field(description="企業分類の業界。省略すると全業界。")] = None,
     page: Annotated[int, Field(ge=1, description="1から始まるページ番号。")] = 1,
     per_page: Annotated[int, Field(ge=1, le=50, description="1ページあたりの件数（1〜50）。")] = 20,
@@ -2279,7 +2382,7 @@ def _guarded(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
 def _install_error_boundary() -> None:
     """Apply _guarded to every registered tool, once, after they are all declared.
 
-    Wrapping here rather than at each of the 37 decorators is what makes the boundary impossible to
+    Wrapping here rather than at each tool decorator is what makes the boundary impossible to
     forget on a tool added later: registration itself is what installs it. FastMCP has already derived
     each tool's schema from the original signature by this point, so the published contract is unchanged
     and functools.wraps keeps the wrapper introspectable.

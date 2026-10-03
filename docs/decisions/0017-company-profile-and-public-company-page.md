@@ -3,6 +3,7 @@
 - Status: Accepted
 - Scope: 企業データモデル、企業ページの公開URLとindex、企業プロフィールの書き込み経路
 - Amended by: [ADR-0023](./0023-company-pages-indexed-on-profile-alone.md)（index条件から現在の募集を外し、`lastmod` の基準を広げた）
+- Amended by: [ADR-0025](./0025-batch-company-profile-updates.md)（企業ごとの更新日時照合・結果を持つ一括更新を追加した）
 
 ## Context
 

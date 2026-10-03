@@ -3,16 +3,16 @@
 import asyncio
 import json
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
 from app import mcp_server
 from app.dates import today_in_tokyo
-from app.models import AuditLog, Industry, Opportunity
+from app.models import AuditLog, Company, CompanyRequestRecord, Industry, Opportunity
 from app.schemas import OpportunityInput
 from app.services import master_cache
 from app.services.errors import FIELD_LABELS
@@ -87,6 +87,7 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "add_company_alias",
         "set_company_industries",
         "update_company_profile",
+        "update_company_profiles",
         "delete_company_alias",
         "merge_company",
         "validate_opportunity",
@@ -121,7 +122,9 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         assert tool["title"], f"{name} has no title"
         assert tool["annotations"]["openWorldHint"] is False
         assert tool["outputSchema"].get("properties"), f"{name} publishes an empty output schema"
-        expected = [{"type": "noauth"}] if name in mcp_server.ANONYMOUS_TOOLS else [{"type": "oauth2", "scopes": ["mcp"]}]
+        expected = (
+            [{"type": "noauth"}] if name in mcp_server.ANONYMOUS_TOOLS else [{"type": "oauth2", "scopes": ["mcp"]}]
+        )
         assert tool["securitySchemes"] == expected
 
     assert tools["search_opportunity"]["annotations"]["readOnlyHint"] is True
@@ -156,6 +159,8 @@ def test_every_tool_declares_its_title_annotations_and_auth():
     assert tools["set_company_industries"]["annotations"]["destructiveHint"] is True
     assert tools["update_company_profile"]["annotations"]["destructiveHint"] is False
     assert tools["update_company_profile"]["annotations"]["idempotentHint"] is True
+    assert tools["update_company_profiles"]["annotations"]["idempotentHint"] is True
+    assert tools["update_company_profiles"]["annotations"]["readOnlyHint"] is False
     assert tools["set_company_industries"]["annotations"]["idempotentHint"] is True
     assert tools["delete_company_alias"]["annotations"]["destructiveHint"] is True
     assert tools["merge_company"]["annotations"]["destructiveHint"] is True
@@ -495,6 +500,206 @@ def test_mcp_writes_a_company_profile_and_replays_the_same_request(tools, db):
     assert [area["name"] for area in patched["company"]["business_areas"]] == ["自社SaaS事業"]
     assert patched["company"]["business_summary"] == COMPANY_SUMMARY
     assert patched["company"]["website_url"] == "https://profile.example.com/"
+
+
+def profile_batch_entry(company, **overrides):
+    return company_profile_payload(
+        company_id=company.id,
+        expected_updated_at=company.updated_at.isoformat(),
+        request_id=f"profile-batch-{company.id}-0001",
+        **overrides,
+    )["payload"]
+
+
+def test_company_profile_batch_publishes_bounds_and_required_snapshot():
+    listed = asyncio.run(mcp_server.mcp.list_tools())
+    tool = next(tool for tool in listed if tool.name == "update_company_profiles")
+    updates = tool.inputSchema["properties"]["updates"]
+    assert (updates["minItems"], updates["maxItems"]) == (1, 50)
+    assert set(updates["items"]["required"]) == {"company_id", "source_url", "request_id", "expected_updated_at"}
+    assert updates["items"]["properties"]["description"]["anyOf"][0]["minLength"] == 300
+    assert updates["items"]["properties"]["expected_updated_at"]["format"] == "date-time"
+    assert "update_company_profiles" not in mcp_server.ANONYMOUS_TOOLS
+
+
+def test_company_profile_batch_saves_50_companies_and_replays_without_duplicate_audits(tools, db):
+    companies = [Company(name=f"企業{i}", normalized_name=f"企業{i}") for i in range(50)]
+    db.add_all(companies)
+    db.commit()
+    listed = call("list_companies_missing_profile", {"per_page": 50})
+    assert len(listed["items"]) == 50
+    updates = [
+        company_profile_payload(
+            company_id=item["id"], expected_updated_at=item["updated_at"], request_id=f"batch-50-{item['id']}-0001"
+        )["payload"]
+        for item in listed["items"]
+    ]
+    written = call("update_company_profiles", {"updates": updates})
+    assert (written["total"], written["succeeded_count"], written["changed_count"]) == (50, 50, 50)
+    assert written["failed_count"] == written["unknown_count"] == written["replayed_count"] == 0
+    assert [item["company_id"] for item in written["items"]] == [entry["company_id"] for entry in updates]
+    assert all(item["updated_at"] and item["url"] and "description" not in item for item in written["items"])
+    assert call("list_companies_missing_profile", {})["total"] == 0
+    assert len(list(db.scalars(select(AuditLog)))) == len(list(db.scalars(select(CompanyRequestRecord)))) == 50
+
+    replay = call("update_company_profiles", {"updates": updates})
+    assert (replay["succeeded_count"], replay["changed_count"], replay["replayed_count"]) == (50, 0, 50)
+    assert len(list(db.scalars(select(AuditLog)))) == 50
+
+
+def test_company_profile_batch_keeps_successes_around_validation_and_not_found_errors(tools, db):
+    companies = [Company(name=f"混在企業{i}", normalized_name=f"混在企業{i}") for i in range(6)]
+    db.add_all(companies)
+    db.commit()
+    updates = [profile_batch_entry(company) for company in companies]
+    updates[1]["description"] = "短い"
+    updates[2]["source_url"] = "https://www.mynavi.jp/company/"
+    updates[3].pop("expected_updated_at")
+    updates[4]["company_id"] = 999999
+
+    result = call("update_company_profiles", {"updates": updates})
+    assert (result["succeeded_count"], result["failed_count"], result["changed_count"]) == (2, 4, 2)
+    assert result["unknown_count"] == 0
+    assert [item["success"] for item in result["items"]] == [True, False, False, False, False, True]
+    assert result["items"][4]["error"]["error"] == "not_found"
+    for index, company in enumerate(companies):
+        db.refresh(company)
+        assert company.description == (COMPANY_DESCRIPTION if index in (0, 5) else None)
+    logs = list(db.scalars(select(AuditLog).where(AuditLog.action == "company_profile_update")))
+    assert len(logs) == 6
+    assert sum(log.success for log in logs) == 2
+    assert {log.request_id: log.source_url for log in logs} == {
+        entry["request_id"]: entry["source_url"] for entry in updates
+    }
+    assert len(list(db.scalars(select(CompanyRequestRecord)))) == 2
+
+
+def test_company_profile_batch_rejects_stale_snapshots_and_changed_request_reuse(tools, db):
+    item = seed(db, company_name="競合企業")
+    entry = profile_batch_entry(item.company)
+    written = call("update_company_profiles", {"updates": [entry]})
+    assert written["changed_count"] == 1
+    stored = db.get(Company, item.company_id)
+    previous_version = stored.updated_at.replace(tzinfo=UTC)
+    stale = entry | {"request_id": "stale-profile-batch-0002", "business_summary": COMPANY_SUMMARY + "更新"}
+    conflict = call("update_company_profiles", {"updates": [stale]})
+    assert conflict["failed_count"] == 1
+    assert "更新されています" in conflict["items"][0]["error"]["errors"][0]["reason"]
+    reused = call("update_company_profiles", {"updates": [entry | {"business_summary": COMPANY_SUMMARY + "更新"}]})
+    assert reused["failed_count"] == 1
+    db.refresh(stored)
+    assert stored.business_summary == COMPANY_SUMMARY
+    assert stored.updated_at.replace(tzinfo=UTC) == previous_version
+
+    # Equivalent timezone offsets must identify the same retried request.
+    equivalent = entry | {
+        "expected_updated_at": datetime.fromisoformat(entry["expected_updated_at"])
+        .replace(tzinfo=UTC)
+        .astimezone(timezone(timedelta(hours=9)))
+        .isoformat()
+    }
+    assert call("update_company_profiles", {"updates": [equivalent]})["replayed_count"] == 1
+
+    unchanged = entry | {"expected_updated_at": written["items"][0]["updated_at"], "request_id": "unchanged-batch-0003"}
+    result = call("update_company_profiles", {"updates": [unchanged]})
+    assert (result["succeeded_count"], result["changed_count"], result["replayed_count"]) == (1, 0, 0)
+    db.refresh(stored)
+    assert stored.updated_at.replace(tzinfo=UTC) == previous_version
+
+
+@pytest.mark.parametrize("size", [0, 51])
+def test_company_profile_batch_rejects_invalid_size_before_writing(tools, db, size):
+    item = seed(db)
+    with pytest.raises(ToolError):
+        asyncio.run(mcp_server.mcp.call_tool(
+            "update_company_profiles", {"updates": [profile_batch_entry(item.company)] * size}
+        ))
+    db.refresh(item.company)
+    assert item.company.description is None
+    assert not list(db.scalars(select(CompanyRequestRecord)))
+
+
+def test_company_profile_batch_contains_internal_errors_and_continues(tools, db, monkeypatch):
+    first = seed(db, company_name="内部エラー企業", event_name="内部エラー募集")
+    second = seed(db, company_name="成功企業", event_name="成功募集", source_url="https://example.com/success")
+    original = mcp_server.update_company_profile
+
+    def fail_one(session, **kwargs):
+        if kwargs["company_id"] == first.company_id:
+            session.get(Company, first.company_id).description = "保存してはいけない内容"
+            session.flush()
+            raise OperationalError("SELECT secret_column", {"private_value": "secret-value"}, Exception("DB failure"))
+        return original(session, **kwargs)
+
+    monkeypatch.setattr(mcp_server, "update_company_profile", fail_one)
+    result = call(
+        "update_company_profiles",
+        {"updates": [profile_batch_entry(first.company), profile_batch_entry(second.company)]},
+    )
+    assert (result["succeeded_count"], result["failed_count"], result["unknown_count"]) == (1, 0, 1)
+    assert result["items"][0]["success"] is None
+    assert result["items"][0]["error"] == mcp_server.INTERNAL_ERROR
+    assert "secret_column" not in json.dumps(result)
+    assert "secret-value" not in json.dumps(result)
+    db.refresh(first.company)
+    db.refresh(second.company)
+    assert first.company.description is None
+    assert second.company.description == COMPANY_DESCRIPTION
+
+
+def test_company_profile_batch_marks_post_commit_errors_unknown_and_resolves_them_on_retry(tools, db, monkeypatch):
+    item = seed(db, company_name="保存結果未確認企業")
+    entry = profile_batch_entry(item.company)
+    original = mcp_server.update_company_profile
+
+    def lose_response(session, **kwargs):
+        original(session, **kwargs)
+        raise RuntimeError("Response failed after commit")
+
+    monkeypatch.setattr(mcp_server, "update_company_profile", lose_response)
+    result = call("update_company_profiles", {"updates": [entry]})
+    assert (result["succeeded_count"], result["failed_count"], result["unknown_count"]) == (0, 0, 1)
+    db.refresh(item.company)
+    assert item.company.description == COMPANY_DESCRIPTION
+    monkeypatch.setattr(mcp_server, "update_company_profile", original)
+    replay = call("update_company_profiles", {"updates": [entry]})
+    assert (replay["succeeded_count"], replay["replayed_count"], replay["unknown_count"]) == (1, 1, 0)
+    logs = list(db.scalars(select(AuditLog).where(AuditLog.action == "company_profile_update", AuditLog.success.is_(True))))
+    assert len(logs) == 1
+
+
+def test_company_profile_batch_isolates_invalid_audit_metadata(tools, db):
+    first = seed(db, company_name="入力不備企業", event_name="入力不備募集")
+    second = seed(db, company_name="正常企業", event_name="正常募集", source_url="https://example.com/valid")
+    invalid = profile_batch_entry(first.company) | {
+        "request_id": {"invalid": "object"}, "client_name": ["invalid"], "source_url": {"invalid": "object"}
+    }
+    result = call("update_company_profiles", {"updates": [invalid, profile_batch_entry(second.company)]})
+    assert (result["succeeded_count"], result["failed_count"], result["unknown_count"]) == (1, 1, 0)
+    assert result["items"][0]["error"]["error"] == "validation_failed"
+    assert result["items"][0]["request_id"] is None
+    rejected = db.scalar(select(AuditLog).where(AuditLog.action == "company_profile_update", AuditLog.success.is_(False)))
+    assert rejected.source_url is None
+
+
+def test_company_profile_batch_isolates_oversized_audit_metadata(tools, db):
+    first = seed(db, company_name="長さ上限企業", event_name="長さ上限募集")
+    second = seed(db, company_name="後続企業", event_name="後続募集", source_url="https://example.com/next")
+    invalid = profile_batch_entry(first.company) | {
+        "source_url": "https://example.com/" + "a" * 2048,
+        "request_id": "r" * 101,
+        "client_name": "c" * 101,
+    }
+    result = call("update_company_profiles", {"updates": [invalid, profile_batch_entry(second.company)]})
+    assert (result["succeeded_count"], result["failed_count"], result["unknown_count"]) == (1, 1, 0)
+    rejected = db.scalar(select(AuditLog).where(AuditLog.action == "company_profile_update", AuditLog.success.is_(False)))
+    assert rejected.source_url is None
+    assert rejected.request_id is None
+    assert rejected.client_name == "mcp-client"
+    db.refresh(first.company)
+    db.refresh(second.company)
+    assert first.company.description is None
+    assert second.company.description == COMPANY_DESCRIPTION
 
 
 def test_mcp_lists_companies_missing_either_profile_text_field(tools, db):
@@ -1565,6 +1770,8 @@ def test_review_queue_prioritizes_open_postings_with_past_dates(tools, db):
         "event_ended_while_open",
     ]
     assert items[stale.id]["review_reasons"] == ["source_not_checked_recently"]
+
+
 def collection_target_args(**overrides) -> dict:
     industry = overrides.pop("industry", "IT・通信")
     sector = overrides.pop("sector", "Webサービス")

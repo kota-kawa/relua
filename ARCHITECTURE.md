@@ -139,6 +139,8 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 
 ### 3.4 ドメインサービス
 
+企業プロフィールの一括更新は `update_company_profiles` で最大50社を受け取り、各社を既存のプロフィール更新サービスで個別に検証・保存する。各社の更新日時を照合し、冪等記録と監査ログを保持する。応答は保存成功・拒否・結果未確認の個別結果と集計で、本文の全文は再送しない（ADR-0025）。
+
 | ファイル | 責務 |
 | --- | --- |
 | `services/opportunities.py` | 検索、登録・最終編集日時フィルターと条件付きカーソル、関連度、固定値解決、重複検出、書き込み、論理削除・復元、監査、MCP保守キューの対象状態判定 |
@@ -310,7 +312,7 @@ MCP client
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py`。日時フィルターはカーソル条件にも含める |
-| 企業同一性・プロフィール履歴 | `services/companies.py`, `company_industries.py` | `models.py` の `AuditLog`, identity/collection tests、関連ADR |
+| 企業同一性・プロフィール更新・履歴 | `services/companies.py`, `company_industries.py` | `schemas.py`, `mcp_server.py`, `test_companies.py`, `test_mcp_tools.py`、`models.py` の `AuditLog`、関連ADR。一括更新は企業ごとの検証・更新日時照合・保存・結果集計 |
 | 収集キュー | `services/collection_targets.py` | `models.py`, `test_collection_targets.py`, MCP tool definitions。確認状況は履歴列から導出する |
 | OAuth・MCP認証 | `main.py`, `api/oauth.py`, `services/oauth.py`, `mcp_server.py` | `test_oauth.py`, `test_oauth_endpoints.py`, `relua.conf` |
 | 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、`.github/workflows/maintenance.yml`、該当サービスのテスト |

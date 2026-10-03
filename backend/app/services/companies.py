@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
@@ -470,6 +471,7 @@ def update_company_profile(
     source_url: str,
     request_id: str,
     client_name: str,
+    expected_updated_at: datetime | None = None,
 ) -> tuple[Company, bool, bool]:
     """Write the operator-confirmed company profile.
 
@@ -491,16 +493,42 @@ def update_company_profile(
     operation = "company_profile_update"
     # The hash carries the keys as sent, so "field omitted" and "field explicitly cleared" are two
     # different operations and cannot replay each other's result.
-    request_hash = _request_hash(
-        operation, {"company_id": company_id, "changes": changes, "source_url": source_url}
-    )
+    payload = {"company_id": company_id, "changes": changes, "source_url": source_url}
+    if expected_updated_at is not None:
+        expected_updated_at = expected_updated_at.replace(tzinfo=expected_updated_at.tzinfo or UTC)
+        expected_updated_at = expected_updated_at.astimezone(UTC)
+        payload["expected_updated_at"] = expected_updated_at.isoformat()
+    request_hash = _request_hash(operation, payload)
     replayed = _replayed_company(db, request_id=request_id, operation=operation, request_hash=request_hash)
     if replayed is not None:
         return replayed, False, True
 
-    company = db.get(Company, company_id)
+    company = db.scalar(
+        select(Company)
+        .where(Company.id == company_id)
+        .with_for_update(of=Company)
+        .execution_options(populate_existing=True)
+    )
     if company is None:
         raise LookupError("company_not_found")
+    # A concurrent retry may have committed while this request waited for the row lock.
+    replayed = _replayed_company(db, request_id=request_id, operation=operation, request_hash=request_hash)
+    if replayed is not None:
+        return replayed, False, True
+    actual_updated_at = company.updated_at.replace(tzinfo=company.updated_at.tzinfo or UTC)
+    actual_updated_at = actual_updated_at.astimezone(UTC)
+    if expected_updated_at is not None and actual_updated_at != expected_updated_at:
+        raise CompanyIdentityValidationError(
+            [
+                {
+                    "field": "更新前の最終確認日時",
+                    "received": expected_updated_at.isoformat(),
+                    "reason": "取得後に企業情報が更新されています",
+                    "expected": actual_updated_at.isoformat(),
+                    "alternative": "企業一覧で最新値を取得し、変更内容を確認して新しいrequest_idで再試行してください",
+                }
+            ]
+        )
     before = company_identity_dict(company)
 
     changed = False
@@ -508,6 +536,10 @@ def update_company_profile(
         if getattr(company, field) != value:
             setattr(company, field, value)
             changed = True
+
+    if changed:
+        # Explicit microseconds keep successive writes distinct even within the same DB clock tick.
+        company.updated_at = max(datetime.now(UTC), actual_updated_at + timedelta(microseconds=1))
 
     _remember_request(
         db,

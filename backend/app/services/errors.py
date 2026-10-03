@@ -41,6 +41,7 @@ FIELD_LABELS = {
     "note": "確認メモ",
     "is_active": "有効状態",
     "business_summary": "企業の一言説明",
+    "company_id": "企業ID",
     "business_areas": "主な事業",
     "website_url": "公式サイトURL",
     "name": "名称",

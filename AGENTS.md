@@ -17,6 +17,7 @@
 - `docs/knowledge/parallel_work.md` は git worktree を分けた後の運用手順（共有される DB／ポート、`node_modules`、`.env`、alembic head）です。並列作業を始める前に読みます。
 - `docs/knowledge/frontend_visual_verification.md` は Playwright で実描画・実操作を確認する手順です。見た目や操作に影響するフロントエンド変更の PR を作る前に読みます。
 - `docs/decisions/README.md` は重要な技術判断（ADR）の索引です。判断を変更・追加するときは、既存 ADR を確認して理由と影響を更新・記録してください。
+- `docs/decisions/0025-batch-company-profile-updates.md` は企業プロフィール一括更新の個別保存・更新日時照合・部分失敗と再試行の判断です。一括更新の契約を変更するときに参照してください。
 - `frontend/STYLING_STRATEGY.md` は Next.js 側の CSS 配置（単一の `globals.css` と意味クラス）、カスケード、ブレークポイント、モーションの方針です。UI の変更時は `ARCHITECTURE.md` のフロントエンド章と併せて参照してください。
 - `frontend/DESIGN_TOKENS.md` は現在の配色・影・モーションのトークンの参考資料です。新しい UI が既存画面と浮かないよう、色を選ぶ前に読んでください。トークンを変えるときの更新規則は同文書の冒頭にあります。
 - `.github/BRANCH_PROTECTION.md` は `main` の保護設定と必須 CI チェックの記録です。マージ条件や CI ゲートを確認・変更するときに参照してください。

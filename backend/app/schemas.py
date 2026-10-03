@@ -552,7 +552,7 @@ class CompanyProfileUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     company_id: Annotated[
-        int, Field(ge=1, description="プロフィールを更新する既存CompanyのID。resolve_companyで確認します。")
+        int, Field(ge=1, description="一覧またはresolve_companyが返した既存企業のid。取得済みなら再取得は不要です。")
     ]
     business_summary: Annotated[
         str | None,
@@ -632,10 +632,14 @@ class CompanyProfileUpdateRequest(BaseModel):
     @model_validator(mode="after")
     def at_least_one_field(self) -> "CompanyProfileUpdateRequest":
         if not COMPANY_PROFILE_FIELD_NAMES & self.model_fields_set:
-            raise ValueError(
-                "business_summary、description、business_areas、website_urlのいずれかを指定してください"
-            )
+            raise ValueError("business_summary、description、business_areas、website_urlのいずれかを指定してください")
         return self
+
+
+class CompanyProfileBatchItemRequest(CompanyProfileUpdateRequest):
+    expected_updated_at: datetime = Field(
+        description="企業一覧が返したupdated_at。取得後に更新された企業は上書きせず、その企業だけ失敗を返します。"
+    )
 
 
 class CollectionTargetCreateRequest(BaseModel):
@@ -842,6 +846,19 @@ CompanyProfileUpdatePayload = Annotated[
     dict[str, Any],
     WithJsonSchema(_inline_model_schema(CompanyProfileUpdateRequest)),
     Field(description="既存企業の事業内容・公式サイトURLと、それを確認した公式ページ。指定した項目だけを更新します。"),
+]
+# Validate entries inside the tool so one invalid profile does not reject other companies.
+CompanyProfileBatchUpdates = Annotated[
+    list[dict[str, Any]],
+    Field(min_length=1, max_length=50, description="更新する企業の一覧。各社に固有のrequest_idを指定します。"),
+    WithJsonSchema(
+        {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": _inline_model_schema(CompanyProfileBatchItemRequest),
+        }
+    ),
 ]
 CollectionTargetUpdatePayload = Annotated[
     dict[str, Any],
@@ -1141,6 +1158,28 @@ class MCPCompanyProfileWriteResponse(BaseModel):
     changed: bool
     message: str
     company: CompanyIdentityResponse
+
+
+class CompanyProfileBatchResult(BaseModel):
+    index: int
+    company_id: int | None
+    request_id: str | None
+    success: bool | None = Field(description="trueは保存成功、falseは拒否、nullは内部エラーで保存結果の確認が必要。")
+    changed: bool = False
+    idempotent_replay: bool = False
+    url: str | None = None
+    updated_at: datetime | None = None
+    error: dict[str, Any] | None = None
+
+
+class MCPCompanyProfileBatchWriteResponse(BaseModel):
+    total: int
+    succeeded_count: int
+    failed_count: int
+    unknown_count: int
+    changed_count: int
+    replayed_count: int
+    items: list[CompanyProfileBatchResult]
 
 
 class CompanyProfileHistorySnapshot(BaseModel):

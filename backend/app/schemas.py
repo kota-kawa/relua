@@ -435,6 +435,17 @@ RequestId = Annotated[
         examples=["chatgpt-3f9a1c2e-7b4d-4e8a-9c61-0d5b2e8f4a17"],
     ),
 ]
+RunId = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=8, max_length=100),
+    Field(
+        description=(
+            "定期実行・会話の1回の作業を識別するID（8〜100文字）。実行開始時にUUIDなどで生成し、"
+            "同じ実行の書き込みには共通の値を指定します。request_idは操作ごとに別の値を使ってください。"
+            "監査履歴の照合用で、冪等性には影響しません。省略した操作は実行単位で絞り込めません。"
+        ),
+    ),
+]
 ClientName = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
@@ -765,14 +776,26 @@ class CollectionCheckRequest(BaseModel):
     result: Annotated[
         CollectionCheckResult,
         Field(
-            description="found=募集を発見、no_opening=募集中なし、unreachable=確認不能、needs_review=人の確認が必要。"
+            description=(
+                "found=登録済みの個別募集の一次情報を確認。opportunity_idとその募集のsource_urlが必須です。"
+                "新しい募集を発見しただけなら先にadd_opportunityまたはupsert_opportunityで登録してください。"
+                "no_opening=有効な募集なし、unreachable=確認不能、needs_review=個別募集や受付状況を確定できず要確認。"
+                "企業ページだけの確認ではopportunity_idを指定しません。"
+            )
         ),
     ]
     source_url: Annotated[
         str,
-        Field(description="実際に確認したURL。foundでは募集のsource_url、その他では登録済み公式sourceを指定します。"),
+        Field(description=(
+            "実際に確認したURL。foundでは指定した個別募集のsource_urlと正規化後に一致するURLが必要です。"
+            "同じ企業の採用トップページで代用できません。その他の結果では登録済みの有効な公式source URLを指定します。"
+            "エラーのexpectedに合わせるだけで確認済みにせず、必ずそのURLを実際に確認してください。"
+        )),
     ]
-    opportunity_id: str | None = None
+    opportunity_id: str | None = Field(
+        default=None,
+        description="foundの場合だけ、実際に一次情報を確認した登録済み募集のIDを指定します。他の結果では省略します。",
+    )
     note: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
     discovered_sources: Annotated[
         list[CollectionSourceInput],
@@ -1260,8 +1283,10 @@ class MCPWriteHistoryItem(BaseModel):
     entity_type: str
     entity_id: str | None
     request_id: str | None
+    run_id: str | None = None
     client_name: str
-    success: bool
+    success: bool = Field(description="従来の成功フラグ。falseは拒否と結果未確認を含むため、分類はoutcomeを参照してください。")
+    outcome: Literal["succeeded", "rejected", "unknown"] = Field(description="監査記録の分類。unknownは保存結果未確認です。")
     opportunity_id: str | None
     url: str | None
     source_url: str | None
@@ -1271,6 +1296,12 @@ class MCPWriteHistoryItem(BaseModel):
 
 class MCPWriteHistoryResponse(BaseModel):
     items: list[MCPWriteHistoryItem]
+    total_count: int = Field(description="絞り込み条件に一致する全監査記録数。ページの取得件数に依存しません。")
+    succeeded_count: int = Field(description="成功の監査記録数。企業数・募集数ではなく、付随する確認記録も別に数えます。")
+    failed_count: int = Field(description="拒否の監査記録数。監査記録のない未実行・通信失敗・内部エラーは含みません。")
+    unknown_count: int = Field(description="内部エラーとして記録された保存結果未確認の監査記録数。未保存と断定できません。")
+    page: int
+    has_more: bool
 
 
 class CollectionSourceResponse(BaseModel):

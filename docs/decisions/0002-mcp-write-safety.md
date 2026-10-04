@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Scope: MCPの募集・企業・収集キュー書き込み
+- Amended by: [ADR-0026](./0026-mcp-maintenance-execution-reporting.md)（実行単位の監査照合）
 
 ## Context
 

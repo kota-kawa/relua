@@ -21,6 +21,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.audit_context import get_audit_run_id
 from app.db import Base
 
 
@@ -431,6 +432,8 @@ class AuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
     entity_id: Mapped[str | None] = mapped_column(String(64))
     request_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    # Evaluated during the write's flush; correlation does not change request payload hashes.
+    run_id: Mapped[str | None] = mapped_column(String(100), index=True, default=get_audit_run_id)
     client_name: Mapped[str] = mapped_column(String(100), default="unknown", nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(2048))
     success: Mapped[bool] = mapped_column(nullable=False)

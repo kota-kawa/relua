@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import ValidationError
 
 FIELD_LABELS = {
+    "run_id": "実行ID",
     "recruitment_status": "募集状況",
     "company_name": "企業名",
     "industry": "業界",

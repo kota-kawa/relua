@@ -63,6 +63,10 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://relua:relua_test_password@localhost:5432/relua_test
         run: pytest tests/test_mcp_tools.py tests/test_companies.py -k "company_profile"
+      - name: Test PostgreSQL maintenance reporting
+        env:
+          DATABASE_URL: postgresql+psycopg://relua:relua_test_password@localhost:5432/relua_test
+        run: pytest tests/test_audit_run_migration.py tests/test_opportunities.py tests/test_mcp_tools.py -k "audit_run_migration or run_ or maintenance_expiry or review_queue or collection_url_error or internal_errors_and_continues"
 
   frontend:
     name: Frontend Lint & Build

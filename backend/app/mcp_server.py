@@ -15,6 +15,7 @@ from mcp.types import Tool as MCPTool
 from mcp.types import ToolAnnotations
 from pydantic import BeforeValidator, Field, ValidationError
 
+from app.audit_context import audit_run, get_audit_run_id
 from app.config import get_settings
 from app.db import SessionLocal
 from app.schemas import (
@@ -82,6 +83,7 @@ from app.schemas import (
     OpportunityResponse,
     RecruitmentStatusValue,
     RequestId,
+    RunId,
     SortValue,
     UpdatePayload,
     WriteHistoryEntityType,
@@ -143,7 +145,6 @@ from app.services.opportunities import (
     opportunity_patch_changes,
     preview_opportunity_deletion,
     probable_duplicate_warning,
-    recent_write_logs,
     record_failed_attempt,
     restore_opportunity,
     search_opportunities,
@@ -158,6 +159,7 @@ from app.services.opportunities import (
 )
 from app.services.rate_limit import register_validation_failure
 from app.services.serialization import detail_url, master_dict, opportunity_dict, opportunity_summary
+from app.services.write_history import recent_write_logs
 
 settings = get_settings()
 MAX_SEARCH_DATETIME_LENGTH = 64
@@ -193,6 +195,13 @@ ANONYMOUS_TOOLS = frozenset(
 mcp = FastMCP(
     "All Job",
     instructions=(
+        "情報収集は1社または少数社の公式確認・募集更新・確認記録を完了してから次へ進んでください。"
+        "全社の調査完了まで保存を待たず、未保存の調査結果を次の実行へ引き継げると仮定しないでください。"
+        "record_collection_checkのfoundは登録済み個別募集の確認で、募集IDとその募集の一次情報URLが必要です。"
+        "企業の採用トップページだけでは個別募集の確認済み日時を更新できません。"
+        "実行開始時にrun_idを生成し、各書き込みのトップレベルに同じ値を指定してください。"
+        "request_idは操作ごとに固有です。報告前にlist_recent_writes(run_id=...)で成功・拒否とerrorsを照合してください。"
+        "監査履歴にない未実行・通信失敗・内部エラーは保存結果未確認であり、成功や未保存と断定しないでください。"
         "日本のインターン・本選考情報を検索・登録・更新・削除・復元するMCPです。"
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
         "募集の追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
@@ -228,6 +237,10 @@ mcp = FastMCP(
         "情報源には企業自身の採用ページなど一次情報を指定し、求人サイトや口コミサイトの掲載ページは使用しないでください。"
         "情報収集を進める場合はget_collection_queueで次の企業を取得し、確認後は募集の有無にかかわらず"
         "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
+        "新しい募集は先にadd_opportunityまたはupsert_opportunityで登録します。企業ページだけの確認は"
+        "opportunity_idを指定せず、有効な登録済み公式sourceとno_opening・unreachable・needs_reviewを使います。"
+        "個別募集や受付状況を確定できない場合はneeds_reviewです。"
+        "終了した募集を操作しない指示ではlist_stale_opportunitiesのexclude_expired=trueで期限超過を取得前に除外します。"
         "企業マスタにあるが未監視の企業を棚卸しする場合はlist_unmonitored_companiesを使い、返されたcompany_idを"
         "add_collection_targetへ指定してください。"
         "企業の複数募集をまとめて保守する場合はget_company_maintenance_contextで公式URLと、定期再確認対象の募集の最終確認日時を取得してください。"
@@ -786,6 +799,7 @@ def add_company_alias_tool(
     alias: Annotated[str, Field(min_length=1, max_length=200, description="確認済みの略称・英語名・旧社名。")],
     request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時は同じ値を使用します。")],
     client_name: ClientName = "mcp-client",
+    run_id: RunId | None = None,
 ) -> MCPCompanyAliasWriteResponse:
     try:
         with SessionLocal() as db:
@@ -829,7 +843,7 @@ def add_company_alias_tool(
     ),
     annotations=REPLACING,
 )
-def set_company_industries_tool(payload: CompanyIndustryUpdatePayload) -> MCPCompanyIndustryWriteResponse:
+def set_company_industries_tool(payload: CompanyIndustryUpdatePayload, run_id: RunId | None = None) -> MCPCompanyIndustryWriteResponse:
     request = _parse_company_payload(payload, CompanyIndustryUpdateRequest, "company_industries_update")
     try:
         with SessionLocal() as db:
@@ -877,7 +891,7 @@ def set_company_industries_tool(payload: CompanyIndustryUpdatePayload) -> MCPCom
     ),
     annotations=PATCHING,
 )
-def update_company_profile_tool(payload: CompanyProfileUpdatePayload) -> MCPCompanyProfileWriteResponse:
+def update_company_profile_tool(payload: CompanyProfileUpdatePayload, run_id: RunId | None = None) -> MCPCompanyProfileWriteResponse:
     return _update_company_profile(payload, CompanyProfileUpdateRequest)
 
 
@@ -949,7 +963,7 @@ def _update_company_profile(
     ),
     annotations=PATCHING,
 )
-def update_company_profiles_tool(updates: CompanyProfileBatchUpdates) -> MCPCompanyProfileBatchWriteResponse:
+def update_company_profiles_tool(updates: CompanyProfileBatchUpdates, run_id: RunId | None = None) -> MCPCompanyProfileBatchWriteResponse:
     execute = _guarded(
         "update_company_profiles.item", lambda raw: _update_company_profile(raw, CompanyProfileBatchItemRequest)
     )
@@ -972,7 +986,7 @@ def update_company_profiles_tool(updates: CompanyProfileBatchUpdates) -> MCPComp
                 _record_failure(
                     action="company_profile_update",
                     entity_type="company",
-                    errors=[{"field": "入力全体", "reason": INTERNAL_ERROR["message"]}],
+                    errors=[{"field": "入力全体", "reason": INTERNAL_ERROR["message"], "code": "internal_error"}],
                     **_company_audit_metadata(raw),
                 )
         else:
@@ -1007,6 +1021,7 @@ def delete_company_alias_tool(
     alias_id: Annotated[int, Field(ge=1, description="削除する企業別名ID。")],
     request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時は同じ値を使用します。")],
     client_name: ClientName = "mcp-client",
+    run_id: RunId | None = None,
 ) -> MCPCompanyAliasWriteResponse:
     try:
         with SessionLocal() as db:
@@ -1049,6 +1064,7 @@ def merge_company_tool(
     target_company_id: Annotated[int, Field(ge=1, description="残す正規CompanyのID。")],
     request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時は同じ値を使用します。")],
     client_name: ClientName = "mcp-client",
+    run_id: RunId | None = None,
 ) -> MCPCompanyMergeResponse:
     try:
         with SessionLocal() as db:
@@ -1251,6 +1267,7 @@ def add_opportunity(
             ),
         ),
     ] = None,
+    run_id: RunId | None = None,
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPWriteRequest)
     data = _write_input(request)
@@ -1304,6 +1321,7 @@ def upsert_opportunity(
             ),
         ),
     ] = None,
+    run_id: RunId | None = None,
 ) -> MCPUpsertResponse:
     request = _parse_payload(payload, MCPWriteRequest)
     data = _write_input(request)
@@ -1375,6 +1393,7 @@ def update_opportunity(
         datetime,
         Field(description="get_opportunityで取得した現在のupdated_at。取得後の競合更新を検出します。"),
     ],
+    run_id: RunId | None = None,
 ) -> MCPWriteResponse:
     request = _parse_payload(payload, MCPUpdateRequest)
     data = _write_input(request)
@@ -1473,6 +1492,7 @@ def patch_opportunity_tool(
     ],
     request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。")],
     client_name: ClientName = "mcp-client",
+    run_id: RunId | None = None,
 ) -> MCPWriteResponse:
     try:
         with SessionLocal() as db:
@@ -1541,6 +1561,7 @@ def update_recruitment_status_tool(
         Field(description="新しい締め切り（YYYY-MM-DD）。変更しない場合は省略します。"),
     ] = None,
     clear_deadline: Annotated[bool, Field(description="締め切りを未設定に戻す場合はtrueにします。")] = False,
+    run_id: RunId | None = None,
 ) -> MCPWriteResponse:
     parsed_deadline: date | None = None
     if deadline is not None:
@@ -1615,6 +1636,7 @@ def verify_opportunity_tool(
     source_url: Annotated[str, Field(description="確認した登録済みの一次情報URL（https）。")],
     request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
     client_name: ClientName = "mcp-client",
+    run_id: RunId | None = None,
 ) -> MCPWriteResponse:
     try:
         source_url = validate_source_host(validate_https_url(source_url) or source_url)
@@ -1728,6 +1750,7 @@ def delete_opportunity_tool(
     ],
     request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
     client_name: ClientName = "mcp-client",
+    run_id: RunId | None = None,
 ) -> MCPDeleteResponse:
     try:
         with SessionLocal() as db:
@@ -1771,6 +1794,7 @@ def restore_opportunity_tool(
     ],
     request_id: Annotated[RequestId, Field(description="操作ごとに一意なID。再試行時のみ同じ値を使います。")],
     client_name: ClientName = "mcp-client",
+    run_id: RunId | None = None,
 ) -> MCPRestoreResponse:
     try:
         with SessionLocal() as db:
@@ -2054,7 +2078,8 @@ def list_company_profile_history_tool(
         "有効な収集対象から、未確認または確認期限を過ぎた企業を優先度順に返します。"
         "返却する募集一覧は定期再確認対象（募集予定・募集中・通年募集）だけで、締切などの終了状態は含みません。"
         "募集一覧が空の企業も、新しい募集を発見するために返します。"
-        "各公式ページを確認し、募集の有無にかかわらずrecord_collection_checkを実行してください。認証が必要です。"
+        "1社または少数社ずつ公式確認・募集更新・record_collection_checkによる記録を完了してから次へ進んでください。"
+        "全社の調査完了まで保存を待たないでください。認証が必要です。"
     ),
     annotations=READ_ONLY,
 )
@@ -2122,7 +2147,7 @@ def list_collection_checks_tool(
     ),
     annotations=APPEND_ONLY,
 )
-def add_collection_target_tool(payload: CollectionTargetCreatePayload) -> MCPCollectionWriteResponse:
+def add_collection_target_tool(payload: CollectionTargetCreatePayload, run_id: RunId | None = None) -> MCPCollectionWriteResponse:
     request = _parse_collection_payload(payload, CollectionTargetCreateRequest, "collection_target_create")
     try:
         with SessionLocal() as db:
@@ -2153,6 +2178,7 @@ def add_collection_target_tool(payload: CollectionTargetCreatePayload) -> MCPCol
 def update_collection_target_tool(
     target_id: Annotated[int, Field(ge=1, description="更新する収集対象ID。")],
     payload: CollectionTargetUpdatePayload,
+    run_id: RunId | None = None,
 ) -> MCPCollectionWriteResponse:
     request = _parse_collection_payload(payload, CollectionTargetUpdateRequest, "collection_target_update")
     try:
@@ -2181,6 +2207,7 @@ def update_collection_target_tool(
 def add_collection_source_tool(
     target_id: Annotated[int, Field(ge=1, description="追加先の収集対象ID。")],
     payload: CollectionSourceCreatePayload,
+    run_id: RunId | None = None,
 ) -> MCPCollectionSourceWriteResponse:
     request = _parse_collection_payload(payload, CollectionSourceCreateRequest, "collection_source_create")
     try:
@@ -2209,6 +2236,7 @@ def add_collection_source_tool(
 def update_collection_source_tool(
     source_id: Annotated[int, Field(ge=1, description="更新する公式ページID。")],
     payload: CollectionSourceUpdatePayload,
+    run_id: RunId | None = None,
 ) -> MCPCollectionSourceWriteResponse:
     request = _parse_collection_payload(payload, CollectionSourceUpdateRequest, "collection_source_update")
     try:
@@ -2232,8 +2260,12 @@ def update_collection_source_tool(
     name="record_collection_check",
     title="企業公式ページの確認結果を記録",
     description=(
-        "募集を発見した場合だけでなく、募集中なし、ページ確認不能、人の確認が必要な場合も履歴へ記録し、"
-        "次回確認日を更新します。実際に確認したsource_urlが募集自身または登録済み公式sourceと一致するか検証します。"
+        "企業公式ページの確認結果と次回確認日を記録します。foundは登録済みの個別募集を実際に確認した場合だけ使い、"
+        "opportunity_idと、その募集のsource_urlに正規化後に一致するURLが必須です。企業の採用トップページで代用できません。"
+        "新しい募集を発見した場合は先にadd_opportunityまたはupsert_opportunityで登録してください。"
+        "企業ページだけの確認ではopportunity_idを省略し、有効な登録済み公式source URLと"
+        "no_opening（有効な募集なし）・unreachable（確認不能）・needs_review（個別募集や受付状況を確定できない）を指定します。"
+        "これらは既存募集の状態や確認日時を変更しません。各社の確認後すぐに記録し、全社の調査完了まで保存を待たないでください。"
         "確認中に採用ページなどを新しく見つけた場合はdiscovered_sourcesへ渡すと"
         "同時に情報源として追加します。認証が必要です。"
     ),
@@ -2242,6 +2274,7 @@ def update_collection_source_tool(
 def record_collection_check_tool(
     target_id: Annotated[int, Field(ge=1, description="確認した収集対象ID。")],
     payload: CollectionCheckPayload,
+    run_id: RunId | None = None,
 ) -> MCPCollectionCheckWriteResponse:
     request = _parse_collection_payload(payload, CollectionCheckRequest, "collection_check_create")
     try:
@@ -2269,6 +2302,11 @@ def record_collection_check_tool(
         "募集だけでなく、企業（プロフィール・別名・業界カテゴリ・統合）と収集対象・公式情報源・確認記録の書き込みも含みます。"
         "失敗した記録のerrorsに、拒否された実際の理由が入っています。"
         "書き込みが失敗した理由を説明するときは、推測せずこのツールで確認してください。"
+        "run_idで実行を絞り込み、全ページのtotal_count・succeeded_count・failed_count・unknown_countと個別結果を照合してください。"
+        "outcome=unknownは記録済みの内部エラーで保存結果未確認です。拒否数には含まず、未保存と断定しません。"
+        "件数は監査記録数で、企業数や募集数ではありません。募集登録に付随する確認記録も別に数えます。"
+        "同じrequest_idの処理済み再試行は監査記録を増やしません。has_more=trueなら次のpageを取得してください。"
+        "未実行・通信失敗・内部エラーなど、監査記録がない操作の保存結果はこの集計だけでは確定できません。"
         "entity_typeで対象の種類を絞り込めます（企業プロフィール更新はcompany）。認証が必要です。"
     ),
     annotations=READ_ONLY,
@@ -2283,10 +2321,12 @@ def list_recent_writes(
         Field(description="書き込み対象の種類で絞り込みます。省略するとすべての種類を返します。"),
     ] = None,
     limit: Annotated[int, Field(ge=1, le=100, description="取得件数（1〜100）。")] = 20,
+    run_id: RunId | None = None,
+    page: Annotated[int, Field(ge=1, le=100000, description="1から始まる監査履歴のページ番号。")] = 1,
 ) -> MCPWriteHistoryResponse:
     with SessionLocal() as db:
         return MCPWriteHistoryResponse.model_validate(
-            {"items": recent_write_logs(db, client_name=client_name, entity_type=entity_type, limit=limit)}
+            recent_write_logs(db, client_name=client_name, entity_type=entity_type, run_id=run_id, limit=limit, page=page)
         )
 
 
@@ -2298,6 +2338,9 @@ def list_recent_writes(
         "そのうち「募集中」なのに締め切りまたは実施終了日を過ぎた矛盾を最優先で返します。"
         "続いて公式ページを一定期間確認できていない募集を、未確認・確認日が古い順に返します。締切などの終了状態は含みません。"
         "矛盾は自動で「締切」に変更しません。"
+        "期限超過の募集を操作しない場合はexclude_expired=trueを指定してください。"
+        "締め切りまたは実施終了日が東京時間の当日より前の募集を、取得件数の制限前に除外します。"
+        "当日の募集と日付が未設定の募集は含まれます。既定のfalseでは矛盾を最優先に返します。"
         "見つけた各募集はupdate_recruitment_status、patch_opportunity、"
         "変更がなければverify_opportunity、収集対象があるならrecord_collection_checkで再確認結果を記録してください。認証が必要です。"
     ),
@@ -2313,9 +2356,12 @@ def list_stale_opportunities_tool(
         ),
     ] = 7,
     limit: Annotated[int, Field(ge=1, le=100, description="取得件数（1〜100）。")] = 20,
+    exclude_expired: Annotated[
+        bool, Field(description="trueなら締め切りまたは実施終了日が東京時間の当日より前の募集を取得前に除外します。")
+    ] = False,
 ) -> MCPStaleOpportunityListResponse:
     with SessionLocal() as db:
-        reviews = list_opportunities_requiring_review(db, days=days, limit=limit)
+        reviews = list_opportunities_requiring_review(db, days=days, limit=limit, exclude_expired=exclude_expired)
         return MCPStaleOpportunityListResponse.model_validate(
             {
                 "items": [
@@ -2352,29 +2398,39 @@ def _guarded(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     else is logged here with its traceback and answered with one fixed sentence.
     """
 
+    # Correlation is scoped around validation, failures, and nested batch items, outside payload hashes.
+    signature = inspect.signature(fn)
+
+    def call_run_id(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+        if "run_id" not in signature.parameters:
+            return get_audit_run_id()
+        return signature.bind(*args, **kwargs).arguments.get("run_id")
+
     if inspect.iscoroutinefunction(fn):
 
         @functools.wraps(fn)
         async def guarded_async(*args: Any, **kwargs: Any) -> Any:
-            try:
-                return await fn(*args, **kwargs)
-            except (ToolError, UrlElicitationRequiredError):
-                raise
-            except Exception:
-                logger.exception("Unhandled error in MCP tool %s", name)
-                raise _json_error(INTERNAL_ERROR) from None
+            with audit_run(call_run_id(args, kwargs)):
+                try:
+                    return await fn(*args, **kwargs)
+                except (ToolError, UrlElicitationRequiredError):
+                    raise
+                except Exception:
+                    logger.exception("Unhandled error in MCP tool %s", name)
+                    raise _json_error(INTERNAL_ERROR) from None
 
         return guarded_async
 
     @functools.wraps(fn)
     def guarded(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return fn(*args, **kwargs)
-        except (ToolError, UrlElicitationRequiredError):
-            raise
-        except Exception:
-            logger.exception("Unhandled error in MCP tool %s", name)
-            raise _json_error(INTERNAL_ERROR) from None
+        with audit_run(call_run_id(args, kwargs)):
+            try:
+                return fn(*args, **kwargs)
+            except (ToolError, UrlElicitationRequiredError):
+                raise
+            except Exception:
+                logger.exception("Unhandled error in MCP tool %s", name)
+                raise _json_error(INTERNAL_ERROR) from None
 
     return guarded
 

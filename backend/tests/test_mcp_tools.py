@@ -634,9 +634,12 @@ def test_company_profile_batch_contains_internal_errors_and_continues(tools, db,
     monkeypatch.setattr(mcp_server, "update_company_profile", fail_one)
     result = call(
         "update_company_profiles",
-        {"updates": [profile_batch_entry(first.company), profile_batch_entry(second.company)]},
+        {"updates": [profile_batch_entry(first.company), profile_batch_entry(second.company)], "run_id": "run-batch-internal"},
     )
     assert (result["succeeded_count"], result["failed_count"], result["unknown_count"]) == (1, 0, 1)
+    history = call("list_recent_writes", {"run_id": "run-batch-internal"})
+    assert (history["succeeded_count"], history["failed_count"], history["unknown_count"]) == (1, 0, 1)
+    assert {item["outcome"] for item in history["items"]} == {"succeeded", "unknown"}
     assert result["items"][0]["success"] is None
     assert result["items"][0]["error"] == mcp_server.INTERNAL_ERROR
     assert "secret_column" not in json.dumps(result)
@@ -2475,3 +2478,155 @@ def test_get_master_values_stops_advertising_fixed_values_the_write_path_rejects
     assert "架空業界" not in [industry["name"] for industry in first["industries"]]
     assert "架空業界" in [industry["name"] for industry in refreshed["industries"]]
     assert len(fake.store) == 2, "the superseded generation is left to expire rather than deleted"
+
+
+def test_maintenance_tools_explain_individual_sources_and_incremental_saving():
+    listed = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
+    check = listed["record_collection_check"]
+    fields = check.inputSchema["properties"]["payload"]["properties"]
+    assert "登録済み" in fields["result"]["description"]
+    assert "先にadd_opportunity" in fields["result"]["description"]
+    assert "採用トップページで代用できません" in fields["source_url"]["description"]
+    assert "実際に確認" in fields["source_url"]["description"]
+    assert "foundの場合だけ" in fields["opportunity_id"]["description"]
+    assert "全社の調査完了まで保存を待たない" in check.description
+    assert "全社の調査完了まで保存を待たない" in listed["get_collection_queue"].description
+    assert "少数社" in mcp_server.mcp.instructions[:512]
+    assert "run_id" in mcp_server.mcp.instructions[:512]
+
+
+def test_all_write_tools_publish_an_optional_bounded_run_id():
+    for tool in asyncio.run(mcp_server.mcp.list_tools()):
+        if tool.annotations.readOnlyHint:
+            continue
+        schema = tool.inputSchema
+        assert "run_id" not in schema.get("required", [])
+        field = schema["properties"]["run_id"]
+        string = next(option for option in field["anyOf"] if option["type"] == "string")
+        assert (string["minLength"], string["maxLength"]) == (8, 100)
+
+
+@pytest.mark.parametrize("run_id", ["short", "x" * 101])
+def test_invalid_run_id_is_rejected_before_writing(tools, db, run_id):
+    with pytest.raises(ToolError):
+        call("add_opportunity", write_args() | {"run_id": run_id})
+    assert db.scalar(select(Opportunity.id)) is None
+    assert db.scalar(select(AuditLog.id)) is None
+
+
+def test_collection_url_error_can_be_corrected_without_false_confirmation(tools, db):
+    def confirmation_time(value):
+        return datetime.fromisoformat(value).replace(tzinfo=UTC) if value else None
+
+    target = call("add_collection_target", collection_target_args())["target"]
+    item = call(
+        "add_opportunity",
+        write_args(company_name=target["company"]["name"], source_url="https://example.com/recruit/posting"),
+    )["opportunity"]
+    checked_before = confirmation_time(item["source_checked_at"])
+    target_before = confirmation_time(call("get_collection_target", {"target_id": target["id"]})["last_checked_at"])
+    args = {
+        "target_id": target["id"],
+        "run_id": "run-check-url-mismatch",
+        "payload": {
+            "result": "found", "opportunity_id": item["id"], "source_url": "https://example.com/recruit",
+            "request_id": "check-mismatch-run-0001",
+        },
+    }
+    error = tool_error("record_collection_check", args)
+    detail = error["errors"][0]
+    assert detail["expected"] == item["source_url"]
+    assert "実際に確認" in detail["alternative"]
+    assert "opportunity_idを省略" in detail["alternative"]
+    assert "needs_review" in detail["alternative"]
+    assert "URLだけを差し替えて" in detail["alternative"]
+    assert confirmation_time(call("get_opportunity", {"reference": item["id"]})["source_checked_at"]) == checked_before
+    assert confirmation_time(call("get_collection_target", {"target_id": target["id"]})["last_checked_at"]) == target_before
+    result = call(
+        "record_collection_check",
+        args | {"payload": {
+            "result": "needs_review", "source_url": "https://example.com/recruit",
+            "request_id": "check-corrected-run-0002",
+        }},
+    )
+    assert result["success"] is True
+    assert confirmation_time(call("get_opportunity", {"reference": item["id"]})["source_checked_at"]) == checked_before
+    history = call("list_recent_writes", {"run_id": args["run_id"]})
+    assert (history["total_count"], history["succeeded_count"], history["failed_count"]) == (2, 1, 1)
+
+
+def test_run_history_isolates_runs_and_counts_rejections_and_side_effects(tools):
+    run_id = "run-maintenance-first"
+    call("add_collection_target", collection_target_args() | {"run_id": run_id})
+    args = write_args(company_name="株式会社収集テスト", source_url="https://example.com/recruit/posting")
+    call("add_opportunity", args | {"run_id": run_id})
+    tool_error("add_opportunity", write_args(sector="銀行", request_id="run-rejected-0001") | {"run_id": run_id})
+    call("add_opportunity", args | {"run_id": "run-maintenance-retry"})
+    call("add_opportunity", write_args(company_name="実行IDなし企業", request_id="untracked-run-0001"))
+    history = call("list_recent_writes", {"run_id": run_id, "limit": 1})
+    assert (history["total_count"], history["succeeded_count"], history["failed_count"]) == (4, 3, 1)
+    assert history["unknown_count"] == 0
+    assert len(history["items"]) == 1
+    assert history["has_more"] is True
+    assert history["items"][0]["run_id"] == run_id
+    assert call("list_recent_writes", {"run_id": "run-maintenance-retry"})["total_count"] == 0
+    untracked = call("list_recent_writes", {"limit": 1})["items"][0]
+    assert untracked["run_id"] is None
+    opportunities = call("list_recent_writes", {"run_id": run_id, "entity_type": "opportunity"})
+    assert (opportunities["total_count"], opportunities["succeeded_count"], opportunities["failed_count"]) == (2, 1, 1)
+    assert call("list_recent_writes", {"run_id": run_id, "client_name": "nobody"})["total_count"] == 0
+    assert call("list_recent_writes", {"run_id": "run-unknown-value"})["items"] == []
+
+
+def test_run_id_keeps_legacy_request_hashes_compatible(tools):
+    args = collection_target_args()
+    original = call("add_collection_target", args)
+    replay = call("add_collection_target", args | {"run_id": "run-legacy-retry"})
+    assert replay["idempotent_replay"] is True
+    assert replay["target"]["id"] == original["target"]["id"]
+    assert call("list_recent_writes", {"run_id": "run-legacy-retry"})["items"] == []
+
+
+def test_run_history_pages_cover_every_record_and_counts_do_not_truncate(tools, db):
+    db.add_all([
+        AuditLog(action="verify", entity_type="opportunity", request_id=f"run-page-{i:04}",
+                 client_name="history-test", run_id="run-over-100-records", success=i % 2 == 0)
+        for i in range(105)
+    ])
+    db.commit()
+    first = call("list_recent_writes", {"run_id": "run-over-100-records", "limit": 100})
+    second = call("list_recent_writes", {"run_id": "run-over-100-records", "limit": 100, "page": 2})
+    assert (first["total_count"], first["succeeded_count"], first["failed_count"]) == (105, 53, 52)
+    assert second["total_count"] == first["total_count"]
+    assert len(first["items"]) == 100 and len(second["items"]) == 5
+    assert first["has_more"] is True and second["has_more"] is False
+    assert len({row["request_id"] for row in first["items"] + second["items"]}) == 105
+
+
+def test_review_queue_excludes_expired_before_limit_and_keeps_today_and_undated(tools, db, monkeypatch):
+    fixed_now = datetime(2026, 10, 3, 16, 0, tzinfo=UTC)  # October 4 in Tokyo.
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now.astimezone(tz) if tz else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr("app.services.opportunities.datetime", FrozenDateTime)
+    for index in range(3):
+        item = seed(db, company_name=f"期限超過企業{index}", event_name=f"期限超過{index}",
+                    deadline="2026-10-03", source_url=f"https://example.com/expired/{index}")
+        item.source_checked_at = fixed_now
+    current = seed(db, company_name="当日企業", event_name="当日募集", deadline="2026-10-04",
+                   event_end_date="2026-10-04", source_url="https://example.com/today")
+    current.source_checked_at = fixed_now - timedelta(days=30)
+    undated = seed(db, company_name="日付未設定企業", event_name="日付未設定募集", deadline=None,
+                   event_end_date=None, source_url="https://example.com/undated")
+    undated.source_checked_at = fixed_now - timedelta(days=20)
+    db.commit()
+    default = call("list_stale_opportunities", {"limit": 1})
+    assert default["items"][0]["review_reasons"] == ["deadline_passed_while_open"]
+    filtered = call("list_stale_opportunities", {"limit": 1, "exclude_expired": True})
+    assert filtered["items"][0]["id"] == current.id
+    assert {row["id"] for row in call("list_stale_opportunities", {"exclude_expired": True})["items"]} == {
+        current.id, undated.id,
+    }

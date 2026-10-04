@@ -152,6 +152,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | `services/normalization.py` | 企業名、タグ、一次情報URLの正規化 |
 | `services/oauth.py` | OAuth client、PKCE認可コード、access/refresh token、grant失効 |
 | `services/rate_limit.py` | Redisの固定窓レート制限。OAuthログイン・動的登録などを保護 |
+| `services/write_history.py` | 実行ID・クライアント・対象種類による監査履歴の絞り込み、ページング、全該当記録の成功・拒否・結果未確認件数 |
 | `services/serialization.py` | DBモデルからREST/MCP/画面共通のレスポンスへ変換。公開詳細URLも生成 |
 | `services/errors.py` | 固定値・入力エラーの共通メッセージ |
 
@@ -161,6 +162,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | --- | --- |
 | `app/config.py` | 環境変数、URL由来の issuer/resource、production時の開発用秘密値拒否 |
 | `app/db.py` | SQLAlchemy engine、session、Declarative Base、トランザクション境界 |
+| `app/audit_context.py` | MCP呼び出しごとの実行IDをContextVarで保持し、ネスト・例外・同時呼び出しから分離する共通基盤 |
 | `app/schemas.py` | REST/MCPのPydantic入力・出力、固定値型、入力制約 |
 | `app/security.py` | 内部token、Bearer、operator password の比較とOAuth token hash |
 | `app/master_data.py` | 新規DBへ固定値マスタを投入する定義 |
@@ -209,13 +211,14 @@ companies ──1:1── collection_targets ──< collection_sources
 - 募集の新規登録（`add_opportunity`／`upsert_opportunity`）へ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。既存募集の更新・部分更新はこの自動リンクを行わない（4.3参照）。
 - 採用ページ未登録、未確認、確認期限超過は収集キューの状態として返される。
 - `record_collection_check` は実際に確認したURLを必須とする。`found` は募集自身の一次情報URLとの一致、その他の結果は登録済み有効sourceとの一致を検証し、一致した `found` だけが募集の `source_checked_at` を進める。
+- `list_stale_opportunities(exclude_expired=true)` は、東京時間の当日より前の締め切り・実施終了日を持つ募集をSQLの件数制限前に除外する。当日・日付未設定は残し、既定のfalseは日付と「募集中」の矛盾を優先する（ADR-0026）。
 - 定期再確認の対象状態は `募集予定`、`募集中`、`通年募集` に限る。 `締切` などの終了状態は企業保守コンテキスト、収集対象の募集一覧、要確認キューから除外する。企業単位の収集キューは、新しい募集の発見が必要な企業を拾うため、現在の募集一覧が空でも返す。
 
 ### 4.3 書き込みの安全性
 
 - `request_id` と payload hash を `idempotency_records`、企業別名・企業統合を `company_request_records`、収集操作を `collection_request_records` に記録する。同じID・同じ内容の再試行は前回結果を返し、内容や対象が違えば拒否する。
 - 企業統合は明示した統合元IDの募集、別名、業界分類、収集対象・情報源・確認履歴を統合先へ移し、統合元のCompanyを物理削除する。監査ログは不変の履歴として旧IDを保持する。名前の類似だけで自動統合しない。
-- 成功・失敗を `audit_logs` に記録する。`verify_opportunity` は内容更新・status更新とは別の `verify` 操作として、確認時刻と実際に確認した一次情報URLを記録し、`updated_at` は変えない。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
+- 成功・失敗を `audit_logs` に記録する。全MCP書き込みは任意のトップレベル `run_id` を受け付け、共通例外境界の実行スコープ内で挿入される監査ログへ付与する。実行IDは冪等性の判定に影響せず、処理済み再試行で元の監査記録を書き換えない。`list_recent_writes` は実行IDで絞り込み、ページングと全該当記録数を返す。成功・拒否・結果未確認は監査記録の分類であり、企業数・募集数・ツール呼び出し数ではない。内部エラーとして記録された結果未確認は拒否と区別し、履歴のない通信失敗等の結果は集計から確定しない（ADR-0026）。`verify_opportunity` は内容更新・status更新とは別の `verify` 操作として、確認時刻と実際に確認した一次情報URLを記録し、`updated_at` は変えない。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
 - 書き込みと一次情報確認は分離している（write != verify）。`update_opportunity`／`patch_opportunity` によるDB内容の変更は `source_checked_at` を更新せず、`collection_target_id` も受け付けない。一次情報を確認した事実は `verify_opportunity` または `record_collection_check` で別途記録する。`source_checked_at` が更新されるのは新規登録時と、この2ツールによる確認記録時だけである。
 - 日付と募集状況の矛盾（例: 未来の締め切りで「締切」）は、書き込みを拒否せず `warnings` として返す。締切延長・追加募集・中止の可能性があるため、運営者が一次情報を確認して確定する。
 - 全項目更新・部分更新・募集状況更新・削除はいずれも `expected_updated_at`（`get_opportunity` で取得した現在の `updated_at`）を必須にし、`FOR UPDATE` 相当のロック取得後に一致を確認して楽観ロックする。取得後に別クライアントが更新していれば拒否し、lost update を防ぐ。
@@ -278,6 +281,8 @@ MCP client
 - `20260820_0012_add_company_industries.py` は、旧来の業界単位収集対象を1社1対象へ統合し、分類を `company_industries` へ移すデータ移行である。
 - `20260919_0015_repair_normalization_and_add_indexes.py` は、正規化ルールの変更に追随していなかった `companies.normalized_name` / `company_aliases.normalized_alias` を現行ルールで再計算し、`collection_checks` から `last_check_result` を再導出し、ダングリングな `collection_request_records` を整理したうえで、`models.py` が先行して持っていた索引を追加する。正規化の再計算で一意制約に衝突する行は修復せず据え置き、WARNING で対象グループを名指しする（例外で停止すると `alembic upgrade head && uvicorn` の起動が止まるため）。名指しされた行は `merge_company` で手動解消してから再実行する。
 
+- `20261004_0016_add_audit_run_id.py` は `audit_logs.run_id` と索引を追加する。既存記録はNULLのまま保持し、新規DBではORMが作成済みの列・索引をスキップする。
+
 スキーマを変更するときは ORM、migration、fresh DB、既存DB upgrade、必要な回帰テストを一緒に確認します。
 
 ### 6.2 Composeと公開境界
@@ -313,7 +318,8 @@ MCP client
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py`。日時フィルターはカーソル条件にも含める |
 | 企業同一性・プロフィール更新・履歴 | `services/companies.py`, `company_industries.py` | `schemas.py`, `mcp_server.py`, `test_companies.py`, `test_mcp_tools.py`、`models.py` の `AuditLog`、関連ADR。一括更新は企業ごとの検証・更新日時照合・保存・結果集計 |
-| 収集キュー | `services/collection_targets.py` | `models.py`, `test_collection_targets.py`, MCP tool definitions。確認状況は履歴列から導出する |
+| 収集キュー | `services/collection_targets.py` | `models.py`, `test_collection_targets.py`, MCP tool definitions。確認状況は履歴列から導出し、URL不一致時は確認単位に応じた修正手順を返す |
+| 実行単位の書き込み履歴 | `services/write_history.py`, `app/audit_context.py`, `models.py` の `AuditLog` | `mcp_server.py`, `schemas.py`, `test_mcp_tools.py`, `test_audit_context.py`, `test_audit_run_migration.py`、ADR-0026 |
 | OAuth・MCP認証 | `main.py`, `api/oauth.py`, `services/oauth.py`, `mcp_server.py` | `test_oauth.py`, `test_oauth_endpoints.py`, `relua.conf` |
 | 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、`.github/workflows/maintenance.yml`、該当サービスのテスト |
 | DBスキーマ | `models.py`, 最新 migration | 0001 fresh DB、全 upgrade、PostgreSQL CI |

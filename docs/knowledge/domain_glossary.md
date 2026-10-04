@@ -43,7 +43,8 @@ relua にはアカウント・会員・ログインがありません。relua �
 | プロフィール欠落企業 | プロフィール未登録・空欄 | `list_companies_missing_profile`、`missing_profile_fields` | `companies.business_summary`、`companies.description` | `services/companies.py` のプロフィール欠落条件 |
 | 企業プロフィール変更履歴 | プロフィール変更履歴 | `list_company_profile_history` | `audit_logs` の `company_profile_update` | `AuditLog`、`services/companies.py` |
 | 企業プロフィールの一括更新 | プロフィール一括更新 | `update_company_profiles` | 各社の `company_request_records` と `audit_logs` | `CompanyProfileBatchItemRequest`、`services/companies.py` |
-| 書き込み履歴（成功と拒否の両方） | 書き込み履歴 | `list_recent_writes`、`entity_type`（`opportunity`／`company`／`collection_target`／`collection_source`／`collection_check`） | `audit_logs` | `AuditLog`、`services/opportunities.py` の `recent_write_logs` |
+| 書き込み履歴（成功・拒否・結果未確認） | 書き込み履歴 | `list_recent_writes`、`entity_type`（`opportunity`／`company`／`collection_target`／`collection_source`／`collection_check`） | `audit_logs` | `AuditLog`、`services/write_history.py` の `recent_write_logs` |
+| 実行単位の識別子 | 実行ID | 書き込みツールのトップレベル `run_id`、`list_recent_writes.run_id` | `audit_logs.run_id`（任意、過去の記録はNULL） | `RunId`、`app/audit_context.py`、`AuditLog` |
 | 企業別名（略称・英語名・旧社名） | 別名 | `alias` | `company_aliases` | `CompanyAlias` |
 | 公開コード（URL・共有に使う 8 文字） | 公開コード | `public_code` | `public_code` 列 | `models.py` の `public_code_string`、公開 URL は `services/serialization.py` |
 | 業界／業種 | 業界／業種 | `industry`／`sector` | `industries`／`sectors` | `Industry`／`Sector` |
@@ -55,7 +56,7 @@ relua にはアカウント・会員・ログインがありません。relua �
 | 対象卒業年 | 対象卒業年 | `graduation_years` | `graduation_years` | `GraduationYear` |
 | 収集対象（1 社 1 件の巡回単位） | 情報収集対象 | `collection_target` | `collection_targets` | `CollectionTarget`、`services/collection_targets.py` |
 | 企業の公式ページ（採用・インターン・イベント・ニュース） | 公式情報源 | `sources`、`collection_source`、`source_type` | `collection_sources` | `CollectionSource` |
-| 確認記録（見つからなかった試行も含む） | 確認結果 | `record_collection_check`、`result` | `collection_checks` | `CollectionCheck` |
+| 確認記録（個別募集の一次情報確認、企業ページの募集なし・確認不能・要確認） | 確認結果 | `record_collection_check`、`result` | `collection_checks` | `CollectionCheck` |
 | 募集自身の一次情報 URL | 情報源（一次情報 URL） | `source_url` | `source_url`、`normalized_source_url` | `services/normalization.py` |
 | 一次情報を確認した事実 | 公式情報確認日時 | `verify_opportunity`、`source_checked_at` | `source_checked_at` | ADR-0010 |
 | 収集対象の確認状況（直近の確認結果から導出） | 確認状況 | `check_status` | —（`last_checked_at`、`last_check_result` から導出） | `services/collection_targets.py` の `_check_status` |

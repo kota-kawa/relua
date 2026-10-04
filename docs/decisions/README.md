@@ -31,5 +31,6 @@
 | [`0023-company-pages-indexed-on-profile-alone.md`](./0023-company-pages-indexed-on-profile-alone.md) | 企業ページのindex条件をプロフィールだけにし、企業ディレクトリを置く | Accepted |
 | [`0024-mcp-maintenance-filters-and-company-profile-history.md`](./0024-mcp-maintenance-filters-and-company-profile-history.md) | MCPに保守確認フィルターと企業プロフィール履歴を追加する | Accepted |
 | [`0025-batch-company-profile-updates.md`](./0025-batch-company-profile-updates.md) | 企業プロフィールを個別の更新日時照合・保存結果付きで最大50社一括更新する | Accepted |
+| [`0026-mcp-maintenance-execution-reporting.md`](./0026-mcp-maintenance-execution-reporting.md) | MCPの確認単位・期限超過除外・実行単位の監査照合を明確にする | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

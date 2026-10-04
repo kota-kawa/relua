@@ -47,7 +47,7 @@ from app.services.normalization import (
     normalize_tag,
     source_url_is_allowed,
 )
-from app.services.serialization import detail_url, opportunity_dict, public_detail_url
+from app.services.serialization import detail_url, opportunity_dict
 
 
 class DomainValidationError(Exception):
@@ -817,7 +817,7 @@ def list_stale_opportunities(
 
 
 def list_opportunities_requiring_review(
-    db: Session, *, days: int = 7, limit: int = 50
+    db: Session, *, days: int = 7, limit: int = 50, exclude_expired: bool = False
 ) -> list[OpportunityReview]:
     """Return reconfirmable postings and date/status contradictions in review priority order.
 
@@ -851,6 +851,11 @@ def list_opportunities_requiring_review(
         )
         .limit(limit)
     )
+    if exclude_expired:
+        stmt = stmt.where(
+            or_(Opportunity.deadline.is_(None), Opportunity.deadline >= today),
+            or_(Opportunity.event_end_date.is_(None), Opportunity.event_end_date >= today),
+        )
     reviews = []
     for item in db.scalars(stmt).unique():
         reasons = []
@@ -2010,42 +2015,6 @@ def restore_opportunity(
     )
     db.commit()
     return response, False
-
-
-def recent_write_logs(
-    db: Session, *, client_name: str | None = None, entity_type: str | None = None, limit: int = 20
-) -> list[dict[str, Any]]:
-    """Recent MCP writes of every entity_type (opportunity, company, collection_*), successes and rejections alike.
-
-    ``opportunity_id`` and ``url`` are filled only for opportunity rows.
-    """
-    stmt = select(AuditLog)
-    if client_name:
-        stmt = stmt.where(AuditLog.client_name == client_name)
-    if entity_type:
-        stmt = stmt.where(AuditLog.entity_type == entity_type)
-    logs = db.scalars(stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit))
-    items = []
-    for log in logs:
-        is_opportunity = log.entity_type == "opportunity"
-        # A company snapshot carries its own public_code, which is not an opportunity detail page.
-        public_code = ((log.changes or {}).get("after") or {}).get("public_code") if is_opportunity else None
-        items.append(
-            {
-                "action": log.action,
-                "entity_type": log.entity_type,
-                "entity_id": log.entity_id,
-                "request_id": log.request_id,
-                "client_name": log.client_name,
-                "success": log.success,
-                "opportunity_id": log.entity_id if is_opportunity else None,
-                "url": public_detail_url(public_code) if public_code else None,
-                "source_url": log.source_url,
-                "errors": log.errors,
-                "created_at": log.created_at,
-            }
-        )
-    return items
 
 
 def record_failed_attempt(

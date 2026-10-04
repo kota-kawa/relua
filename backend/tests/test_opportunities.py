@@ -1434,3 +1434,28 @@ def test_exact_duplicate_detection_is_not_capped_by_the_company_candidate_limit(
     assert [item.id for item in find_exact_duplicates(db, company_name=company, event_name="最古のイベント")] == [
         oldest.id
     ]
+
+
+@pytest.mark.parametrize("status", ["募集予定", "募集中", "通年募集"])
+@pytest.mark.parametrize("field", ["deadline", "event_end_date"])
+def test_maintenance_expiry_filter_applies_to_all_reconfirmable_statuses(db, status, field):
+    today = today_in_tokyo()
+    items = []
+    for index, value in enumerate([None, today - timedelta(days=1), today, today + timedelta(days=1)]):
+        item, _ = write_opportunity(
+            db,
+            data=OpportunityInput.model_validate(valid_payload() | {
+                "company_name": f"期限フィルター{index}", "event_name": f"期限判定{index}",
+                "recruitment_status": status, "deadline": None, "event_end_date": None,
+                field: value.isoformat() if value else None,
+                "source_url": f"https://example.com/expiry-filter/{index}",
+            }),
+            request_id=f"expiry-filter-{index:04}", client_name="pytest",
+        )
+        item.source_checked_at = None
+        items.append(item)
+    db.commit()
+    assert {row.opportunity.id for row in list_opportunities_requiring_review(db, exclude_expired=True)} == {
+        items[0].id, items[2].id, items[3].id,
+    }
+    assert {row.opportunity.id for row in list_opportunities_requiring_review(db)} == {item.id for item in items}

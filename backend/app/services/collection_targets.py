@@ -1034,6 +1034,14 @@ def record_collection_check(
                         "received": payload.source_url,
                         "reason": "募集情報に登録された一次情報URLと一致しません",
                         "expected": opportunity.source_url,
+                        "alternative": (
+                            "個別募集の確認ならexpectedのURLを実際に確認してから、その募集IDとURLで再送してください。"
+                            "企業ページだけを確認した場合はopportunity_idを省略し、登録済みの有効な公式source URLと、"
+                            "確認できた結果（no_opening・unreachable・needs_review）を指定してください。"
+                            "受付状況や個別募集を確定できない場合はneeds_reviewです。"
+                            "新しい募集は先にadd_opportunityまたはupsert_opportunityで登録してください。"
+                            "URLだけを差し替えて確認済みにしないでください。入力を直す再送には新しいrequest_idを使います。"
+                        ),
                     }
                 ]
             )
@@ -1061,6 +1069,12 @@ def record_collection_check(
                         "received": payload.source_url,
                         "reason": "確認結果は登録済みの有効な公式source URLに対してだけ記録できます",
                         "expected": active_sources,
+                        "alternative": (
+                            "登録済みの有効な公式source URLを実際に確認してから記録してください。"
+                            "別の公式ページを使用するにはadd_collection_sourceで明示登録します。"
+                            "新しい募集を発見した場合は先に募集を登録してください。"
+                            "入力を直す再送には新しいrequest_idを使います。"
+                        ),
                     }
                 ]
             )

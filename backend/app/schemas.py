@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from pydantic.json_schema import WithJsonSchema
 
+from app.config import HISTORY_RETENTION_DAYS
 from app.dates import years_ahead_in_tokyo
 
 SHORTENER_HOSTS = {
@@ -1224,6 +1225,7 @@ class CompanyProfileHistoryItem(BaseModel):
 
 
 class MCPCompanyProfileHistoryResponse(BaseModel):
+    retention_days: int = Field(default=HISTORY_RETENTION_DAYS, description="DBで保持する履歴の日数。古い記録は運用アーカイブに保存します。")
     items: list[CompanyProfileHistoryItem]
     total: int
     page: int
@@ -1295,8 +1297,9 @@ class MCPWriteHistoryItem(BaseModel):
 
 
 class MCPWriteHistoryResponse(BaseModel):
+    retention_days: int = Field(default=HISTORY_RETENTION_DAYS, description="DBで保持する履歴の日数。集計はDB内の記録が対象で、アーカイブを含みません。")
     items: list[MCPWriteHistoryItem]
-    total_count: int = Field(description="絞り込み条件に一致する全監査記録数。ページの取得件数に依存しません。")
+    total_count: int = Field(description="絞り込み条件に一致するDB内の全監査記録数。アーカイブは含まず、ページの取得件数に依存しません。")
     succeeded_count: int = Field(description="成功の監査記録数。企業数・募集数ではなく、付随する確認記録も別に数えます。")
     failed_count: int = Field(description="拒否の監査記録数。監査記録のない未実行・通信失敗・内部エラーは含みません。")
     unknown_count: int = Field(description="内部エラーとして記録された保存結果未確認の監査記録数。未保存と断定できません。")
@@ -1447,6 +1450,7 @@ class MCPCollectionCheckWriteResponse(BaseModel):
 
 
 class MCPCollectionCheckListResponse(BaseModel):
+    retention_days: int = Field(default=HISTORY_RETENTION_DAYS, description="DBで保持する履歴の日数。古い記録は運用アーカイブに保存します。")
     items: list[CollectionCheckResponse]
 
 

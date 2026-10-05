@@ -4,6 +4,7 @@
 - Scope: MCPの募集再確認、企業保守コンテキスト、収集対象の募集一覧
 - Supersedes: [ADR-0008](./0008-manual-expiry-review-queue.md)
 - Amended by: [ADR-0026](./0026-mcp-maintenance-execution-reporting.md)（任意の期限超過除外）
+- Amended by: [ADR-0027](./0027-maintenance-recheck-scheduling.md)（確認済みの矛盾を次回期限まで除外）
 
 ## Context
 

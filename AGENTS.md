@@ -19,6 +19,8 @@
 - `docs/decisions/README.md` は重要な技術判断（ADR）の索引です。判断を変更・追加するときは、既存 ADR を確認して理由と影響を更新・記録してください。
 - `docs/decisions/0025-batch-company-profile-updates.md` は企業プロフィール一括更新の個別保存・更新日時照合・部分失敗と再試行の判断です。一括更新の契約を変更するときに参照してください。
 - `docs/decisions/0026-mcp-maintenance-execution-reporting.md` は収集確認の単位・期限超過の除外・実行IDと監査集計の判断です。MCP保守や書き込み履歴の契約を変更するときに参照してください。
+- `docs/decisions/0027-maintenance-recheck-scheduling.md` は日付矛盾の確認後の待機、未カバー一覧の確認期限、確認不能の再確認間隔の判断です。保守キューと再確認スケジュールを変えるときに参照してください。
+- `docs/decisions/0028-history-archive-and-idempotency-retention.md` は履歴の90日保持と無期限圧縮アーカイブ、再送保証期間の判断です。履歴保存・再送保証・日次保守を変えるときに参照してください。
 - `frontend/STYLING_STRATEGY.md` は Next.js 側の CSS 配置（単一の `globals.css` と意味クラス）、カスケード、ブレークポイント、モーションの方針です。UI の変更時は `ARCHITECTURE.md` のフロントエンド章と併せて参照してください。
 - `frontend/DESIGN_TOKENS.md` は現在の配色・影・モーションのトークンの参考資料です。新しい UI が既存画面と浮かないよう、色を選ぶ前に読んでください。トークンを変えるときの更新規則は同文書の冒頭にあります。
 - `.github/BRANCH_PROTECTION.md` は `main` の保護設定と必須 CI チェックの記録です。マージ条件や CI ゲートを確認・変更するときに参照してください。
@@ -47,6 +49,7 @@
 | `backend/app/mcp_server.py` | MCP ツール、公開／認証要否、共通の例外境界、書き込み入口 | `ARCHITECTURE.md` §3.3、ADR-0020 |
 | `backend/app/audit_context.py` | MCP呼び出しとネストする書き込みの実行IDを分離して保持する共通基盤 | `ARCHITECTURE.md` §3.5、ADR-0026 |
 | `backend/app/services/` | 検索、検証、企業同一性、収集キュー、OAuth などのドメイン処理 | `ARCHITECTURE.md` §3.4 |
+| `backend/app/services/history_archive.py` / `backend/app/scripts/archive_history.py` | 古い履歴と再送防止記録を専用永続ボリュームへ圧縮して移す日次処理 | ADR-0028、`ARCHITECTURE.md` §3.5 |
 | `backend/app/models.py` | SQLAlchemy のテーブル、関連、制約 | `ARCHITECTURE.md` §4 |
 | `backend/alembic/versions/` | スキーマ変更と既存 DB の移行 | `ARCHITECTURE.md` §6.1、`docs/knowledge/contracts-and-migrations.md` |
 | `backend/tests/` / `frontend/**/*.test.*` | ドメイン、認証、移行、UI ロジックの回帰確認 | `docs/knowledge/development_conventions.md` |

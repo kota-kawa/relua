@@ -3,6 +3,7 @@
 - Status: Accepted
 - Scope: MCPの募集・企業・収集キュー書き込み
 - Amended by: [ADR-0026](./0026-mcp-maintenance-execution-reporting.md)（実行単位の監査照合）
+- Amended by: [ADR-0028](./0028-history-archive-and-idempotency-retention.md)（再送保証期間を90日に限定）
 
 ## Context
 

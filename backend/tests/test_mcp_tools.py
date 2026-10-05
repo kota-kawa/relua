@@ -12,7 +12,7 @@ from sqlalchemy.exc import OperationalError
 
 from app import mcp_server
 from app.dates import today_in_tokyo
-from app.models import AuditLog, Company, CompanyRequestRecord, Industry, Opportunity
+from app.models import AuditLog, CollectionTarget, Company, CompanyRequestRecord, Industry, Opportunity
 from app.schemas import OpportunityInput
 from app.services import master_cache
 from app.services.errors import FIELD_LABELS
@@ -1461,7 +1461,9 @@ def test_verify_opportunity_records_an_unchanged_source_without_touching_updated
     assert audit.action == "verify"
     assert audit.source_url == item.source_url
     assert audit.changes["before"]["source_checked_at"] == original_checked_at.isoformat()
-    assert audit.changes["after"] == {"source_checked_at": checked_at.isoformat()}
+    assert audit.changes["after"] == {
+        "source_checked_at": checked_at.isoformat(), "date_status_reviewed_at": None,
+    }
 
 
 def test_verify_opportunity_rejects_a_different_or_future_source_check(tools, db):
@@ -1773,6 +1775,11 @@ def test_review_queue_prioritizes_open_postings_with_past_dates(tools, db):
         "event_ended_while_open",
     ]
     assert items[stale.id]["review_reasons"] == ["source_not_checked_recently"]
+    call("verify_opportunity", {
+        "opportunity_id": conflict.id, "checked_at": datetime.now(UTC).isoformat(),
+        "source_url": conflict.source_url, "request_id": "review-queue-confirmed-0001", "client_name": "pytest",
+    })
+    assert [item["id"] for item in call("list_stale_opportunities", {"limit": 1})["items"]] == [stale.id]
 
 
 def collection_target_args(**overrides) -> dict:
@@ -1906,6 +1913,9 @@ def test_list_undercovered_companies_orders_by_fewest_linked_opportunities(tools
         ),
     )
 
+    assert [item["id"] for item in call("list_undercovered_companies", {"industry": "IT・通信"})["items"]] == [uncovered["id"]]
+    db.get(CollectionTarget, covered["id"]).next_check_at = datetime.now(UTC) - timedelta(days=1)
+    db.commit()
     items = call("list_undercovered_companies", {"industry": "IT・通信"})["items"]
     ids = [item["id"] for item in items]
     assert ids.index(uncovered["id"]) < ids.index(covered["id"])
@@ -1943,6 +1953,13 @@ def test_collection_target_schema_is_actionable_for_mcp_clients():
     check_payload = schemas["record_collection_check"]["properties"]["payload"]
     assert {"result", "source_url", "request_id"}.issubset(check_payload["required"])
     assert "実際に確認" in check_payload["properties"]["source_url"]["description"]
+
+
+def test_history_tools_report_database_retention_days(tools):
+    target = call("add_collection_target", collection_target_args())["target"]
+    assert call("list_recent_writes", {})["retention_days"] == 90
+    assert call("list_collection_checks", {"target_id": target["id"]})["retention_days"] == 90
+    assert call("list_company_profile_history", {"company_id": target["company"]["id"]})["retention_days"] == 90
 
 
 def test_company_industry_schema_documents_multiple_categories():

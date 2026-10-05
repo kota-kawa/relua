@@ -44,6 +44,7 @@ relua にはアカウント・会員・ログインがありません。relua �
 | 企業プロフィール変更履歴 | プロフィール変更履歴 | `list_company_profile_history` | `audit_logs` の `company_profile_update` | `AuditLog`、`services/companies.py` |
 | 企業プロフィールの一括更新 | プロフィール一括更新 | `update_company_profiles` | 各社の `company_request_records` と `audit_logs` | `CompanyProfileBatchItemRequest`、`services/companies.py` |
 | 書き込み履歴（成功・拒否・結果未確認） | 書き込み履歴 | `list_recent_writes`、`entity_type`（`opportunity`／`company`／`collection_target`／`collection_source`／`collection_check`） | `audit_logs` | `AuditLog`、`services/write_history.py` の `recent_write_logs` |
+| 90日より前の運用履歴の保管 | 履歴アーカイブ | MCP一覧の `retention_days` はDB保持日数を通知する。アーカイブ自体は運用専用 | 専用永続ボリュームのJSONL gzip | `services/history_archive.py`、ADR-0028 |
 | 実行単位の識別子 | 実行ID | 書き込みツールのトップレベル `run_id`、`list_recent_writes.run_id` | `audit_logs.run_id`（任意、過去の記録はNULL） | `RunId`、`app/audit_context.py`、`AuditLog` |
 | 企業別名（略称・英語名・旧社名） | 別名 | `alias` | `company_aliases` | `CompanyAlias` |
 | 公開コード（URL・共有に使う 8 文字） | 公開コード | `public_code` | `public_code` 列 | `models.py` の `public_code_string`、公開 URL は `services/serialization.py` |
@@ -59,6 +60,8 @@ relua にはアカウント・会員・ログインがありません。relua �
 | 確認記録（個別募集の一次情報確認、企業ページの募集なし・確認不能・要確認） | 確認結果 | `record_collection_check`、`result` | `collection_checks` | `CollectionCheck` |
 | 募集自身の一次情報 URL | 情報源（一次情報 URL） | `source_url` | `source_url`、`normalized_source_url` | `services/normalization.py` |
 | 一次情報を確認した事実 | 公式情報確認日時 | `verify_opportunity`、`source_checked_at` | `source_checked_at` | ADR-0010 |
+| 日付と募集中の矛盾を再確認した事実 | 日付矛盾の再確認日時 | `verify_opportunity`、個別募集の `record_collection_check` | `opportunities.date_status_reviewed_at`（内部項目） | ADR-0027 |
+| 企業ページを続けて確定できなかった回数 | 連続確認不能回数 | `unreachable`・`needs_review` の確認記録 | `collection_targets.consecutive_failed_checks`（内部項目） | `services/maintenance.py` |
 | 収集対象の確認状況（直近の確認結果から導出） | 確認状況 | `check_status` | —（`last_checked_at`、`last_check_result` から導出） | `services/collection_targets.py` の `_check_status` |
 | ブラウザ内の保存 | ブックマーク、保存した募集 | —（サーバーに無い） | — | `frontend/lib/local-data.ts` |
 
@@ -90,8 +93,10 @@ relua にはアカウント・会員・ログインがありません。relua �
 | 対象 | 状態 | 遷移の扱い |
 | --- | --- | --- |
 | 募集状況 | `募集予定`、`募集中`、`通年募集`、`締切`、`不明` | 遷移の制約は持たず、どの状態へも変更できる。日付との矛盾は拒否せず `warnings` と要確認キューで知らせ、運営者が一次情報で確定する（ADR-0009）。定期再確認の対象は `募集予定`・`募集中`・`通年募集` だけ（`RECONFIRMABLE_RECRUITMENT_STATUSES`、ADR-0012） |
-| 募集の公開 | 公開中 → 論理削除（`deleted_at`）→ 復元（同じ UUID・公開コード）または 30 日後に完全削除 | 論理削除は明示操作だけ（ADR-0002）、完全削除は日次ジョブ（ADR-0014）。締切を過ぎた募集は公開一覧と類似募集から外れ、詳細ページは `noindex` になるが、募集状況も論理削除も自動では変えない（ADR-0012） |
+| 募集の公開 | 公開中 → 論理削除（`deleted_at`）→ 復元（同じ UUID・公開コード）または 30 日後に完全削除 | 論理削除は明示操作だけ（ADR-0002）、完全削除は日次ジョブ（ADR-0014）。再送防止記録が残る募集は、その90日保持とアーカイブ完了まで完全削除を保留する（ADR-0028）。締切を過ぎた募集は公開一覧と類似募集から外れ、詳細ページは `noindex` になるが、募集状況も論理削除も自動では変えない（ADR-0012） |
 | 収集対象・公式情報源 | 有効／無効（`is_active`） | 削除せず無効化で保持する。確認記録で見つかった公式情報源は無効で登録し、有効化は明示操作（ADR-0021） |
-| 確認記録 | `found`、`no_opening`、`unreachable`、`needs_review` | 内容は追記のみ（企業統合での収集対象の付け替えと、完全削除での募集参照の解除を除く）。`found` だけが募集の公式情報確認日時を進める（ADR-0010、ADR-0013） |
+| 確認記録 | `found`、`no_opening`、`unreachable`、`needs_review` | 内容は追記のみ（企業統合での収集対象の付け替えと、完全削除での募集参照の解除を除く）。90日後に原文を圧縮アーカイブへ移す。`found` だけが募集の公式情報確認日時を進める（ADR-0010、ADR-0013、ADR-0028） |
 | 収集対象の確認状況 | `unreviewed`、`found`、`no_active_opportunity`、`source_unavailable`、`needs_review` | 保存しない導出値。未確認なら `unreviewed`、それ以外は直近の確認結果から決まる |
+| 再確認スケジュール | 確認期限前／確認期限到来 | 確認済みの募集の日付矛盾は `days` 経過まで待機する。企業の `unreachable`・`needs_review` が続く場合は確認間隔を延長し、`found`・`no_opening` で通常間隔へ戻す。無効化や募集状況の変更は自動では行わない（ADR-0027） |
 | OAuth の接続 | 有効 → 失効／期限切れ | refresh token の再利用で grant 全体を失効させる（ARCHITECTURE.md §4.4） |
+| 運用履歴・再送防止記録の保管 | DB保持 → 作成から90日後に圧縮アーカイブ | アーカイブ保存の検証後にDB行を削除する。アーカイブは無期限保存、同じ要求の再送保証は90日。履歴一覧・件数はDB内の記録を対象とする（ADR-0028） |

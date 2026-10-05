@@ -66,7 +66,7 @@ jobs:
       - name: Test PostgreSQL maintenance reporting
         env:
           DATABASE_URL: postgresql+psycopg://relua:relua_test_password@localhost:5432/relua_test
-        run: pytest tests/test_audit_run_migration.py tests/test_opportunities.py tests/test_mcp_tools.py -k "audit_run_migration or run_ or maintenance_expiry or review_queue or collection_url_error or internal_errors_and_continues"
+        run: pytest tests/test_audit_run_migration.py tests/test_maintenance_schedule_migration.py tests/test_history_archive.py tests/test_expiry_cleanup.py tests/test_opportunities.py tests/test_collection_targets.py tests/test_mcp_tools.py tests/test_companies.py -k "audit_run_migration or maintenance_schedule_migration or history_archive or expiry or run_ or maintenance_expiry or review_queue or failed_collection or found_check_defers or new_opportunity_resets or undercovered or merge_company or collection_url_error or internal_errors_and_continues"
 
   frontend:
     name: Frontend Lint & Build

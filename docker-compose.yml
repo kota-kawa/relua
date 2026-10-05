@@ -44,6 +44,9 @@ services:
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8000}
       MCP_OPERATOR_PASSWORD: ${MCP_OPERATOR_PASSWORD:?set MCP_OPERATOR_PASSWORD in .env}
       SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in .env}
+      HISTORY_ARCHIVE_DIR: ${HISTORY_ARCHIVE_DIR:-/var/lib/relua/history-archive}
+    volumes:
+      - history_archive:${HISTORY_ARCHIVE_DIR:-/var/lib/relua/history-archive}
     # FORWARDED_ALLOW_IPS must name the hop uvicorn actually sees. With `ports: 127.0.0.1:8000:8000` that
     # hop is the docker bridge gateway (172.16.0.0/12), never 127.0.0.1, so the old default made every
     # request look like it came from one address and one attacker could spend the operator's login budget.
@@ -94,3 +97,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  history_archive:

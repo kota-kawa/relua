@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   purge-soft-deleted-opportunities:
-    name: Purge expired soft deletes
+    name: Archive old history and purge expired soft deletes
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -63,12 +63,22 @@ jobs:
             -p "${SERVER_PORT:-22}" "${SERVER_USER}@${SERVER_HOST}" \
             "bash -seu -- ${quoted_deploy_path}" <<'REMOTE_SCRIPT'
           cd "$1"
+          docker compose exec -T api python -m app.scripts.archive_history
           docker compose exec -T api python -m app.scripts.close_expired
+          docker compose exec -T api python -m app.scripts.mcp_connections purge
           REMOTE_SCRIPT
           )"
           printf '%s\n' "${output}"
           if ! grep -Eq '^purged=[0-9]+$' <<<"${output}"; then
             echo "::error::Cleanup did not return the expected completion marker"
+            exit 1
+          fi
+          if ! grep -Eq '^archived_audit=[0-9]+ archived_checks=[0-9]+ ' <<<"${output}"; then
+            echo "::error::History archiving did not return the expected completion marker"
+            exit 1
+          fi
+          if ! grep -Eq '^purged_authorization_codes=[0-9]+$' <<<"${output}"; then
+            echo "::error::Authorization code cleanup did not return the expected completion marker"
             exit 1
           fi
           echo "### Daily cleanup" >> "${GITHUB_STEP_SUMMARY}"

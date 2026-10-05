@@ -123,7 +123,7 @@ https://<公開ホスト名>/mcp
 | `update_company_profile` | 必要 | 企業の一言説明・事業内容の本文・主な事業・公式サイトURLを設定する。企業ページに表示される |
 | `update_company_profiles` | 必要 | 最大50社のプロフィールを1回で更新し、各社の保存成功・拒否・結果未確認と集計を返す |
 | `list_companies_missing_profile` | 必要 | 一言説明または事業内容本文が未登録・空欄の企業を、収集対象の有無を問わず一覧する |
-| `list_company_profile_history` | 必要 | 企業IDを指定し、プロフィールの変更日時・出典URL・変更前後の内容を新しい順で取得する |
+| `list_company_profile_history` | 必要 | 企業IDを指定し、DB内のプロフィール変更履歴を取得する。DB保持は90日、古い記録は運用アーカイブに保存 |
 | `merge_company` | 必要 | 公式情報で同一と確認した重複企業を、募集・別名・分類・収集対象ごと統合する |
 | `delete_company_alias` | 必要 | 誤登録された企業別名を削除する |
 | `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
@@ -132,23 +132,24 @@ https://<公開ホスト名>/mcp
 | `preview_opportunity_patch` | 必要 | 部分更新を保存せず検証し、変更差分と警告を返す |
 | `patch_opportunity` | 必要 | 楽観ロック付きで指定項目だけを更新する |
 | `update_recruitment_status` | 必要 | 楽観ロック付きで募集状況と締め切りだけを更新する |
-| `verify_opportunity` | 必要 | 一次情報に変更がないことだけを記録し、最終確認日時を更新する |
+| `verify_opportunity` | 必要 | 一次情報に変更がないことを記録し、公式情報確認日時と日付矛盾の再確認スケジュールを更新する |
 | `preview_delete_opportunity` | 必要 | 削除対象と公開表示・関連履歴への影響を保存せず確認する |
 | `delete_opportunity` | 必要 | 楽観ロック付きで募集情報を公開データから論理削除する |
 | `restore_opportunity` | 必要 | 論理削除した募集を同じID・公開コードのまま復元する |
-| `list_recent_writes` | 必要 | `run_id`・クライアント・対象種類で監査履歴を絞り込み、全ページの成功・拒否・結果未確認件数と個別結果を取得する |
-| `list_stale_opportunities` | 必要 | 日付と「募集中」の矛盾を最優先に再確認対象を取得する。`exclude_expired=true` で期限・実施終了日が過去の募集を取得前に除外できる |
+| `list_recent_writes` | 必要 | DB内の監査履歴を絞り込み、成功・拒否・結果未確認件数と個別結果を取得する。DB保持は90日でアーカイブは集計しない |
+| `list_stale_opportunities` | 必要 | 未確認の日付矛盾を最優先に取得する。明示的な確認後は `days` 経過まで待機。`exclude_expired=true` で期限超過を除外できる |
 | `list_collection_targets` | 必要 | 情報収集対象の企業を検索・一覧し、採用ページ未登録や現在の確認状況で絞り込む |
 | `list_unmonitored_companies` | 必要 | 企業マスタにあり、まだ情報収集対象を持たない企業を一覧する |
 | `get_collection_target` | 必要 | 収集対象、公式ページ、登録済み募集を1件取得する |
 | `get_company_maintenance_context` | 必要 | 企業の全募集、公式URL、各募集の最終確認日時をまとめて取得する |
 | `get_collection_queue` | 必要 | 未確認または再確認期限を過ぎた企業を優先度順に返す。少数社ずつ確認と保存を完了する |
-| `list_collection_checks` | 必要 | 企業ごとの情報収集・確認履歴を新しい順に返す |
+| `list_undercovered_companies` | 必要 | 未確認または再確認期限を過ぎた企業を、定期再確認対象の募集が少ない順で返す |
+| `list_collection_checks` | 必要 | DB内の企業ごとの確認履歴を新しい順に返す。DB保持は90日、古い記録は運用アーカイブに保存 |
 | `add_collection_target` | 必要 | 既存CompanyのIDまたは新規企業名、所属業界、優先度、確認間隔、公式ページを収集対象へ追加する |
 | `update_collection_target` | 必要 | 収集対象を部分更新または無効化する |
 | `add_collection_source` | 必要 | 収集対象へ企業公式ページを追加する |
 | `update_collection_source` | 必要 | 公式ページのURL・種類・有効状態を部分更新する |
-| `record_collection_check` | 必要 | 個別募集の確認（募集IDとその一次情報URLが必須）と企業ページの確認を区別し、結果と次回確認日を記録する。URL不一致時は修正手順を返す |
+| `record_collection_check` | 必要 | 個別募集と企業ページの確認を区別し、結果と次回確認日を記録する。確認不能・要確認が続く場合は再確認間隔を延ばす |
 
 `search_opportunity` の登録日時・最終編集日時は `created_at_after`／`created_at_before` と `updated_at_after`／`updated_at_before` で絞り込みます。境界は両端を含み、64文字以内のISO 8601日時で指定します。タイムゾーンを省略した値はUTCとして扱います。応答の `created_at` と `updated_at` で登録・編集時刻を確認できます。
 
@@ -171,6 +172,8 @@ https://<公開ホスト名>/mcp
 一括更新はプロフィールの書き込み呼び出しを減らしますが、外部AIクライアントによる公式ページの調査や実行の上限を変更するものではありません。1社だけの更新には従来の `update_company_profile` も使えます。
 
 書き込みツールは運営者本人の認証済み接続だけが呼べるため、1分あたりの操作上限は設けていません。大量登録・一括更新でも各操作の入力検証、request IDによる冪等化、監査ログは通常どおり適用されます。OAuthのログイン試行と動的クライアント登録には、公開エンドポイントを保護するための回数制限を引き続き適用します。
+
+同じ内容・`request_id` の再送保証期間は90日です。90日より前の再送防止記録は日次でアーカイブへ移すため、古いIDの再送は再実行される場合があります。古い実行を再開するときは現在の保存状態を確認して、新しい操作のIDを発行してください。
 
 各ツールは `title`、`annotations`（`readOnlyHint` など）、`outputSchema` を公開します。読み取り専用かどうかがクライアント側で判別できるため、ChatGPTやClaudeは読み取りツールの自動承認を判断できます。
 
@@ -271,6 +274,8 @@ IT・通信/Webサービスを同じ企業へ登録できます。指定した�
 
 同ツールの `check_statuses` は現在の確認状況でOR絞り込みを行います。値は `unreviewed`（未確認）、`found`（募集あり）、`no_active_opportunity`（募集なし）、`source_unavailable`（情報源を確認できない）、`needs_review`（要確認）です。`due_only` と併用すると、選んだ確認状況のうち次回確認期限を過ぎた対象だけを取得できます。
 
+募集の少ない企業を優先する `list_undercovered_companies` も、未確認または次回確認期限を過ぎた企業だけを返します。`unreachable`・`needs_review` が続く企業の間隔は、設定間隔から2倍・4倍と延び、90日または元の設定間隔の大きい方が上限です。`found`・`no_opening` を記録すると通常間隔へ戻ります。確認不能が続いても自動では収集対象を無効化しません。
+
 ## 内部REST API
 
 REST APIは公開せず、Next.jsサーバーと運用コマンドだけが`X-Internal-API-Token`ヘッダーを付けて利用します。ブラウザはrelua APIへ直接接続せず、必要な公開情報だけをNext.jsの同一オリジン経由で取得します。
@@ -307,13 +312,23 @@ QRコードはブラウザ内で生成します。URLフラグメントはサー
 
 運営者は毎日 `list_stale_opportunities` を確認してください。定期再確認対象は「募集予定」「募集中」「通年募集」に限られ、東京基準で `deadline < today` または `event_end_date < today` なのに募集状況が「募集中」の募集を最優先で返します。締切延長や追加募集の可能性があるため、Reluaはこの矛盾を自動で「締切」に変更しません。公式ページを確認し、変更がなければ `verify_opportunity`、変更があれば適切な更新ツールを実行してください。すでに「締切」などの終了状態になった募集は、この定期キューには戻りません。
 
-default branchでは [Daily Maintenance](./.github/workflows/maintenance.yml) が毎日02:15（JST）にSSH経由で次のコマンドを実行します。これはすでに論理削除した募集を、削除から30日後に完全削除します。期限超過だけで募集を論理削除することはありません。完全削除後は復元できません。収集確認履歴は残りますが、削除済み募集への参照は解除されます。
+矛盾が残っていても `verify_opportunity` または個別募集の `found` を記録すると、同じ矛盾は `days`（既定7日）経過まで要確認キューから外れます。募集状況・締め切り・実施終了日・一次情報URL・企業を変更した場合と復元した場合は再確認対象に戻ります。本文やタグだけの編集では待機を維持します。
+
+default branchでは [Daily Maintenance](./.github/workflows/maintenance.yml) が毎日02:15（JST）にSSH経由で次のコマンドを実行します。これはすでに論理削除した募集を、削除から30日後に完全削除します。ただし、再送防止記録が残る間は完全削除を保留し、90日経過後のアーカイブ完了を待ちます。期限超過だけで募集を論理削除することはありません。完全削除後は復元できません。収集確認履歴は残りますが、削除済み募集への参照は解除されます。
 
 ```bash
+docker compose exec api python -m app.scripts.archive_history
 docker compose exec api python -m app.scripts.close_expired
+docker compose exec api python -m app.scripts.mcp_connections purge
 ```
 
-workflowはdeployと同じ `SERVER_HOST`、`SERVER_USER`、`SERVER_SSH_KEY`、`SERVER_PORT`（任意）、`DEPLOY_PATH` Secretsを使います。導入時はActions画面から `workflow_dispatch` で手動実行し、`purged=<件数>` が記録されることを確認してください。SSH、Compose、DB接続、完了markerのいずれかに問題があればworkflowが失敗します。GitHubのActions失敗通知を有効にし、Daily Maintenanceの履歴を実行監視の正本にします。サーバー側cronを重ねて設定する必要はありません。
+workflowはdeployと同じ `SERVER_HOST`、`SERVER_USER`、`SERVER_SSH_KEY`、`SERVER_PORT`（任意）、`DEPLOY_PATH` Secretsを使います。導入時はActions画面から `workflow_dispatch` で手動実行し、`purged=<件数>` と `purged_authorization_codes=<件数>`、アーカイブの完了markerが記録されることを確認してください。SSH、Compose、DB接続、完了markerのいずれかに問題があればworkflowが失敗します。GitHubのActions失敗通知を有効にし、Daily Maintenanceの履歴を実行監視の正本にします。サーバー側cronを重ねて設定する必要はありません。
+
+同じworkflowで、作成から90日より前の監査ログ・確認履歴・再送防止記録をJSONL gzipへ移します。`archived_audit=<件数> archived_checks=<件数> ...` が完了markerです。圧縮ファイルの永続化と読戻し検証に成功してからDB行を削除し、保存に失敗した行はDBに残します。履歴一覧の `retention_days=90` と件数はDB内の記録だけを対象とし、アーカイブ内の記録は一覧・集計に含みません。
+
+保存先は `HISTORY_ARCHIVE_DIR`（既定 `/var/lib/relua/history-archive`）で、Composeの専用 `history_archive` ボリュームに無期限保存します。**DBバックアップに加えて、このボリュームをバックアップ対象に追加してください。** 既定の保存先はイメージ内で `appuser` 所有に初期化します。保存先を変更する場合は、移動先ボリュームを同じ実行ユーザーが書き込める所有権に初期化してください。テーブル名ごとのディレクトリに、ID範囲と内容ハッシュを含む `.jsonl.gz` が保存されます。古い履歴はサーバー上で `gzip -cd <ファイル>` 等を使って確認できます。アーカイブには変更前後の本文やエラー等が含まれるため、公開用ディレクトリには配置しません。
+
+OAuthは期限切れ認可コードを日次で削除し、期限切れaccess tokenと接続終了後の古いtokenをアーカイブへ移します。有効grantの使用済みrefresh tokenは不正な再利用を検知するためDBに残し、登録済みclientと有効な接続は維持します。
 
 OAuthで接続中のクライアントを確認し、不要になった接続を切ります。
 

@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import event, insert, select
@@ -917,6 +917,104 @@ def test_review_queue_includes_fresh_date_status_conflicts_before_stale_sources(
     assert reviews[0].opportunity.id == conflict.id
     assert by_id[conflict.id].reasons == ["deadline_passed_while_open", "event_ended_while_open"]
     assert by_id[stale.id].reasons == ["source_not_checked_recently"]
+
+
+def test_review_queue_defers_confirmed_conflicts_and_reopens_after_interval(db):
+    conflict, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload() | {
+            "deadline": (today_in_tokyo() - timedelta(days=1)).isoformat(),
+        }),
+        request_id="review-cooldown-create-0001", client_name="pytest",
+    )
+    stale, _ = write_opportunity(
+        db,
+        data=OpportunityInput.model_validate(valid_payload() | {
+            "company_name": "株式会社次の確認", "source_url": "https://example.com/review-next",
+        }),
+        request_id="review-cooldown-next-0001", client_name="pytest",
+    )
+    stale.source_checked_at = datetime.now(UTC) - timedelta(days=40)
+    db.commit()
+    assert list_opportunities_requiring_review(db, limit=1)[0].opportunity.id == conflict.id
+    version = conflict.updated_at
+    checked_at = datetime.now(UTC)
+    verify_opportunity(
+        db, opportunity_id=conflict.id, checked_at=checked_at, source_url=conflict.source_url,
+        request_id="review-cooldown-verify-0001", client_name="pytest",
+    )
+    assert conflict.date_status_reviewed_at == checked_at
+    assert conflict.updated_at == version
+    assert list_opportunities_requiring_review(db, limit=1)[0].opportunity.id == stale.id
+    conflict.date_status_reviewed_at = checked_at - timedelta(days=8)
+    conflict.source_checked_at = checked_at - timedelta(days=8)
+    db.commit()
+    assert list_opportunities_requiring_review(db, limit=1)[0].opportunity.id == conflict.id
+
+
+@pytest.mark.parametrize("changed", [
+    {"deadline": None},
+    {"event_end_date": "2020-01-01"},
+    {"recruitment_status": "通年募集"},
+    {"source_url": "https://example.com/review-new-source"},
+    {"company_name": "株式会社確認先変更"},
+])
+def test_review_queue_reopens_when_reviewed_facts_change(db, changed):
+    data = valid_payload() | {"deadline": "2020-01-02"}
+    item, _ = write_opportunity(
+        db, data=OpportunityInput.model_validate(data), request_id="review-reset-create-0001", client_name="pytest",
+    )
+    checked_at = datetime.now(UTC)
+    verify_opportunity(
+        db, opportunity_id=item.id, checked_at=checked_at, source_url=item.source_url,
+        request_id="review-reset-verify-0001", client_name="pytest",
+    )
+    write_opportunity(
+        db, data=OpportunityInput.model_validate(data | changed), opportunity_id=item.id,
+        expected_updated_at=item.updated_at, request_id="review-reset-update-0001", client_name="pytest",
+    )
+    assert item.date_status_reviewed_at is None
+    assert item.source_checked_at == checked_at
+
+
+def test_review_queue_keeps_confirmation_for_unrelated_edits_and_resets_for_status_change(db):
+    data = valid_payload() | {"deadline": "2020-01-02"}
+    item, _ = write_opportunity(
+        db, data=OpportunityInput.model_validate(data), request_id="review-edit-create-0001", client_name="pytest",
+    )
+    checked_at = datetime.now(UTC)
+    verify_opportunity(
+        db, opportunity_id=item.id, checked_at=checked_at, source_url=item.source_url,
+        request_id="review-edit-verify-0001", client_name="pytest",
+    )
+    write_opportunity(
+        db, data=OpportunityInput.model_validate(data | {"description": "本文の表記を修正しました。"}),
+        opportunity_id=item.id, expected_updated_at=item.updated_at,
+        request_id="review-edit-update-0001", client_name="pytest",
+    )
+    assert item.date_status_reviewed_at == checked_at
+    assert list_opportunities_requiring_review(db) == []
+    update_recruitment_status(
+        db, opportunity_id=item.id, expected_updated_at=item.updated_at, recruitment_status="募集中",
+        deadline=date(2020, 1, 1), request_id="review-edit-status-0001", client_name="pytest",
+    )
+    assert item.date_status_reviewed_at is None
+    assert list_opportunities_requiring_review(db)[0].opportunity.id == item.id
+
+
+def test_review_queue_does_not_treat_pre_expiry_verification_as_conflict_review(db):
+    item, _ = write_opportunity(
+        db, data=OpportunityInput.model_validate(valid_payload()),
+        request_id="review-before-expiry-create", client_name="pytest",
+    )
+    verify_opportunity(
+        db, opportunity_id=item.id, checked_at=datetime.now(UTC), source_url=item.source_url,
+        request_id="review-before-expiry-verify", client_name="pytest",
+    )
+    assert item.date_status_reviewed_at is None
+    item.deadline = today_in_tokyo() - timedelta(days=1)
+    db.commit()
+    assert list_opportunities_requiring_review(db)[0].opportunity.id == item.id
 
 
 def test_keyword_search_treats_like_wildcards_literally(db):

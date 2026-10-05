@@ -236,6 +236,7 @@ class CollectionTarget(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_check_result: Mapped[str | None] = mapped_column(String(32))
+    consecutive_failed_checks: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     last_found_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     selection_reason: Mapped[str | None] = mapped_column(String(500))
@@ -345,6 +346,7 @@ class Opportunity(Base):
     #: an update or patch to an existing row never does, since editing a field is not the same claim as
     #: having just re-read the primary source. Null only for legacy rows predating this column.
     source_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    date_status_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     status: Mapped[RecruitmentStatus] = relationship()
     company: Mapped[Company] = relationship()
@@ -379,7 +381,7 @@ class Opportunity(Base):
 
 
 class CollectionCheck(Base):
-    """Append-only evidence of a collection attempt, including attempts that found nothing."""
+    """Evidence of a collection attempt, archived after the DB retention period."""
 
     __tablename__ = "collection_checks"
 
@@ -404,8 +406,8 @@ class CollectionCheck(Base):
             "result IN ('found', 'no_opening', 'unreachable', 'needs_review')",
             name="ck_collection_check_result",
         ),
-        #: This table only ever grows, and both readers scope to one target: the history view takes the
-        #: newest 20 rows for a target, and a company merge moves one target's rows onto another. The
+        #: Readers scope to one target: the history view takes its newest rows, and a company merge
+        #: moves one target's retained rows onto another. The
         #: FK column alone is unindexed on PostgreSQL, so without this both scan the whole history.
         Index("ix_collection_checks_target_checked", "collection_target_id", text("checked_at DESC")),
     )

@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from app.schemas import (
 )
 from app.services import collection_targets as collection_targets_module
 from app.services.collection_targets import (
+    collection_queue,
     collection_target_dict,
     create_collection_target,
     get_collection_target,
@@ -24,7 +26,7 @@ from app.services.collection_targets import (
     update_collection_target,
 )
 from app.services.company_industries import company_industries
-from app.services.opportunities import DomainValidationError, write_opportunity
+from app.services.opportunities import DomainValidationError, list_opportunities_requiring_review, write_opportunity
 from tests.test_validation import valid_payload
 
 
@@ -229,6 +231,65 @@ def test_confirm_only_check_refreshes_source_checked_at_without_touching_updated
     assert item.source_checked_at is not None
     assert item.source_checked_at > original_checked_at
     assert item.updated_at == original_updated_at
+
+
+def test_found_check_defers_date_conflict_without_changing_published_facts(db):
+    target, _ = create_collection_target(db, target_payload())
+    item, _ = write_opportunity(
+        db, data=OpportunityInput.model_validate(valid_payload() | {
+            "company_name": target.company.name, "deadline": "2020-01-01",
+        }), request_id="found-conflict-create", client_name="pytest",
+    )
+    assert list_opportunities_requiring_review(db)[0].opportunity.id == item.id
+    version = item.updated_at
+    record_collection_check(db, target_id=target.id, payload=CollectionCheckRequest.model_validate({
+        "result": "found", "opportunity_id": item.id, "source_url": item.source_url,
+        "request_id": "found-conflict-check", "client_name": "pytest",
+    }))
+    assert list_opportunities_requiring_review(db) == []
+    assert item.deadline.isoformat() == "2020-01-01"
+    assert item.status.name == "募集中"
+    assert item.updated_at == version
+
+
+def test_failed_collection_checks_back_off_cap_and_reset_with_idempotent_replay(db, monkeypatch):
+    target, _ = create_collection_target(db, target_payload(check_interval_days=14))
+    now = datetime.now(UTC)
+    monkeypatch.setattr(collection_targets_module, "datetime", SimpleNamespace(now=lambda tz: now))
+    for index, interval in enumerate((14, 28, 56, 90, 90, 90, 90, 90, 90), start=1):
+        payload = CollectionCheckRequest.model_validate({
+            "result": "unreachable" if index % 2 else "needs_review", "source_url": target.sources[0].url,
+            "request_id": f"backoff-check-{index:04d}", "client_name": "pytest",
+        })
+        record_collection_check(db, target_id=target.id, payload=payload)
+        assert target.next_check_at == now + timedelta(days=interval)
+        assert target.consecutive_failed_checks == min(index, 8)
+        _, _, replayed = record_collection_check(db, target_id=target.id, payload=payload)
+        assert replayed is True
+        assert target.next_check_at == now + timedelta(days=interval)
+        assert target.consecutive_failed_checks == min(index, 8)
+    update_collection_target(db, target_id=target.id, payload=CollectionTargetUpdateRequest.model_validate({
+        "check_interval_days": 365, "request_id": "backoff-interval-update", "client_name": "pytest",
+    }))
+    assert target.next_check_at == now + timedelta(days=365)
+    record_collection_check(db, target_id=target.id, payload=CollectionCheckRequest.model_validate({
+        "result": "no_opening", "source_url": target.sources[0].url,
+        "request_id": "backoff-check-resolved", "client_name": "pytest",
+    }))
+    assert target.consecutive_failed_checks == 0
+    assert target.next_check_at == now + timedelta(days=365)
+
+
+def test_new_opportunity_resets_failed_collection_schedule(db):
+    target, _ = create_collection_target(db, target_payload())
+    target.consecutive_failed_checks = 4
+    db.commit()
+    write_opportunity(
+        db, data=OpportunityInput.model_validate(valid_payload() | {"company_name": target.company.name}),
+        request_id="backoff-found-write", client_name="pytest",
+    )
+    assert target.consecutive_failed_checks == 0
+    assert target.next_check_at - target.last_checked_at == timedelta(days=target.check_interval_days)
 
 
 def test_found_check_requires_the_opportunity_source_url(db):
@@ -728,9 +789,30 @@ def test_undercovered_collection_targets_orders_by_ascending_linked_opportunitie
                 client_name="pytest",
             )
 
+    for target in targets.values():
+        target.next_check_at = datetime.now(UTC) - timedelta(days=1)
+    db.commit()
     ordered = undercovered_collection_targets(db, industry="IT・通信", limit=10)
     ordered_ids = [item.id for item in ordered]
     assert ordered_ids.index(targets[0].id) < ordered_ids.index(targets[1].id) < ordered_ids.index(targets[2].id)
+
+
+def test_undercovered_collection_targets_respect_due_dates_before_limit(db):
+    first, _ = create_collection_target(db, target_payload(
+        company_name="A株式会社確認済み", request_id="undercovered-due-first",
+    ))
+    next_target, _ = create_collection_target(db, target_payload(
+        company_name="B株式会社未確認", request_id="undercovered-due-next",
+    ))
+    record_collection_check(db, target_id=first.id, payload=CollectionCheckRequest.model_validate({
+        "result": "no_opening", "source_url": first.sources[0].url,
+        "request_id": "undercovered-due-check", "client_name": "pytest",
+    }))
+    assert [item.id for item in undercovered_collection_targets(db, limit=1)] == [next_target.id]
+    assert [item.id for item in collection_queue(db, limit=1)] == [next_target.id]
+    first.next_check_at = datetime.now(UTC) - timedelta(days=1)
+    db.commit()
+    assert first.id in {item.id for item in undercovered_collection_targets(db, limit=10)}
 
 
 def test_top_page_only_target_is_reported_and_filterable_as_a_source_gap(db):

@@ -706,6 +706,7 @@ def _merge_collection_targets(
         # (often NULL) last_check_result behind, which makes _check_status report "needs_review" for a
         # target that had in fact just been checked; the follow-up revision repairs those rows.
         target_target.last_check_result = source_target.last_check_result
+        target_target.consecutive_failed_checks = source_target.consecutive_failed_checks
     if target_target.selection_reason is None:
         target_target.selection_reason = source_target.selection_reason
     # The losing target's id disappears below, so any idempotency record naming it has to follow the

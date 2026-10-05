@@ -148,6 +148,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | `services/company_pages.py` | 企業ページの読み取り。現在／過去の募集の分割、index対象企業の一覧と現行募集件数の集計 |
 | `services/company_industries.py` | 企業と複数業界・業種の分類を維持 |
 | `services/collection_targets.py` | 企業単位の収集対象、情報源、確認履歴、導出される確認状況の絞り込み、優先度・次回確認日 |
+| `services/maintenance.py` | 収集対象の確認期限の共通判定、確認不能・要確認の連続回数と再確認間隔 |
 | `services/masters.py` / `master_cache.py` | 固定値の解決とキャッシュ |
 | `services/normalization.py` | 企業名、タグ、一次情報URLの正規化 |
 | `services/oauth.py` | OAuth client、PKCE認可コード、access/refresh token、grant失効 |
@@ -167,10 +168,11 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | `app/security.py` | 内部token、Bearer、operator password の比較とOAuth token hash |
 | `app/master_data.py` | 新規DBへ固定値マスタを投入する定義 |
 | `app/dates.py` | 東京時間を基準にした当日判定 |
-| `app/scripts/close_expired.py` | 論理削除から30日経過した募集を完全削除（期限超過だけでは状態・公開を変えない） |
+| `app/scripts/close_expired.py` | 論理削除から30日経過し、再送防止記録のアーカイブが済んだ募集を完全削除（期限超過だけでは状態・公開を変えない） |
 | `app/scripts/seed_demo.py` | 架空のUI確認用データを冪等的に投入 |
 | `app/scripts/mcp_connections.py` | OAuth grant の一覧・失効・期限切れ掃除 |
-| `.github/workflows/maintenance.yml` | 論理削除30日後の完全削除を日次実行し、完了markerを監視 |
+| `services/history_archive.py` / `app/scripts/archive_history.py` | 90日より前の履歴・再送防止記録・不要なOAuth tokenをJSONL gzipへ移し、保存検証後にDB行を削除 |
+| `.github/workflows/maintenance.yml` | 論理削除30日後の完全削除、履歴アーカイブ、OAuth認可コード掃除を日次実行し、完了markerを監視 |
 
 ## 4. データモデルと不変条件
 
@@ -208,26 +210,31 @@ companies ──1:1── collection_targets ──< collection_sources
 - 企業カテゴリの直接設定は収集対象の作成を必要としない。`resolve_company` で確認した `company_id` に対して `set_company_industries` を使い、収集対象を後から追加できる。
 - `list_unmonitored_companies` はCompanyを起点に、収集対象がない企業を返す。`add_collection_target` は既存CompanyのIDを明示指定でき、名前の再入力による重複Company作成を防ぐ。
 - `collection_targets.is_active` と各 source の `is_active` は無効化で保持する。削除ではなく運用状態を表す。
+- `list_undercovered_companies` は通常収集キューと同じ確認期限を取得上限前に適用する。`unreachable`・`needs_review` の連続回数を `consecutive_failed_checks` に持ち、初回は通常間隔、以後は倍増し、90日または元の間隔の大きい方で頭打ちにする。`found`・`no_opening` で通常間隔へ戻す（ADR-0027）。
 - 募集の新規登録（`add_opportunity`／`upsert_opportunity`）へ正しい `collection_target_id` を渡すと、募集保存と `found` 確認記録を同じトランザクションで作る。IDを省略した場合も企業一致で自動リンクできる。既存募集の更新・部分更新はこの自動リンクを行わない（4.3参照）。
 - 採用ページ未登録、未確認、確認期限超過は収集キューの状態として返される。
 - `record_collection_check` は実際に確認したURLを必須とする。`found` は募集自身の一次情報URLとの一致、その他の結果は登録済み有効sourceとの一致を検証し、一致した `found` だけが募集の `source_checked_at` を進める。
 - `list_stale_opportunities(exclude_expired=true)` は、東京時間の当日より前の締め切り・実施終了日を持つ募集をSQLの件数制限前に除外する。当日・日付未設定は残し、既定のfalseは日付と「募集中」の矛盾を優先する（ADR-0026）。
+- 日付矛盾がある募集を明示的に再確認すると `date_status_reviewed_at` を記録し、`days`（既定7日）経過まで同じ矛盾を再取得しない。募集状況・締め切り・実施終了日・一次情報URL・企業の変更と復元はこの記録を解除する。本文やタグの編集は維持し、内容更新だけでは一次情報確認日時を進めない（ADR-0027）。
 - 定期再確認の対象状態は `募集予定`、`募集中`、`通年募集` に限る。 `締切` などの終了状態は企業保守コンテキスト、収集対象の募集一覧、要確認キューから除外する。企業単位の収集キューは、新しい募集の発見が必要な企業を拾うため、現在の募集一覧が空でも返す。
 
 ### 4.3 書き込みの安全性
 
 - `request_id` と payload hash を `idempotency_records`、企業別名・企業統合を `company_request_records`、収集操作を `collection_request_records` に記録する。同じID・同じ内容の再試行は前回結果を返し、内容や対象が違えば拒否する。
+- 監査・確認履歴と再送防止記録はDBに90日保持し、古い全列を専用永続ボリュームへ圧縮して移す。再送保証は90日で、古いIDは再実行される場合がある。MCP履歴の一覧・件数はDB内の記録のみを対象とし、`retention_days` を返す。ファイルの永続化・読戻し検証後だけDB行を削除する（ADR-0028）。
 - 企業統合は明示した統合元IDの募集、別名、業界分類、収集対象・情報源・確認履歴を統合先へ移し、統合元のCompanyを物理削除する。監査ログは不変の履歴として旧IDを保持する。名前の類似だけで自動統合しない。
 - 成功・失敗を `audit_logs` に記録する。全MCP書き込みは任意のトップレベル `run_id` を受け付け、共通例外境界の実行スコープ内で挿入される監査ログへ付与する。実行IDは冪等性の判定に影響せず、処理済み再試行で元の監査記録を書き換えない。`list_recent_writes` は実行IDで絞り込み、ページングと全該当記録数を返す。成功・拒否・結果未確認は監査記録の分類であり、企業数・募集数・ツール呼び出し数ではない。内部エラーとして記録された結果未確認は拒否と区別し、履歴のない通信失敗等の結果は集計から確定しない（ADR-0026）。`verify_opportunity` は内容更新・status更新とは別の `verify` 操作として、確認時刻と実際に確認した一次情報URLを記録し、`updated_at` は変えない。現状は閲覧画面や自動ロールバックを持たないため、運用確認は MCP の履歴ツールまたはDBで行う。
 - 書き込みと一次情報確認は分離している（write != verify）。`update_opportunity`／`patch_opportunity` によるDB内容の変更は `source_checked_at` を更新せず、`collection_target_id` も受け付けない。一次情報を確認した事実は `verify_opportunity` または `record_collection_check` で別途記録する。`source_checked_at` が更新されるのは新規登録時と、この2ツールによる確認記録時だけである。
 - 日付と募集状況の矛盾（例: 未来の締め切りで「締切」）は、書き込みを拒否せず `warnings` として返す。締切延長・追加募集・中止の可能性があるため、運営者が一次情報を確認して確定する。
 - 全項目更新・部分更新・募集状況更新・削除はいずれも `expected_updated_at`（`get_opportunity` で取得した現在の `updated_at`）を必須にし、`FOR UPDATE` 相当のロック取得後に一致を確認して楽観ロックする。取得後に別クライアントが更新していれば拒否し、lost update を防ぐ。
-- 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。 `締切` などの終了状態は定期再確認キューへ戻さない。
+- 削除はまず `deleted_at` を設定する論理削除。通常の検索・詳細から隠し、復元時は同じUUID・公開コードを維持する。論理削除から30日後に日次ジョブで完全削除する。ただし再送防止記録が残る募集は、90日経過後に記録のアーカイブが完了するまで保持する。期限・実施終了日が過去なのに「募集中」の矛盾は、`list_stale_opportunities` が最優先の要確認として返すが、自動では状態変更・削除しない。完全削除時は収集確認履歴の募集参照を解除し、監査ログは保持する。 `締切` などの終了状態は定期再確認キューへ戻さない。
 - 重複判定は同一企業・同名イベントだけでなく、対象卒業年・実施開始日・対象職種を識別キーとして`classify_duplicate_candidates`が exact／probable の2段階に分ける。3項目のいずれかが明確に異なれば probable とし、書き込みは拒否せず警告で知らせる（例: 同じイベント名を複数の卒業年で使い回す企業）。全項目が一致する exact 重複だけを既定で拒否し、意図的に同じ内容を複数登録する場合だけ `allow_duplicate` を明示する。復元も同じ分類器を使い、exactだけを拒否する。
 
 ### 4.4 OAuthデータ
 
 `oauth_clients`、`oauth_authorization_codes`、`oauth_tokens` が OAuth の状態を保持します。認可コードはPKCE必須、tokenはハッシュのみ保存、refresh token の再利用は grant 全体を失効させます。接続は `mcp_connections` スクリプトで一覧・失効・期限切れ掃除を行います。
+
+認可コードの期限切れ掃除は日次実行する。期限切れaccess tokenと有効tokenを持たないgrantの不要tokenは90日経過後にアーカイブへ移す。有効grantの使用済みrefresh tokenは再利用検知のためDBに保持する。
 
 ## 5. リクエスト経路
 
@@ -282,6 +289,7 @@ MCP client
 - `20260919_0015_repair_normalization_and_add_indexes.py` は、正規化ルールの変更に追随していなかった `companies.normalized_name` / `company_aliases.normalized_alias` を現行ルールで再計算し、`collection_checks` から `last_check_result` を再導出し、ダングリングな `collection_request_records` を整理したうえで、`models.py` が先行して持っていた索引を追加する。正規化の再計算で一意制約に衝突する行は修復せず据え置き、WARNING で対象グループを名指しする（例外で停止すると `alembic upgrade head && uvicorn` の起動が止まるため）。名指しされた行は `merge_company` で手動解消してから再実行する。
 
 - `20261004_0016_add_audit_run_id.py` は `audit_logs.run_id` と索引を追加する。既存記録はNULLのまま保持し、新規DBではORMが作成済みの列・索引をスキップする。
+- `20261005_0017_add_maintenance_review_schedule.py` は日付矛盾の再確認日時と連続確認不能回数を追加する。既存行はNULL／0を設定し、過去の確認の意味を補完しない。新規DBでは作成済みの列をスキップする。
 
 スキーマを変更するときは ORM、migration、fresh DB、既存DB upgrade、必要な回帰テストを一緒に確認します。
 
@@ -304,7 +312,7 @@ MCP client
 - backend: Ruff、SQLite単体テスト、PostgreSQL Alembic upgrade、`pg_trgm`／関連度の確認。
 - frontend: `npm ci`、lint、`tsc --noEmit`、Vitest、production build。
 - main push: SSH先で `docker compose up -d --build`、サービス状態を確認し、失敗時は直前コミットへ戻して再起動する。
-- daily schedule: SSH先で論理削除済み募集の完全削除を実行し、終了コードと `purged=<件数>` markerを検証する。
+- daily schedule: SSH先で履歴アーカイブ、論理削除済み募集の完全削除、OAuth認可コード掃除を順に実行し、終了コードと `archived_audit=<件数> archived_checks=<件数>` / `purged=<件数>` / `purged_authorization_codes=<件数>` markerを個別に検証する。
 
 ## 7. 変更時のソースマップ
 
@@ -318,10 +326,11 @@ MCP client
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py`。日時フィルターはカーソル条件にも含める |
 | 企業同一性・プロフィール更新・履歴 | `services/companies.py`, `company_industries.py` | `schemas.py`, `mcp_server.py`, `test_companies.py`, `test_mcp_tools.py`、`models.py` の `AuditLog`、関連ADR。一括更新は企業ごとの検証・更新日時照合・保存・結果集計 |
-| 収集キュー | `services/collection_targets.py` | `models.py`, `test_collection_targets.py`, MCP tool definitions。確認状況は履歴列から導出し、URL不一致時は確認単位に応じた修正手順を返す |
+| 収集キュー・再確認間隔 | `services/collection_targets.py`, `services/maintenance.py` | `models.py`, `test_collection_targets.py`, `test_maintenance_schedule_migration.py`, MCP tool definitions。確認状況は履歴列から導出し、確認期限と連続回数で巡回を制御する |
 | 実行単位の書き込み履歴 | `services/write_history.py`, `app/audit_context.py`, `models.py` の `AuditLog` | `mcp_server.py`, `schemas.py`, `test_mcp_tools.py`, `test_audit_context.py`, `test_audit_run_migration.py`、ADR-0026 |
 | OAuth・MCP認証 | `main.py`, `api/oauth.py`, `services/oauth.py`, `mcp_server.py` | `test_oauth.py`, `test_oauth_endpoints.py`, `relua.conf` |
 | 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、`.github/workflows/maintenance.yml`、該当サービスのテスト |
+| 履歴保存・再送保証 | `services/history_archive.py`, `app/scripts/archive_history.py` | `test_history_archive.py`, `config.py`, `.env.example`, Composeの永続ボリューム、MCP履歴契約、ADR-0028 |
 | DBスキーマ | `models.py`, 最新 migration | 0001 fresh DB、全 upgrade、PostgreSQL CI |
 | デプロイ・公開境界 | `docker-compose.yml`, Dockerfiles, `relua.conf`, CI | `.env.example`, READMEの本番設定 |
 

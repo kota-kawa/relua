@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #: Secrets shipped in `.env.example` and in this repository carry this prefix. Anyone who can read the
 #: repository knows them, so they are treated as "no secret at all" rather than as a weak one.
 DEVELOPMENT_SECRET_PREFIX = "local-development-"
+HISTORY_RETENTION_DAYS = 90
 
 
 class Settings(BaseSettings):
@@ -24,6 +25,7 @@ class Settings(BaseSettings):
     #: Public origin of the Next.js site. Every record MCP returns carries its detail page URL,
     #: so a remote client can cite the entry instead of only naming it.
     site_url: str = "http://localhost:3100"
+    history_archive_dir: str = "/var/lib/relua/history-archive"
 
     #: OAuth lets remote clients (ChatGPT, Claude) connect by sending the operator to a relua login page.
     #: Off by default so an existing loopback-only deployment keeps its single static-token setup.

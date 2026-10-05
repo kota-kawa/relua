@@ -1,6 +1,8 @@
 # ADR-0026: MCP保守の確認単位と実行単位の保存実績を明確にする
 
 - Status: Accepted
+- Amended by: [ADR-0027](./0027-maintenance-recheck-scheduling.md)（確認後の再取得と再確認間隔）
+- Amended by: [ADR-0028](./0028-history-archive-and-idempotency-retention.md)（履歴一覧・集計はDB内の90日保持分を対象とする）
 - Scope: 収集確認のMCP契約、要確認募集の絞り込み、実行単位の監査履歴
 - Amends: [ADR-0002](./0002-mcp-write-safety.md)、[ADR-0012](./0012-mcp-maintenance-eligibility.md)
 

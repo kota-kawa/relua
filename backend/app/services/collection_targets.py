@@ -38,8 +38,14 @@ from app.services.company_industries import (
     resolve_company_industries,
     set_company_industries,
 )
+from app.services.maintenance import collection_check_interval, collection_due_clause, record_collection_result
 from app.services.normalization import normalize_source_url, source_url_is_allowed
-from app.services.opportunities import RECONFIRMABLE_RECRUITMENT_STATUSES, DomainValidationError
+from app.services.opportunities import (
+    RECONFIRMABLE_RECRUITMENT_STATUSES,
+    DomainValidationError,
+    get_opportunity_for_update,
+    record_opportunity_source_confirmation,
+)
 from app.services.serialization import company_ref_dict, detail_url, master_dict
 
 
@@ -418,13 +424,7 @@ def list_collection_targets(
         filters.append(CollectionTarget.is_active.is_(True))
     if due_only:
         now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
-        filters.append(
-            or_(
-                CollectionTarget.last_checked_at.is_(None),
-                CollectionTarget.next_check_at.is_(None),
-                CollectionTarget.next_check_at <= now,
-            )
-        )
+        filters.append(collection_due_clause(now))
     if filters:
         stmt = stmt.where(*filters)
         count_stmt = count_stmt.where(*filters)
@@ -454,7 +454,7 @@ def collection_queue(db: Session, *, industry: str | None = None, limit: int = 2
 def undercovered_collection_targets(
     db: Session, *, industry: str | None = None, limit: int = 50
 ) -> list[CollectionTarget]:
-    """Active targets ordered by how few reconfirmable postings their company has, fewest first.
+    """Due active targets ordered by how few reconfirmable postings their company has, fewest first.
 
     Lets an operator fetch "companies we're missing postings for" directly, instead of paging
     through the whole queue client-side and filtering on opportunities == []. Closed postings do
@@ -476,10 +476,18 @@ def undercovered_collection_targets(
         .correlate(CollectionTarget)
         .scalar_subquery()
     )
-    stmt = collection_target_query().join(CollectionTarget.company).where(CollectionTarget.is_active.is_(True))
+    now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
+    stmt = collection_target_query().join(CollectionTarget.company).where(
+        CollectionTarget.is_active.is_(True), collection_due_clause(now)
+    )
     if industry:
         stmt = stmt.where(_classified_as_clause(industry=industry))
-    stmt = stmt.order_by(linked_count.asc(), Company.name).limit(limit)
+    stmt = stmt.order_by(
+        linked_count.asc(),
+        case((CollectionTarget.last_checked_at.is_(None), 0), else_=1),
+        CollectionTarget.next_check_at,
+        Company.name,
+    ).limit(limit)
     items = list(db.scalars(stmt).unique())
     _prefetch_opportunity_references(db, items)
     return items
@@ -821,7 +829,7 @@ def update_collection_target(
                 raise DomainValidationError([{"field": name, "received": None, "reason": "nullにはできません"}])
             setattr(target, name, value)
     if "check_interval_days" in fields and target.last_checked_at is not None:
-        target.next_check_at = target.last_checked_at + timedelta(days=target.check_interval_days)
+        target.next_check_at = target.last_checked_at + timedelta(days=collection_check_interval(target))
     db.flush()
     db.expire(company, ["industries"])
     after = collection_target_dict(db, target)
@@ -1005,12 +1013,14 @@ def record_collection_check(
     # request_id" validation error every other collision on this id already gets.
     if db.scalar(select(CollectionCheck.id).where(CollectionCheck.request_id == payload.request_id)) is not None:
         raise DomainValidationError([_request_id_error(payload.request_id)])
-    target = get_collection_target(db, target_id)
+    target = db.scalar(
+        collection_target_query().where(CollectionTarget.id == target_id).with_for_update(of=CollectionTarget)
+    )
     if target is None:
         raise LookupError("collection_target_not_found")
     opportunity = None
     if payload.opportunity_id:
-        opportunity = db.get(Opportunity, payload.opportunity_id)
+        opportunity = get_opportunity_for_update(db, payload.opportunity_id, include_deleted=True)
         if opportunity is None:
             raise DomainValidationError(
                 [{"field": "opportunity_id", "received": payload.opportunity_id, "reason": "募集情報が見つかりません"}]
@@ -1090,16 +1100,13 @@ def record_collection_check(
         note=payload.note,
     )
     db.add(check)
-    target.last_checked_at = now
-    target.next_check_at = now + timedelta(days=target.check_interval_days)
-    target.last_check_result = payload.result
+    record_collection_result(target, result=payload.result, checked_at=now)
     if payload.result == "found":
-        target.last_found_at = now
         if opportunity is not None:
             # A "found, unchanged" confirmation never calls write_opportunity, so without this the
             # posting's official-source-confirmed date would go stale even though someone just verified
             # it. Deliberately not touching opportunity.updated_at, which drives optimistic locking.
-            opportunity.source_checked_at = now
+            record_opportunity_source_confirmation(opportunity, now)
     for source in target.sources:
         if source.is_active and normalize_source_url(source.url) == normalize_source_url(payload.source_url):
             source.last_checked_at = now

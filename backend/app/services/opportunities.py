@@ -39,6 +39,7 @@ from app.schemas import OpportunityInput
 from app.services.companies import company_name_filter, find_company, get_or_create_company
 from app.services.company_industries import ensure_company_industry
 from app.services.errors import FIELD_LABELS, master_error
+from app.services.maintenance import record_collection_result
 from app.services.masters import choices, resolve_many, resolve_one, resolve_sector, sectors_for_industry
 from app.services.normalization import (
     normalize_common,
@@ -821,9 +822,9 @@ def list_opportunities_requiring_review(
 ) -> list[OpportunityReview]:
     """Return reconfirmable postings and date/status contradictions in review priority order.
 
-    The date checks are deliberately a live query rather than stored flags: an extended deadline
-    disappears from the queue immediately after an operator updates it.  Contradictions are placed
-    before ordinary stale-source work but never alter the published status themselves. Only
+    The date checks are a live query: an extended deadline disappears immediately after an update.
+    An explicit source check defers an unchanged contradiction for `days` days. Due contradictions
+    precede ordinary stale-source work but never alter the published status themselves. Only
     募集予定, 募集中, and 通年募集 are routine-maintenance states; closed and other terminal states
     stay out of this queue.
     """
@@ -835,16 +836,20 @@ def list_opportunities_requiring_review(
         RecruitmentStatus.name == "募集中",
         or_(Opportunity.deadline < today, Opportunity.event_end_date < today),
     )
+    conflict_due = and_(
+        date_status_conflict,
+        or_(Opportunity.date_status_reviewed_at.is_(None), Opportunity.date_status_reviewed_at <= threshold),
+    )
     stmt = (
         opportunity_query()
         .join(Opportunity.company)
         .join(Opportunity.status)
         .where(
             RecruitmentStatus.name.in_(RECONFIRMABLE_RECRUITMENT_STATUSES),
-            or_(date_status_conflict, source_stale),
+            or_(conflict_due, source_stale),
         )
         .order_by(
-            case((date_status_conflict, 0), else_=1),
+            case((conflict_due, 0), else_=1),
             case((Opportunity.source_checked_at.is_(None), 0), else_=1),
             Opportunity.source_checked_at.asc(),
             Opportunity.id,
@@ -1354,10 +1359,7 @@ def _record_collection_success(
     client_name: str,
 ) -> None:
     now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
-    target.last_checked_at = now
-    target.last_found_at = now
-    target.last_check_result = "found"
-    target.next_check_at = now + timedelta(days=target.check_interval_days)
+    record_collection_result(target, result="found", checked_at=now)
     for source in target.sources:
         if normalize_source_url(source.url) == item.normalized_source_url:
             source.last_checked_at = now
@@ -1510,6 +1512,14 @@ def write_opportunity(
         else normalize_source_url(item.source_url)
     )
     source_changed = is_new or normalize_source_url(data.source_url) != previous_source
+    if not is_new and (
+        source_changed
+        or item.company_id != company.id
+        or item.status_id != resolved["recruitment_status"].id
+        or item.deadline != data.deadline
+        or item.event_end_date != data.event_end_date
+    ):
+        item.date_status_reviewed_at = None
     if source_changed:
         _ensure_company_source_allowed(
             db,
@@ -1695,6 +1705,8 @@ def update_recruitment_status(
             )
 
     before = opportunity_dict(item)
+    if item.status_id != status.id or item.deadline != new_deadline:
+        item.date_status_reviewed_at = None
     item.status = status
     item.deadline = new_deadline
     item.updated_at = _next_version_timestamp(item)
@@ -1724,6 +1736,18 @@ def update_recruitment_status(
     )
     db.commit()
     return item, False
+
+
+def record_opportunity_source_confirmation(item: Opportunity, checked_at: datetime) -> None:
+    item.source_checked_at = checked_at
+    if item.status.name == "募集中" and opportunity_consistency_warnings(
+        recruitment_status=item.status.name,
+        deadline=item.deadline,
+        event_start_date=item.event_start_date,
+        event_end_date=item.event_end_date,
+        today=today_in_tokyo(checked_at),
+    ):
+        item.date_status_reviewed_at = checked_at
 
 
 def verify_opportunity(
@@ -1802,8 +1826,8 @@ def verify_opportunity(
             ]
         )
 
-    before = {"source_checked_at": item.source_checked_at}
-    item.source_checked_at = checked_at
+    before = {"source_checked_at": item.source_checked_at, "date_status_reviewed_at": item.date_status_reviewed_at}
+    record_opportunity_source_confirmation(item, checked_at)
     db.flush()
     json_response = jsonable_encoder(opportunity_dict(item))
     db.add(
@@ -1817,7 +1841,10 @@ def verify_opportunity(
             success=True,
             changes={
                 "before": jsonable_encoder(before),
-                "after": {"source_checked_at": checked_at.isoformat()},
+                "after": jsonable_encoder({
+                    "source_checked_at": item.source_checked_at,
+                    "date_status_reviewed_at": item.date_status_reviewed_at,
+                }),
             },
         )
     )
@@ -1989,6 +2016,7 @@ def restore_opportunity(
         "deleted_at": _as_utc(item.deleted_at).isoformat()
     }
     item.deleted_at = None
+    item.date_status_reviewed_at = None
     item.updated_at = _next_version_timestamp(item)
     db.flush()
     response = jsonable_encoder(opportunity_dict(item))

@@ -1,6 +1,7 @@
 # ADR-0014: 論理削除の完全削除を監視可能な日次workflowで実行する
 
 - Status: Accepted
+- Amended by: [ADR-0028](./0028-history-archive-and-idempotency-retention.md)（履歴アーカイブとOAuth掃除を追加）
 - Scope: 論理削除済み募集の保持期限、運用scheduler、失敗監視
 
 ## Context

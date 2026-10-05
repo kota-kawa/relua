@@ -48,7 +48,7 @@ def run() -> None:
         return
     if args.command == "purge":
         with SessionLocal() as db:
-            print(f"purged={purge_expired(db)}")
+            print(f"purged_authorization_codes={purge_expired(db)}")
         return
 
     for grant_id, client_name, created_at, active in list_grants():

@@ -1,10 +1,7 @@
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Query
 
 from app.dates import today_in_tokyo
-from app.db import get_db
+from app.db import DbSession
 from app.schemas import CompanyDetailResponse, CompanyListResponse
 from app.services.companies import get_company_by_public_code
 from app.services.company_pages import (
@@ -19,7 +16,7 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 
 @router.get("", response_model=CompanyListResponse)
 def list_companies(
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
     indexable: bool = Query(
         default=True,
         description="プロフィールが登録済みの企業だけを返す。現在はtrueのみ対応。",
@@ -50,7 +47,7 @@ def list_companies(
 
 
 @router.get("/{public_code}", response_model=CompanyDetailResponse)
-def company_detail(public_code: str, db: Annotated[Session, Depends(get_db)]) -> dict[str, object]:
+def company_detail(public_code: str, db: DbSession) -> dict[str, object]:
     company = get_company_by_public_code(db, public_code)
     if company is None:
         raise HTTPException(status_code=404, detail="企業情報が見つかりません")

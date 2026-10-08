@@ -1,6 +1,8 @@
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
+from typing import Annotated
 
+from fastapi import Depends
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -36,12 +38,32 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
         cursor.close()
 
 
-def get_db() -> Generator[Session, None, None]:
+async def get_db() -> AsyncGenerator[Session, None]:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+#: The session every REST and OAuth endpoint depends on.
+#:
+#: With a plain ``Depends(get_db)`` on a sync generator, one burst of traffic took the API down for
+#: good: all fifteen pooled connections sat ``idle in transaction``, every later request timed out
+#: waiting for one (``QueuePool limit ... reached``), and the backlog did not drain after the burst
+#: had ended. The session was only closed after the response had been sent, so a connection stayed
+#: checked out for as long as a finished request was still queued behind the ones waiting for it.
+#:
+#: Two things together remove that state. A load test against PostgreSQL showed that either one
+#: alone still hangs:
+#:
+#: - ``scope="function"`` closes the session once the endpoint's work is done, before the response
+#:   is sent. Every endpoint builds its whole response before returning, so nothing reads from the
+#:   session afterwards.
+#: - ``get_db`` is an async generator, although nothing in it awaits, so that the close runs on the
+#:   event loop instead of being handed to a worker thread. The cost is one short ROLLBACK round
+#:   trip on the loop per request.
+DbSession = Annotated[Session, Depends(get_db, scope="function")]
 
 
 @contextmanager

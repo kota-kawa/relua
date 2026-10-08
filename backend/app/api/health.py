@@ -1,15 +1,12 @@
-from typing import Annotated
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import DbSession
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-def health(db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+def health(db: DbSession) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ok"}

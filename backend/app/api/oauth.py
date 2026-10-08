@@ -10,13 +10,13 @@ import html
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import get_db
+from app.db import DbSession
 from app.security import valid_operator_password
 from app.services.oauth import (
     DEFAULT_SCOPE,
@@ -284,7 +284,7 @@ def authorization_server_metadata() -> JSONResponse:
 def register(
     request: Request,
     payload: ClientRegistrationRequest,
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
 ) -> Response:
     try:
         enforce_registration_rate_limit(_client_ip(request))
@@ -369,7 +369,7 @@ def _check_authorize_grant(params: dict[str, str]) -> None:
 @router.get("/oauth/authorize")
 def authorize_form(
     request: Request,
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
 ) -> Response:
     params = _authorize_params(dict(request.query_params))
     try:
@@ -391,7 +391,7 @@ def authorize_form(
 @router.post("/oauth/authorize")
 def authorize_submit(
     request: Request,
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
     password: Annotated[str, Form()],
     client_id: Annotated[str, Form()],
     code_challenge: Annotated[str, Form()],
@@ -482,7 +482,7 @@ def _resolve_client(
 @router.post("/oauth/token")
 def token(
     request: Request,
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
     grant_type: Annotated[str, Form()],
     code: Annotated[str | None, Form()] = None,
     redirect_uri: Annotated[str | None, Form()] = None,
@@ -514,7 +514,7 @@ def token(
 @router.post("/oauth/revoke")
 def revoke(
     request: Request,
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
     token: Annotated[str, Form()],
     client_id: Annotated[str | None, Form()] = None,
     client_secret: Annotated[str | None, Form()] = None,

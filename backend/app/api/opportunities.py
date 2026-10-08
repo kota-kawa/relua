@@ -1,10 +1,9 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Query
 
 from app.dates import today_in_tokyo
-from app.db import get_db
+from app.db import DbSession
 from app.schemas import OpportunityListResponse, OpportunityResponse
 from app.services.opportunities import (
     find_similar_opportunities,
@@ -18,7 +17,7 @@ router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
 @router.get("", response_model=OpportunityListResponse)
 def list_opportunities(
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
     q: str | None = Query(default=None, max_length=100),
     status: Annotated[list[str] | None, Query()] = None,
     industry: Annotated[list[str] | None, Query()] = None,
@@ -58,7 +57,7 @@ def list_opportunities(
 
 
 @router.get("/{opportunity_id}", response_model=OpportunityResponse)
-def opportunity_detail(opportunity_id: str, db: Annotated[Session, Depends(get_db)]) -> dict[str, object]:
+def opportunity_detail(opportunity_id: str, db: DbSession) -> dict[str, object]:
     item = get_opportunity_by_public_ref(db, opportunity_id)
     if item is None:
         raise HTTPException(status_code=404, detail="募集情報が見つかりません")
@@ -68,7 +67,7 @@ def opportunity_detail(opportunity_id: str, db: Annotated[Session, Depends(get_d
 @router.get("/{opportunity_id}/same-company", response_model=list[OpportunityResponse])
 def same_company_opportunities(
     opportunity_id: str,
-    db: Annotated[Session, Depends(get_db)],
+    db: DbSession,
 ) -> list[dict[str, object]]:
     item = get_opportunity_by_public_ref(db, opportunity_id)
     if item is None:

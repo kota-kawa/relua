@@ -20,7 +20,7 @@
 
 ## 3. MCP ツールを変えるとき
 
-- ツールの説明文と引数スキーマは、AI クライアントが「いつ・どう呼ぶか」を決める材料です。変更したら `test_mcp_tools.py` を回し、`README.md` の「MCPツール」表を同期します。
+- ツールの説明文と引数スキーマは、AI クライアントが「いつ・どう呼ぶか」を決める材料です。変更したら `test_mcp_tools.py` を回し、`docs/usage.md` の「MCPツール」表を同期します。
 - 認証要否は登録時に決まります。読み取り専用で公開情報だけを返すツール以外を匿名にしません。
 - 書き込みツールの入力は `schemas.py` で検証し、日本語の項目名は `services/errors.py` の `FIELD_LABELS` に追加します。配列内の項目は `主な事業[0].内容` の形で位置を返します。
 - 既存行を変えるツール（update／patch／delete／restore／status 更新）は `expected_updated_at` を必須にし、`FOR UPDATE` で行を取ります（ADR-0002）。新しい更新経路を足すときに省くと、過去に実際に起きた lost update が再発します。

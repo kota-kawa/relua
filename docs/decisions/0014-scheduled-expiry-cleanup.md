@@ -24,4 +24,4 @@ scheduler設定と実行結果がリポジトリ／Actionsに残り、停止を�
 - `.github/workflows/maintenance.yml`
 - `backend/app/scripts/close_expired.py`
 - `backend/tests/test_expiry_cleanup.py`
-- `README.md` の「運用」
+- `docs/usage.md` の「運用」

@@ -55,11 +55,11 @@ PostgreSQL 固有の確認（Alembic の `upgrade head`、`pg_trgm`、関連度�
 | 変えるもの | 同時に更新するもの |
 | --- | --- |
 | `models.py` | 新しい migration、`ARCHITECTURE.md` §4／§6.1、対象サービスのテスト |
-| REST のレスポンス（`schemas.py`、`services/serialization.py`） | `frontend/lib/types.ts`、frontend の呼び出し側、`README.md` の「内部REST API」 |
-| MCP ツールの名前・引数・説明・認証要否 | `backend/tests/test_mcp_tools.py`、`README.md` の「MCPツール」表 |
-| 環境変数 | `.env.example`、`docker-compose.yml`、`frontend/Dockerfile`（`NEXT_PUBLIC_*` の場合）、`README.md` の「本番公開前の設定」 |
+| REST のレスポンス（`schemas.py`、`services/serialization.py`） | `frontend/lib/types.ts`、frontend の呼び出し側、`docs/usage.md` の「内部REST API」 |
+| MCP ツールの名前・引数・説明・認証要否 | `backend/tests/test_mcp_tools.py`、`docs/usage.md` の「MCPツール」表 |
+| 環境変数 | `.env.example`、`docker-compose.yml`、`frontend/Dockerfile`（`NEXT_PUBLIC_*` の場合）、`docs/usage.md` の「本番公開前の設定」 |
 | 公開 URL・index 条件 | `frontend/lib/seo.ts`、`frontend/proxy.ts`、サイトマップ、`relua.conf`、関連 ADR、[`seo-debugging.md`](./seo-debugging.md) |
-| 固定値マスタ（業界・業種・種別など） | `master_data.py` と投入 migration、`README.md`、SEO allowlist（index 対象に影響する場合） |
+| 固定値マスタ（業界・業種・種別など） | `master_data.py` と投入 migration、`docs/usage.md`、SEO allowlist（index 対象に影響する場合） |
 
 ## 4. 実装規約
 

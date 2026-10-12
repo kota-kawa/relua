@@ -128,6 +128,7 @@ https://<公開ホスト名>/mcp
 | `delete_company_alias` | 必要 | 誤登録された企業別名を削除する |
 | `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
 | `add_opportunity` | 必要 | 募集情報を1件追加する |
+| `upsert_opportunity` | 必要 | 新規募集の推奨入口。完全な重複は既存を返し、一次情報URLの重複は警告するため、登録前の重複検索は不要 |
 | `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
 | `preview_opportunity_patch` | 必要 | 部分更新を保存せず検証し、変更差分と警告を返す |
 | `patch_opportunity` | 必要 | 楽観ロック付きで指定項目だけを更新する |
@@ -191,13 +192,15 @@ https://<公開ホスト名>/mcp
 
 推奨操作順は次のとおりです。
 
-1. `get_master_values` で選択可能な固定値を取得し、業種は `get_sectors` で業界配下に絞る
+1. `get_master_values` で選択可能な固定値を取得し、業種は `get_sectors` で業界配下に絞る。同じ実行内で取得済みの固定値は再利用する
 2. 企業名が略称・英語名・誤記の可能性がある場合は `resolve_company` で候補を取得する
 3. 部分一致・曖昧一致の候補を公式情報で同一企業と確認できた場合だけ `add_company_alias` で別名を登録する
-4. `find_similar_opportunities` と `find_opportunities_by_source_url` で同じ募集が登録済みでないか確認する
+4. 新規募集は `upsert_opportunity` を使う。登録前の `find_similar_opportunities` と `find_opportunities_by_source_url` は不要で、既存募集の内容を確認・更新する必要がある場合だけ検索する
 5. 内容に自信がない場合は `validate_opportunity` で先に検証する
-6. `add_opportunity` または `update_opportunity` を呼ぶ
-7. 検証エラーでは、返された項目をすべて修正し、同じ `request_id` で再試行する
+6. 新規募集は `upsert_opportunity`、既存募集は変更範囲に応じた更新ツールを呼ぶ。完全な重複を意図的に複数登録する場合だけ `add_opportunity(allow_duplicate=true)` を使う
+7. 検証エラーでは、返された項目を修正して新しい `request_id` で再送する。同じ内容の通信失敗などを再試行する場合だけ同じ `request_id` を使う
+
+`upsert_opportunity` は完全な重複を返した場合、募集内容や公式情報確認日時を更新しません。公式確認で内容が変わった場合は更新ツール、変更がない場合は `verify_opportunity` などで別途確認を記録します。収集対象に紐づいた新規登録には確認記録が付随するため、同じ確認を重ねて記録する必要はありません。
 
 企業の自動的な同一視に使うのは、正規化した正式名または登録済み別名の完全一致だけです。部分一致と
 PostgreSQL `pg_trgm` によるタイプミス検索は候補提示に限られ、MCPが勝手に企業を統合することはありません。
@@ -260,9 +263,9 @@ IT・通信/Webサービスを同じ企業へ登録できます。指定した�
 
 1. 既存の企業は `list_unmonitored_companies` でIDを確認し、`add_collection_target` の `company_id` で、所属業界、優先度、確認間隔、1件以上の企業公式ページを登録する。新規企業だけは `company_name` を指定する（両方は指定しない）
 2. `get_collection_queue` で未確認または次回確認期限を過ぎた企業を取得し、1社または少数社ずつ手順3〜5を完了してから次へ進む。全社の調査完了まで保存を待たず、未保存の調査結果が次の実行へ引き継がれると仮定しない
-3. 公式ページを確認し、`find_similar_opportunities` と `find_opportunities_by_source_url` を経て募集を追加または更新する（定期再確認対象は `募集予定`、`募集中`、`通年募集` のみ）
+3. 公式ページを確認し、新規募集は事前の重複検索なしで `upsert_opportunity` により登録する。既存募集の確認・更新に必要な場合だけ検索する（定期再確認対象は `募集予定`、`募集中`、`通年募集` のみ）
 4. 募集を新規追加する場合は `collection_target_id` を渡し、募集と確認結果 `found` を同じトランザクションで記録する。既存募集の更新はこのIDを受け付けないため、確認結果を手順5で別途記録する
-5. `record_collection_check` へ実際に確認した `source_url` を必ず渡す。`found` では募集の `opportunity_id` とその募集自身の `source_url`、募集がない場合等では登録済みの有効な収集元URLと `no_opening`、`unreachable`、`needs_review` のいずれかを記録する
+5. 手順4で新規登録に付随した確認は重ねて記録しない。それ以外は `record_collection_check` へ実際に確認した `source_url` を必ず渡す。`found` では募集の `opportunity_id` とその募集自身の `source_url`、募集がない場合等では登録済みの有効な収集元URLと `no_opening`、`unreachable`、`needs_review` のいずれかを記録する。`upsert_opportunity` が既存の募集を返した場合も別途確認を記録する
 
 `found` は登録済みの個別募集の一次情報を確認した場合だけ使います。企業の採用トップページを見たことだけでは、別の一次情報URLを持つ募集を確認済みにできません。新しい募集は先に登録し、企業ページだけの確認は `opportunity_id` を省略します。受付状況や個別募集を確定できない場合は `needs_review` として記録します。`no_opening` 等の企業単位の確認記録は、既存募集の状態や公式情報確認日時を変更しません。URL不一致エラーの `expected` に合わせるだけで確認済みにせず、案内されたURLを実際に確認する必要があります。
 

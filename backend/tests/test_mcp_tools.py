@@ -2627,6 +2627,20 @@ def test_maintenance_tools_explain_individual_sources_and_incremental_saving():
     assert "run_id" in mcp_server.mcp.instructions[:512]
 
 
+def test_mcp_guidance_uses_upsert_without_mandatory_preflight_searches():
+    listed = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
+    instructions = mcp_server.mcp.instructions
+    assert "新規募集は原則upsert_opportunity" in instructions
+    assert "取得済みの固定値は再利用" in instructions
+    assert "同じ確認のrecord_collection_checkは不要" in instructions
+    assert "既存の募集を返した場合は確認記録が付随しない" in instructions
+    assert "find_similar_opportunitiesで確かめてください" not in instructions
+    assert "find_opportunities_by_source_urlでも確認してください" not in instructions
+    for guidance in (instructions, listed["upsert_opportunity"].description):
+        assert "登録前のfind_similar_opportunitiesとfind_opportunities_by_source_urlは不要" in guidance
+    assert "確認日時も進めません" in listed["upsert_opportunity"].description
+
+
 def test_all_write_tools_publish_an_optional_bounded_run_id():
     for tool in asyncio.run(mcp_server.mcp.list_tools()):
         if tool.annotations.readOnlyHint:

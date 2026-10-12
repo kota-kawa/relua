@@ -2128,6 +2128,117 @@ def test_collection_queue_supports_create_patch_source_management_and_checks(too
     assert call("list_collection_targets", {"include_inactive": True})["total"] == 1
 
 
+@pytest.mark.parametrize("is_active", [True, False])
+def test_duplicate_collection_source_returns_existing_state_without_changing_it(tools, db, is_active):
+    target = call("add_collection_target", collection_target_args())["target"]
+    source = call(
+        "add_collection_source",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "source_type": "internship", "url": "https://other.example/internship",
+                "request_id": "duplicate-source-create",
+            },
+        },
+    )["source"]
+    if not is_active:
+        call(
+            "update_collection_source",
+            {"source_id": source["id"], "payload": {"is_active": False, "request_id": "duplicate-source-disable"}},
+        )
+    db.expire_all()
+    before = call("get_collection_target", {"target_id": target["id"]})
+    error = tool_error(
+        "add_collection_source",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "source_type": "recruit", "url": source["url"], "request_id": "duplicate-source-rejected",
+            },
+        },
+    )["errors"][0]
+    assert error["source_id"] == source["id"]
+    assert error["is_active"] is is_active
+    assert error["source_type"] == "internship"
+    if is_active:
+        assert "再利用" in error["alternative"]
+    else:
+        assert "公式ページであることを確認" in error["alternative"]
+        assert "update_collection_source" in error["alternative"]
+        assert f"source_id={source['id']}" in error["alternative"]
+        assert "is_active=true" in error["alternative"]
+    assert call("get_collection_target", {"target_id": target["id"]}) == before
+
+
+def test_inactive_collection_source_error_guides_explicit_activation_and_recheck(tools, db):
+    target = call("add_collection_target", collection_target_args())["target"]
+    discovery = call(
+        "record_collection_check",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "result": "no_opening", "source_url": target["sources"][0]["url"],
+                "discovered_sources": [{"source_type": "recruit", "url": "https://other.example/graduate"}],
+                "request_id": "inactive-source-discovered",
+            },
+        },
+    )["target"]
+    source = next(source for source in discovery["sources"] if not source["is_active"])
+    db.expire_all()
+    before = call("get_collection_target", {"target_id": target["id"]})
+    args = {
+        "target_id": target["id"], "run_id": "inactive-source-recovery",
+        "payload": {
+            "result": "needs_review", "source_url": source["url"] + "/?utm_source=test#course",
+            "request_id": "inactive-source-check-rejected",
+        },
+    }
+    detail = tool_error("record_collection_check", args)["errors"][0]
+    assert detail["source_id"] == source["id"]
+    assert detail["is_active"] is False
+    assert detail["source_type"] == "recruit"
+    assert detail["expected"] == [target["sources"][0]["url"]]
+    assert "公式ページであることを確認" in detail["alternative"]
+    assert "update_collection_source" in detail["alternative"]
+    assert f"source_id={source['id']}" in detail["alternative"]
+    assert "is_active=true" in detail["alternative"]
+    assert call("get_collection_target", {"target_id": target["id"]}) == before
+    assert len(call("list_collection_checks", {"target_id": target["id"]})["items"]) == 1
+    audit = call("list_recent_writes", {"run_id": args["run_id"]})
+    assert audit["failed_count"] == 1
+    assert audit["items"][0]["errors"][0] == detail
+
+    call(
+        "update_collection_source",
+        {"source_id": detail["source_id"], "payload": {"is_active": True, "request_id": "inactive-source-enable"}},
+    )
+    assert len(call("list_collection_checks", {"target_id": target["id"]})["items"]) == 1
+    result = call(
+        "record_collection_check",
+        args | {"payload": args["payload"] | {"request_id": "inactive-source-check-corrected"}},
+    )
+    assert result["success"] is True
+    assert result["target"]["last_check_result"] == "needs_review"
+    assert len(call("list_collection_checks", {"target_id": target["id"]})["items"]) == 2
+
+
+def test_unregistered_collection_source_error_guides_addition(tools, db):
+    target = call("add_collection_target", collection_target_args())["target"]
+    detail = tool_error(
+        "record_collection_check",
+        {
+            "target_id": target["id"],
+            "payload": {
+                "result": "needs_review", "source_url": "https://unknown.example/graduate",
+                "request_id": "unknown-source-check-rejected",
+            },
+        },
+    )["errors"][0]
+    assert "source_id" not in detail
+    assert "add_collection_source" in detail["alternative"]
+    assert call("list_collection_checks", {"target_id": target["id"]})["items"] == []
+
+
 def test_mcp_maintenance_surfaces_exclude_closed_postings(tools, db):
     active = seed(
         db,
@@ -2507,6 +2618,10 @@ def test_maintenance_tools_explain_individual_sources_and_incremental_saving():
     assert "実際に確認" in fields["source_url"]["description"]
     assert "foundの場合だけ" in fields["opportunity_id"]["description"]
     assert "全社の調査完了まで保存を待たない" in check.description
+    assert "source_id・is_active・source_type" in check.description
+    assert "無効な情報源として追加" in check.description
+    assert "update_collection_source" in listed["add_collection_source"].description
+    assert "有効化だけでは確認記録は保存されません" in listed["update_collection_source"].description
     assert "全社の調査完了まで保存を待たない" in listed["get_collection_queue"].description
     assert "少数社" in mcp_server.mcp.instructions[:512]
     assert "run_id" in mcp_server.mcp.instructions[:512]

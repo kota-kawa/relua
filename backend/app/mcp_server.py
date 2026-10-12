@@ -2203,7 +2203,11 @@ def update_collection_target_tool(
 @mcp.tool(
     name="add_collection_source",
     title="企業公式ページを追加",
-    description="既存の収集対象へ確認先となる企業公式ページを追加します。認証が必要です。",
+    description=(
+        "既存の収集対象へ確認先となる企業公式ページを追加します。重複エラーは既存のsource_id・is_active・source_typeを返します。"
+        "登録済みで無効なURLは再追加せず、企業自身の公式ページであることを確認してupdate_collection_sourceで"
+        "明示的に有効化してください。認証が必要です。"
+    ),
     annotations=APPEND_ONLY,
 )
 def add_collection_source_tool(
@@ -2232,7 +2236,11 @@ def add_collection_source_tool(
 @mcp.tool(
     name="update_collection_source",
     title="企業公式ページを部分更新",
-    description="URL、種類、有効状態のうち指定した項目だけを変更します。認証が必要です。",
+    description=(
+        "URL、種類、有効状態のうち指定した項目だけを変更します。登録済みで無効な情報源を使う場合は、"
+        "企業自身の公式ページであることを確認し、既存のsource_idとpayloadのis_active=trueで明示的に有効化してください。"
+        "有効化だけでは確認記録は保存されません。認証が必要です。"
+    ),
     annotations=PATCHING,
 )
 def update_collection_source_tool(
@@ -2267,10 +2275,12 @@ def update_collection_source_tool(
         "新しい募集を発見した場合は先にadd_opportunityまたはupsert_opportunityで登録してください。"
         "企業ページだけの確認ではopportunity_idを省略し、有効な登録済み公式source URLと"
         "no_opening（有効な募集なし）・unreachable（確認不能）・needs_review（個別募集や受付状況を確定できない）を指定します。"
+        "登録済みで無効な確認URLのエラーはsource_id・is_active・source_typeを返します。公式性を確認し、"
+        "update_collection_sourceで明示的に有効化してから、実際に確認した結果を記録してください。"
         "これらは既存募集の状態や確認日時を変更しません。各社の確認後すぐに記録し、全社の調査完了まで保存を待たないでください。"
         "unreachable・needs_reviewが続く場合は再確認間隔を段階的に延ばします。found・no_openingで通常間隔へ戻ります。"
         "確認中に採用ページなどを新しく見つけた場合はdiscovered_sourcesへ渡すと"
-        "同時に情報源として追加します。認証が必要です。"
+        "同時に無効な情報源として追加します。使用前に公式性を確認し、update_collection_sourceで明示的に有効化してください。認証が必要です。"
     ),
     annotations=APPEND_ONLY,
 )

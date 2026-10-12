@@ -326,7 +326,7 @@ MCP client
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
 | 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py`。日時フィルターはカーソル条件にも含める |
 | 企業同一性・プロフィール更新・履歴 | `services/companies.py`, `company_industries.py` | `schemas.py`, `mcp_server.py`, `test_companies.py`, `test_mcp_tools.py`、`models.py` の `AuditLog`、関連ADR。一括更新は企業ごとの検証・更新日時照合・保存・結果集計 |
-| 収集キュー・再確認間隔 | `services/collection_targets.py`, `services/maintenance.py` | `models.py`, `test_collection_targets.py`, `test_maintenance_schedule_migration.py`, MCP tool definitions。確認状況は履歴列から導出し、確認期限と連続回数で巡回を制御する |
+| 収集キュー・再確認間隔 | `services/collection_targets.py`, `services/maintenance.py` | `models.py`, `test_collection_targets.py`, `test_mcp_tools.py`, `test_maintenance_schedule_migration.py`, MCP tool definitions。無効な確認URL・重複追加のエラーは既存の情報源IDと状態を返す。確認状況は履歴列から導出し、確認期限と連続回数で巡回を制御する |
 | 実行単位の書き込み履歴 | `services/write_history.py`, `app/audit_context.py`, `models.py` の `AuditLog` | `mcp_server.py`, `schemas.py`, `test_mcp_tools.py`, `test_audit_context.py`, `test_audit_run_migration.py`、ADR-0026 |
 | OAuth・MCP認証 | `main.py`, `api/oauth.py`, `services/oauth.py`, `mcp_server.py` | `test_oauth.py`, `test_oauth_endpoints.py`, `relua.conf` |
 | 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、`.github/workflows/maintenance.yml`、該当サービスのテスト |

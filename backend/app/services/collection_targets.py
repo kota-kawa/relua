@@ -870,9 +870,29 @@ def create_collection_source(
     target = get_collection_target(db, target_id)
     if target is None:
         raise LookupError("collection_target_not_found")
-    if any(source.url == payload.url for source in target.sources):
+    existing_source = next((source for source in target.sources if source.url == payload.url), None)
+    if existing_source is not None:
         raise DomainValidationError(
-            [{"field": "情報源URL", "received": payload.url, "reason": "同じURLが既に登録されています"}]
+            [
+                {
+                    "field": "情報源URL",
+                    "received": payload.url,
+                    "reason": "同じURLが既に登録されています",
+                    "source_id": existing_source.id,
+                    "is_active": existing_source.is_active,
+                    "source_type": existing_source.source_type,
+                    "alternative": (
+                        "既存の有効な情報源を再利用してください。再追加は不要です。"
+                        if existing_source.is_active
+                        else (
+                            "企業自身の公式ページであることを確認し、update_collection_sourceに"
+                            f"source_id={existing_source.id}とpayloadのis_active=trueを指定して明示的に有効化してください。"
+                            "再追加は不要です。有効化しただけでは確認記録は保存されないため、"
+                            "実際に確認した結果をrecord_collection_checkで記録してください。"
+                        )
+                    ),
+                }
+            ]
         )
     source = CollectionSource(
         collection_target_id=target.id,
@@ -1072,22 +1092,40 @@ def record_collection_check(
         if normalize_source_url(payload.source_url) not in {
             normalize_source_url(source_url) for source_url in active_sources
         }:
-            raise DomainValidationError(
-                [
-                    {
-                        "field": "source_url",
-                        "received": payload.source_url,
-                        "reason": "確認結果は登録済みの有効な公式source URLに対してだけ記録できます",
-                        "expected": active_sources,
-                        "alternative": (
-                            "登録済みの有効な公式source URLを実際に確認してから記録してください。"
-                            "別の公式ページを使用するにはadd_collection_sourceで明示登録します。"
-                            "新しい募集を発見した場合は先に募集を登録してください。"
-                            "入力を直す再送には新しいrequest_idを使います。"
-                        ),
-                    }
-                ]
+            error = {
+                "field": "source_url",
+                "received": payload.source_url,
+                "reason": "確認結果は登録済みの有効な公式source URLに対してだけ記録できます",
+                "expected": active_sources,
+                "alternative": (
+                    "登録済みの有効な公式source URLを実際に確認してから記録してください。"
+                    "未登録の公式ページを使用するにはadd_collection_sourceで明示登録します。"
+                    "新しい募集を発見した場合は先に募集を登録してください。"
+                    "入力を直す再送には新しいrequest_idを使います。"
+                ),
+            }
+            inactive_source = next(
+                (
+                    source for source in target.sources
+                    if not source.is_active
+                    and normalize_source_url(source.url) == normalize_source_url(payload.source_url)
+                ),
+                None,
             )
+            if inactive_source is not None:
+                error.update(
+                    source_id=inactive_source.id,
+                    is_active=False,
+                    source_type=inactive_source.source_type,
+                    alternative=(
+                        "このURLは登録済みですが無効です。企業自身の公式ページであることを確認し、"
+                        f"update_collection_sourceにsource_id={inactive_source.id}とpayloadのis_active=trueを指定して"
+                        "明示的に有効化してください。add_collection_sourceでの再追加は不要です。"
+                        "その後、実際に確認した結果をrecord_collection_checkで記録してください。"
+                        "入力を直す再送には新しいrequest_idを使います。"
+                    ),
+                )
+            raise DomainValidationError([error])
     now = datetime.now(timezone.utc)  # noqa: UP017 -- tests also support Python 3.10
     check = CollectionCheck(
         collection_target_id=target.id,

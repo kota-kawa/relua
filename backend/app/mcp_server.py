@@ -205,12 +205,12 @@ mcp = FastMCP(
         "監査履歴にない未実行・通信失敗・内部エラーは保存結果未確認であり、成功や未保存と断定しないでください。"
         "日本のインターン・本選考情報を検索・登録・更新・削除・復元するMCPです。"
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
-        "募集の追加・更新の前にget_master_valuesとget_sectorsで固定値を確認し、"
-        "同じ募集が登録済みでないかfind_similar_opportunitiesで確かめてください。"
+        "募集の追加・更新の前にget_master_valuesとget_sectorsで固定値を確認してください。同じ実行内で取得済みの固定値は再利用できます。"
+        "新規募集は原則upsert_opportunityで登録してください。完全な重複は既存を返し、新規登録時は一次情報URLの重複もwarningsで通知するため、"
+        "登録前のfind_similar_opportunitiesとfind_opportunities_by_source_urlは不要です。既存募集の内容を確認・更新する必要がある場合だけ検索します。"
         "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として登録されます"
         "（例: 同じイベント名を28卒・29卒で使い回す企業）。allow_duplicateは全く同じ日程・コースを"
         "意図的に複数登録する場合だけ使ってください。"
-        "情報源URLが既存募集と重ならないかfind_opportunities_by_source_urlでも確認してください。"
         "企業名が略称・英語名・誤記かもしれない場合はresolve_companyで候補を確認し、"
         "同一企業と公式情報で確認できた場合だけadd_company_aliasで別名を登録してから募集を書き込んでください。"
         "企業の業界・業種カテゴリを管理する場合はset_company_industriesでcompany_idとカテゴリ一覧を指定してください。"
@@ -238,6 +238,8 @@ mcp = FastMCP(
         "情報源には企業自身の採用ページなど一次情報を指定し、求人サイトや口コミサイトの掲載ページは使用しないでください。"
         "情報収集を進める場合はget_collection_queueで次の企業を取得し、確認後は募集の有無にかかわらず"
         "record_collection_checkで結果を記録してください。収集対象と確認履歴は運営者だけが操作できます。"
+        "収集対象に紐づく新規登録にはfoundの確認記録が付随するため、同じ確認のrecord_collection_checkは不要です。"
+        "upsert_opportunityが既存の募集を返した場合は確認記録が付随しないため、公式確認後に別途記録します。"
         "新しい募集は先にadd_opportunityまたはupsert_opportunityで登録します。企業ページだけの確認は"
         "opportunity_idを指定せず、有効な登録済み公式sourceとno_opening・unreachable・needs_reviewを使います。"
         "個別募集や受付状況を確定できない場合はneeds_reviewです。"
@@ -1303,6 +1305,8 @@ def add_opportunity(
         "そうでなければ新規登録します。同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として"
         "新規登録し、warningsで既存の登録を知らせます（会社が28卒・29卒で同じイベント名を使い回す場合など）。"
         "find_similar_opportunitiesとadd_opportunityを毎回2回呼ぶ手間を1回にまとめたツールです。"
+        "新規登録時は一次情報URLの重複もwarningsで返すため、登録前のfind_similar_opportunitiesとfind_opportunities_by_source_urlは不要です。"
+        "既存の登録を返した場合は内容を更新せず、確認日時も進めません。公式確認後、必要な更新・確認記録を別途行ってください。"
         "対象学年・実施日・対象職種まで一致する完全な重複を意図的に複数登録したい場合は、"
         "代わりにadd_opportunityをallow_duplicate=trueで使ってください。"
         f"{DESCRIPTION_GUIDANCE}"
@@ -2203,7 +2207,11 @@ def update_collection_target_tool(
 @mcp.tool(
     name="add_collection_source",
     title="企業公式ページを追加",
-    description="既存の収集対象へ確認先となる企業公式ページを追加します。認証が必要です。",
+    description=(
+        "既存の収集対象へ確認先となる企業公式ページを追加します。重複エラーは既存のsource_id・is_active・source_typeを返します。"
+        "登録済みで無効なURLは再追加せず、企業自身の公式ページであることを確認してupdate_collection_sourceで"
+        "明示的に有効化してください。認証が必要です。"
+    ),
     annotations=APPEND_ONLY,
 )
 def add_collection_source_tool(
@@ -2232,7 +2240,11 @@ def add_collection_source_tool(
 @mcp.tool(
     name="update_collection_source",
     title="企業公式ページを部分更新",
-    description="URL、種類、有効状態のうち指定した項目だけを変更します。認証が必要です。",
+    description=(
+        "URL、種類、有効状態のうち指定した項目だけを変更します。登録済みで無効な情報源を使う場合は、"
+        "企業自身の公式ページであることを確認し、既存のsource_idとpayloadのis_active=trueで明示的に有効化してください。"
+        "有効化だけでは確認記録は保存されません。認証が必要です。"
+    ),
     annotations=PATCHING,
 )
 def update_collection_source_tool(
@@ -2267,10 +2279,12 @@ def update_collection_source_tool(
         "新しい募集を発見した場合は先にadd_opportunityまたはupsert_opportunityで登録してください。"
         "企業ページだけの確認ではopportunity_idを省略し、有効な登録済み公式source URLと"
         "no_opening（有効な募集なし）・unreachable（確認不能）・needs_review（個別募集や受付状況を確定できない）を指定します。"
+        "登録済みで無効な確認URLのエラーはsource_id・is_active・source_typeを返します。公式性を確認し、"
+        "update_collection_sourceで明示的に有効化してから、実際に確認した結果を記録してください。"
         "これらは既存募集の状態や確認日時を変更しません。各社の確認後すぐに記録し、全社の調査完了まで保存を待たないでください。"
         "unreachable・needs_reviewが続く場合は再確認間隔を段階的に延ばします。found・no_openingで通常間隔へ戻ります。"
         "確認中に採用ページなどを新しく見つけた場合はdiscovered_sourcesへ渡すと"
-        "同時に情報源として追加します。認証が必要です。"
+        "同時に無効な情報源として追加します。使用前に公式性を確認し、update_collection_sourceで明示的に有効化してください。認証が必要です。"
     ),
     annotations=APPEND_ONLY,
 )

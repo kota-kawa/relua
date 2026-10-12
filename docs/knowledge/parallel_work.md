@@ -12,7 +12,7 @@ worktree を分ける判断基準は [`../../AGENTS.md`](../../AGENTS.md) の「
 | `frontend/node_modules` | git 管理外 | worktree ごとに `npm ci` が必要。`package-lock.json` を変える作業が 2 つ同時に走ると衝突するため、依存追加は 1 本に限る |
 | `backend/.venv` | git 管理外 | 別 worktree からも絶対パスで使える（`/path/to/main/backend/.venv/bin/pytest`）。依存を変える作業だけ別に作る |
 | Alembic の head | git 管理 | 2 本の作業が migration を追加すると head が 2 本になる。schema 変更を伴う作業は同時に 1 本まで。後から取り込む側が `down_revision` を付け替える |
-| `README.md` の MCP ツール表・`ARCHITECTURE.md` のソースマップ・`AGENTS.md` の一覧 | git 管理 | 複数の作業が同じ表を編集すると衝突する。表の更新は各作業の最後にまとめ、取り込み順を決めておく |
+| `docs/usage.md` の MCP ツール表・`ARCHITECTURE.md` のソースマップ・`AGENTS.md` の一覧 | git 管理 | 複数の作業が同じ表を編集すると衝突する。表の更新は各作業の最後にまとめ、取り込み順を決めておく |
 | Next.js のビルドキャッシュ（`frontend/.next/`） | git 管理外 | worktree ごとに独立。本番ビルドでの Data Cache 確認は `.next/cache/fetch-cache` が worktree ごとに別になる |
 
 ## 2. 分ける単位と順序

@@ -1,6 +1,6 @@
 # relua アーキテクチャ
 
-この文書は、実装を読む順番と責務境界を示すための設計索引です。利用者向けの操作手順は [`README.md`](./README.md)、コード上の動作はリンク先の実装とテストを正本とします。
+この文書は、実装を読む順番と責務境界を示すための設計索引です。利用者向けの操作手順は [`docs/usage.md`](./docs/usage.md)、コード上の動作はリンク先の実装とテストを正本とします。
 
 ## 1. システムの要約
 
@@ -303,7 +303,7 @@ MCP client
 | `frontend` | `frontend/Dockerfile` | Next standalone を3000番で起動 |
 | Nginx | `relua.conf` | TLS、`www`からapexへの308、公開MCP/OAuth、Next.jsへのルーティング、MCPストリーミングの非バッファリング |
 
-環境変数の一覧と開発値は [`.env.example`](./.env.example)、起動手順は [`README.md`](./README.md) を正本とします。実際の秘密値は `.env` に置き、コミットしません。
+環境変数の一覧と開発値は [`.env.example`](./.env.example)、起動手順は [`docs/usage.md`](./docs/usage.md) を正本とします。実際の秘密値は `.env` に置き、コミットしません。
 
 ### 6.3 CI/CD
 
@@ -332,12 +332,12 @@ MCP client
 | 共通基盤・運用ジョブ | `config.py`, `db.py`, `schemas.py`, `security.py`, `dates.py`, `scripts/` | `.env.example`, Compose、`.github/workflows/maintenance.yml`、該当サービスのテスト |
 | 履歴保存・再送保証 | `services/history_archive.py`, `app/scripts/archive_history.py` | `test_history_archive.py`, `config.py`, `.env.example`, Composeの永続ボリューム、MCP履歴契約、ADR-0028 |
 | DBスキーマ | `models.py`, 最新 migration | 0001 fresh DB、全 upgrade、PostgreSQL CI |
-| デプロイ・公開境界 | `docker-compose.yml`, Dockerfiles, `relua.conf`, CI | `.env.example`, READMEの本番設定 |
+| デプロイ・公開境界 | `docker-compose.yml`, Dockerfiles, `relua.conf`, CI | `.env.example`, `docs/usage.md` の本番設定 |
 
 ## 8. ドキュメントの使い分け
 
 - 構造を探すときはこの文書。
-- コマンドや運用手順を実行するときは [`README.md`](./README.md)。
+- コマンドや運用手順を実行するときは [`docs/usage.md`](./docs/usage.md)。
 - コードを変更する前の規約（構成、コマンド、同期すべきもの、命名、テスト方針）は [`docs/knowledge/development_conventions.md`](./docs/knowledge/development_conventions.md)。
 - 利用者、利用の流れ、用語の対応、状態を確認するときは [`docs/knowledge/domain_glossary.md`](./docs/knowledge/domain_glossary.md)。
 - 契約やマイグレーションを変えるときは [`docs/knowledge/contracts-and-migrations.md`](./docs/knowledge/contracts-and-migrations.md)。

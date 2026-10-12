@@ -6,7 +6,8 @@
 
 各行は「パス／内容の区分／いつ参照するか、または何に使わないか」の型で書きます。ドキュメントを追加・削除したら、同じコミットでこの一覧も更新してください。文書内のパス参照が存在するかは `python3 scripts/check_doc_paths.py` が CI で検証します。
 
-- `README.md` は公開向けの概要・機能紹介・起動手順・MCP クライアント設定・運用手順です。内部設計の正本としては扱わず、実装との差分が見つかった場合は公開向け説明として修正します。
+- `README.md` は第三者向けの紹介です。サービスの概要、画面、アーキテクチャ図、MCP によるデータ更新・OAuth・重複防止の仕組み、技術選定の理由を載せます。手順や契約の正本としては扱わず、実装との差分が見つかった場合は紹介文として修正します。画面の画像は `docs/images/` に置きます。
+- `docs/usage.md` は起動手順、MCP クライアント設定、MCP ツール表、内部 REST API、日次運用、本番公開前の設定をまとめた利用・運用手順です。コマンドを実行するとき、MCP ツールや環境変数の契約を変えるときに読み、同じ変更で更新します。
 - `ARCHITECTURE.md` はシステム構成、責務、リクエスト経路、データモデルと不変条件、マイグレーション、CI/CD、変更時のソースマップをまとめた内部設計の正本です。複数レイヤーにまたがる変更では最初に必要な章だけ参照してください。
 - `docs/knowledge/README.md` は再利用可能な知見の索引です。作業ログや一時的な状態は追加しません。
 - `docs/knowledge/domain_glossary.md` は利用者と外部との境界、利用の流れ、用語（画面・API・MCP・DB・コードの対応）、同一性と値、状態をまとめた対応表です。機能を追加・変更するとき、新しい概念や項目に名前を付けるとき、状態を扱うときに読みます。
@@ -33,7 +34,7 @@
 2. 機能の追加・変更なら、「要件を決めるときのルール」に沿って目的と範囲を整理し、`docs/knowledge/domain_glossary.md` で利用の流れと用語を確認する。
 3. 変更対象に近い `ARCHITECTURE.md` の「7. 変更時のソースマップ」を読む。
 4. コードを変更するなら `docs/knowledge/development_conventions.md` を読む。
-5. 実行方法や環境変数が必要なら `README.md` と `.env.example` を読む。
+5. 実行方法や環境変数が必要なら `docs/usage.md` と `.env.example` を読む。
 6. API、データモデル、認証、保存方式、公開 URL を変更する場合は、関連する ADR を読む。
 
 毎回リポジトリ全体や docs 全体を読む必要はありません。
@@ -91,10 +92,10 @@ AI が実装や候補出しを代行できても、目的・要求・正しい�
 - 実装したエージェントは自分で完了判定をしないでください。コードを変更する PR は、作る前にレビュー用サブエージェント（指定は `docs/knowledge/development_conventions.md` の「サブエージェントの指定」）へスコープ・差分・チェックリスト（要件を満たす／スコープ外の変更が無い／不要なコードが無い／テストが通る／禁止事項に触れない）だけを渡してレビューさせ、実装担当の意図や経緯の説明は渡しません。ドキュメントだけの変更はこのレビューを省略でき、省略した場合は PR 本文にその旨を書きます。指摘は検証してから反映します。指摘に反論がある場合は握りつぶさずユーザーに上げてください。
 - 修正後は、変更箇所および直接影響を受ける範囲に対応するテストのみを実行してください。変更と関係のないテストやテストスイート全体は実行しません。ただし、変更が横断的で影響範囲を限定できない場合、またはユーザーが明示的に求めた場合はこの限りではありません。テストを実行できない場合は、その理由を最終報告に記載してください。
 - 見た目や操作に影響するフロントエンド変更（CSS、JSX の構造、イベント処理）は、PR を作る前に Playwright で実描画・実操作を確認し、取得したスクリーンショットを実際に目視して、レイアウト崩れ、文字切れ、重なり、余白の破綻がないことを確認してください。確認した画面・ビューポート（PC 幅とスマホ幅）・実測結果を PR 本文に書いてください。手順は `docs/knowledge/frontend_visual_verification.md` にあります。型定義や API クライアントなど描画に出ない変更は対象外です。
-- MCP ツールの定義（名前、引数スキーマ、説明文、認証要否）は外部 AI クライアント（ChatGPT、Claude）の挙動を左右する契約です。変更するときは `backend/tests/test_mcp_tools.py` を実行し、`README.md` の「MCPツール」表を同じ変更で同期してください。このリポジトリ自身は LLM を呼び出さないため、プロンプト品質の比較手順はありません。
+- MCP ツールの定義（名前、引数スキーマ、説明文、認証要否）は外部 AI クライアント（ChatGPT、Claude）の挙動を左右する契約です。変更するときは `backend/tests/test_mcp_tools.py` を実行し、`docs/usage.md` の「MCPツール」表を同じ変更で同期してください。ツール数や認証要否の内訳が変わる場合は `README.md` の記載も合わせます。このリポジトリ自身は LLM を呼び出さないため、プロンプト品質の比較手順はありません。
 - サブエージェントと git worktree は別の判断軸です。「作業を独立分割できるか」でサブエージェントを、「作業ツリーを共有すると壊れるか」で worktree を判断してください。
 - サブエージェントを使う: 読み取りのみの調査・レビュー、または担当ファイルを重複なく分割できる編集。調査・実装・レビューを分けるときは役割ごとに別の担当にし、各担当にはその役割に必要な情報だけを渡し、原則として同じファイルを同時に編集させないでください。複数の担当に分けるときは、着手前に「誰の成果物を誰にどの形式で渡すか」「何が揃ったら次を始めてよいか」「最終判定は誰か」を決めて各担当の依頼文に書きます。最終判定はユーザーで、エージェント間の判断の不一致はユーザーに上げます。
-- worktree を使う（いずれか該当時）: 並列作業が同じ生成物（`backend/alembic/versions/` の head、`frontend/package-lock.json`、`backend/requirements.txt`、`README.md` の MCP ツール表など）に触る／別 PR に分けるべき変更を同時に進める／破棄する可能性のある大規模リファクタ／作業ツリーにユーザーの未コミット変更がある。
+- worktree を使う（いずれか該当時）: 並列作業が同じ生成物（`backend/alembic/versions/` の head、`frontend/package-lock.json`、`backend/requirements.txt`、`docs/usage.md` の MCP ツール表など）に触る／別 PR に分けるべき変更を同時に進める／破棄する可能性のある大規模リファクタ／作業ツリーにユーザーの未コミット変更がある。
 - worktree を使わない: 数ファイル規模の変更と、`docker compose up` での起動確認が必要な作業。`.env` は git 管理外で、Compose も backend の設定もリポジトリ直下の `.env` を読むため、新規 worktree ではそのまま起動できません。
 - 並行数の上限は worktree の本数ではなく「担当ファイルが重複しないこと」で決めてください。同時に走る作業どうしが同じファイルを編集する予定なら、worktree を増やしても解決しないので片方を待たせます。worktree を分ける単位は着手前に決め、実装途中で思いつきで分割しないでください。並列作業中は担当 worktree の外を触らず、他の作業への依存が判明したら止めてユーザーに報告します。1 worktree = 1 ブランチ = 1 PR とし、共有される DB／ポート、`node_modules`、依存のある作業の順序などの運用手順は `docs/knowledge/parallel_work.md` に従います。
 - データベーススキーマを変更する場合は、新しい Alembic migration と関連テストを追加してください。適用済みまたは既存の migration ファイルを書き換えてはいけません（例外と手順は `docs/knowledge/contracts-and-migrations.md`）。
@@ -108,7 +109,7 @@ AI が実装や候補出しを代行できても、目的・要求・正しい�
 - 技術判断を変更したときは、既存 ADR を上書きして履歴を消さず、新しい ADR を追加し、古い ADR を `Superseded` にする。部分的な補正は旧 ADR に `Amended by` を追記する。
 - 利用者、利用の流れ、用語、状態を変えたときは、同じ変更で `docs/knowledge/domain_glossary.md` を更新する。
 - 重要ファイルや参照先を追加・移動したときは、このファイルの表と一覧を更新する。
-- `README.md` は利用・運用手順、`ARCHITECTURE.md` は構造、`docs/knowledge/` は方法（`domain_glossary.md` は用語と状態の対応）、`docs/decisions/` は理由を担当させ、同じ説明を複数箇所に複製しない。
+- `README.md` は第三者向けの紹介、`docs/usage.md` は利用・運用手順、`ARCHITECTURE.md` は構造、`docs/knowledge/` は方法（`domain_glossary.md` は用語と状態の対応）、`docs/decisions/` は理由を担当させ、同じ説明を複数箇所に複製しない。
 
 ## 最低限の検証
 
@@ -128,5 +129,5 @@ PostgreSQL の Alembic と `pg_trgm` の確認は CI の PostgreSQL ジョブを
 
 - 必要な環境変数には、内部 API トークン（`API_INTERNAL_TOKEN`）、MCP 用トークン（`MCP_API_TOKEN`）、OAuth 利用時の運営者パスワード（`MCP_OPERATOR_PASSWORD`）、公開 origin（`NEXT_PUBLIC_SITE_URL`）、`ENVIRONMENT`、PostgreSQL の設定、Redis の設定が含まれます。シークレット情報は環境変数または `.env` に保持し、git には含めないでください。
 - `local-development-` で始まる値はこのリポジトリに公開されている既知の値です。`ENVIRONMENT=development` を明示したときだけ使え、それ以外では起動が拒否されます（ADR-0019）。
-- 実行時に読まれる環境変数の一覧は `.env.example` が正本です。`python3 scripts/check_env_documentation.py` が、コード（`backend/app/config.py`、frontend の `process.env`、`docker-compose.yml`）の読み取りと `.env.example` の記載の同期を検証します。環境変数を追加・削除したら同じ変更で `.env.example` も更新し、必須にする場合は `docker-compose.yml` の `${VAR:?}` と `README.md` の「本番公開前の設定」も更新してください。
+- 実行時に読まれる環境変数の一覧は `.env.example` が正本です。`python3 scripts/check_env_documentation.py` が、コード（`backend/app/config.py`、frontend の `process.env`、`docker-compose.yml`）の読み取りと `.env.example` の記載の同期を検証します。環境変数を追加・削除したら同じ変更で `.env.example` も更新し、必須にする場合は `docker-compose.yml` の `${VAR:?}` と `docs/usage.md` の「本番公開前の設定」も更新してください。
 - `.env` には秘密情報が入るため、その内容を読んだり、ログ・文書・報告へ転記したりしてはいけません。環境変数の一覧を確認するときは `.env.example` を読んでください。

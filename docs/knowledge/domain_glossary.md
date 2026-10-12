@@ -30,7 +30,7 @@ relua にはアカウント・会員・ログインがありません。relua �
 | --- | --- | --- | --- | --- | --- |
 | MCP ツール | `get_collection_queue`、`list_unmonitored_companies`、`list_undercovered_companies`、`list_companies_missing_profile` | `list_company_profile_history` | `get_company_maintenance_context`、`get_collection_target` | `record_collection_check`、`verify_opportunity` | `resolve_company`、`upsert_opportunity`、`patch_opportunity`、`update_recruitment_status` | `list_stale_opportunities`、`find_similar_opportunities`、`find_opportunities_by_source_url`、`merge_company`、`delete_opportunity` |
 
-ツールの一覧と認証要否の正本は [`../../README.md`](../../README.md) の「MCPツール」表です。
+ツールの一覧と認証要否の正本は [`../usage.md`](../usage.md) の「MCPツール」表です。
 
 ## 3. 用語
 

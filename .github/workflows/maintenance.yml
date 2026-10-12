@@ -63,9 +63,12 @@ jobs:
             -p "${SERVER_PORT:-22}" "${SERVER_USER}@${SERVER_HOST}" \
             "bash -seu -- ${quoted_deploy_path}" <<'REMOTE_SCRIPT'
           cd "$1"
-          docker compose exec -T api python -m app.scripts.archive_history
-          docker compose exec -T api python -m app.scripts.close_expired
-          docker compose exec -T api python -m app.scripts.mcp_connections purge
+          # This script reaches bash on stdin, and `docker compose exec -T` forwards stdin to the
+          # container. Without the redirect the first command swallowed the remaining lines, so
+          # bash hit EOF, exited 0, and the later commands never ran.
+          docker compose exec -T api python -m app.scripts.archive_history </dev/null
+          docker compose exec -T api python -m app.scripts.close_expired </dev/null
+          docker compose exec -T api python -m app.scripts.mcp_connections purge </dev/null
           REMOTE_SCRIPT
           )"
           printf '%s\n' "${output}"

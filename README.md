@@ -381,3 +381,7 @@ Dockerを含む一括起動は `make up`、ログ確認は `make logs`、停止�
 - OAuthを使う場合は、`MCP_PUBLIC_URL`をhttpsの実ホスト名にし、`MCP_OPERATOR_PASSWORD`を推測できない値にする（開発用の値のままではAPIが起動しない）
 - OAuthを使う場合は、リバースプロキシで `/mcp`、`/oauth`、`/.well-known` だけを公開し、`/api/v1` は公開しない
 - 実在企業10社分をChatGPT・Claudeの両方から登録し、運用上の受入確認を行う
+
+## ライセンス
+
+ソースコードは [MIT License](./LICENSE) で公開しています。「relua」の名称とロゴ（`frontend/public/` の画像）、および本番サービスに掲載している募集・企業データは、このライセンスの対象外です。

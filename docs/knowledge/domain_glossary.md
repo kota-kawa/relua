@@ -28,7 +28,9 @@ relua にはアカウント・会員・ログインがありません。relua �
 
 | 段階 | 確認する企業を選ぶ | 過去のプロフィールを確認する | 公式ページを確認する | 確認を記録する | 募集を登録・更新する | 矛盾・重複を直す |
 | --- | --- | --- | --- | --- | --- |
-| MCP ツール | `get_collection_queue`、`list_unmonitored_companies`、`list_undercovered_companies`、`list_companies_missing_profile` | `list_company_profile_history` | `get_company_maintenance_context`、`get_collection_target` | `record_collection_check`、`verify_opportunity` | `resolve_company`、`upsert_opportunity`、`patch_opportunity`、`update_recruitment_status` | `list_stale_opportunities`、`find_similar_opportunities`、`find_opportunities_by_source_url`、`merge_company`、`delete_opportunity` |
+| MCP ツール | `get_collection_queue`、`list_unmonitored_companies`、`list_undercovered_companies`、`list_companies_missing_profile` | `list_company_profile_history` | `get_company_maintenance_context`、`get_collection_target` | `record_collection_check`、`verify_opportunity`、`verify_opportunities` | `resolve_company`、`upsert_opportunity`、`upsert_opportunities`、`patch_opportunity`、`update_recruitment_status` | `list_stale_opportunities`、`find_similar_opportunities`、`find_opportunities_by_source_url`、`merge_company`、`delete_opportunity` |
+
+一括処理の `result` は操作結果で、募集状況とは別です。`created` は新規登録の結果（処理済み再試行を含む）、`existing` は重複による既存返却、`verified` は一次情報確認の結果（処理済み再試行を含む）です。今回の保存実績は再試行を除く `created_count` と `verified_count` で数え、`success=null` は保存結果未確認として扱います。
 
 ツールの一覧と認証要否の正本は [`../usage.md`](../usage.md) の「MCPツール」表です。
 

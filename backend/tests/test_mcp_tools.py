@@ -93,11 +93,13 @@ def test_every_tool_declares_its_title_annotations_and_auth():
         "validate_opportunity",
         "add_opportunity",
         "upsert_opportunity",
+        "upsert_opportunities",
         "update_opportunity",
         "preview_opportunity_patch",
         "patch_opportunity",
         "update_recruitment_status",
         "verify_opportunity",
+        "verify_opportunities",
         "preview_delete_opportunity",
         "delete_opportunity",
         "restore_opportunity",
@@ -2809,3 +2811,221 @@ def test_review_queue_excludes_expired_before_limit_and_keeps_today_and_undated(
     assert {row["id"] for row in call("list_stale_opportunities", {"exclude_expired": True})["items"]} == {
         current.id, undated.id,
     }
+
+
+def batch_timestamp(value):
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=parsed.tzinfo or UTC).astimezone(UTC)
+
+
+def batch_upsert_entry(index, **overrides):
+    return write_args(event_name=f"一括募集{index}", request_id=f"batch-upsert-{index:04d}", **overrides)
+
+
+def batch_verify_entry(item, **overrides):
+    return {
+        "opportunity_id": item.id,
+        "checked_at": datetime.now(UTC).isoformat(),
+        "source_url": item.source_url,
+        "request_id": f"batch-verify-{item.id}",
+    } | overrides
+
+
+def test_opportunity_batches_publish_bounded_inline_schemas_and_authenticated_annotations():
+    listed = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
+    for name in ("upsert_opportunities", "verify_opportunities"):
+        tool = listed[name]
+        schema = tool.inputSchema["properties"]["items"]
+        assert schema["minItems"] == 1
+        assert schema["maxItems"] == 50
+        assert "$ref" not in json.dumps(schema)
+        assert tool.annotations.readOnlyHint is False
+        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.idempotentHint is True
+        assert tool.annotations.openWorldHint is False
+        assert name not in mcp_server.ANONYMOUS_TOOLS
+    payload = listed["upsert_opportunities"].inputSchema["properties"]["items"]["items"]["properties"]["payload"]
+    assert "request_id" in payload["required"]
+    assert "募集中" in payload["properties"]["recruitment_status"]["enum"]
+    checks = listed["verify_opportunities"].inputSchema["properties"]["items"]["items"]
+    assert set(checks["required"]) == {"opportunity_id", "checked_at", "source_url", "request_id"}
+
+
+def test_upsert_batch_saves_50_items_and_replays_without_duplicate_writes(tools, db):
+    arguments = {"items": [batch_upsert_entry(i) for i in range(50)], "run_id": "run-batch-fifty"}
+    result = call("upsert_opportunities", arguments)
+    assert (result["total"], result["succeeded_count"], result["created_count"]) == (50, 50, 50)
+    assert [item["index"] for item in result["items"]] == list(range(50))
+    assert len({item["opportunity_id"] for item in result["items"]}) == 50
+    assert "description" not in json.dumps(result)
+    assert result["items"][1]["warnings"]  # Reused source URL remains a non-blocking warning.
+    before = call("list_recent_writes", {"run_id": arguments["run_id"]})["total_count"]
+    replay = call("upsert_opportunities", arguments)
+    assert (replay["created_count"], replay["replayed_count"]) == (0, 50)
+    assert call("list_recent_writes", {"run_id": arguments["run_id"]})["total_count"] == before == 50
+    assert call("search_opportunity", {})["total"] == 50
+
+
+def test_upsert_batch_preserves_successes_and_distinguishes_existing_from_replay(tools, db):
+    first = batch_upsert_entry(1)
+    original = call("upsert_opportunity", first)["opportunity"]
+    invalid_schema = batch_upsert_entry(3)
+    invalid_schema["payload"]["graduation_years"] = []
+    wrong_industry = batch_upsert_entry(4, sector="銀行")
+    conflicting_request = batch_upsert_entry(5)
+    conflicting_request["payload"]["request_id"] = first["payload"]["request_id"]
+    arguments = {"items": [
+        batch_upsert_entry(1, client_name="new-client"),
+        batch_upsert_entry(1),
+        invalid_schema, wrong_industry, conflicting_request, batch_upsert_entry(6),
+    ], "run_id": "run-batch-mixed"}
+    # A different request ID for an exact duplicate returns existing without writing or verifying.
+    arguments["items"][0]["payload"]["request_id"] = "batch-existing-0001"
+    result = call("upsert_opportunities", arguments)
+    assert (result["succeeded_count"], result["failed_count"], result["unknown_count"]) == (3, 3, 0)
+    assert (result["created_count"], result["existing_count"], result["replayed_count"]) == (1, 1, 1)
+    assert result["items"][0]["result"] == "existing"
+    assert result["items"][0]["opportunity_id"] == original["id"]
+    assert batch_timestamp(result["items"][0]["source_checked_at"]) == batch_timestamp(original["source_checked_at"])
+    assert result["items"][1]["idempotent_replay"] is True
+    assert result["items"][2]["error"]["errors"][0]["field"] == "募集情報.対象卒業年"
+    assert call("search_opportunity", {})["total"] == 2
+    history = call("list_recent_writes", {"run_id": arguments["run_id"]})
+    assert (history["total_count"], history["succeeded_count"], history["failed_count"]) == (4, 1, 3)
+
+
+def test_verify_batch_isolates_invalid_checks_and_never_edits_content(tools, db):
+    items = [seed(db, event_name=f"確認募集{i}") for i in range(6)]
+    before = [call("get_opportunity", {"reference": item.id}) for item in items]
+    checks = [batch_verify_entry(item) for item in items]
+    checks[1]["source_url"] = "https://example.com/different-source"
+    checks[2]["checked_at"] = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    checks[3]["checked_at"] = "invalid-date"
+    checks[4]["opportunity_id"] = "not-found"
+    arguments = {"items": checks, "run_id": "run-batch-checks"}
+    result = call("verify_opportunities", arguments)
+    assert (result["succeeded_count"], result["failed_count"], result["verified_count"]) == (2, 4, 2)
+    assert [item["success"] for item in result["items"]] == [True, False, False, False, False, True]
+    assert result["items"][4]["error"]["error"] == "not_found"
+    history = call("list_recent_writes", {"run_id": arguments["run_id"]})
+    assert (history["total_count"], history["succeeded_count"], history["failed_count"]) == (6, 2, 4)
+    for index, item in enumerate(items):
+        current = call("get_opportunity", {"reference": item.id})
+        assert batch_timestamp(current["updated_at"]) == batch_timestamp(before[index]["updated_at"])
+        assert current["description"] == before[index]["description"]
+        if index in (0, 5):
+            assert batch_timestamp(current["source_checked_at"]) == batch_timestamp(result["items"][index]["source_checked_at"])
+        else:
+            assert batch_timestamp(current["source_checked_at"]) == batch_timestamp(before[index]["source_checked_at"])
+    replay = call("verify_opportunities", {"items": [checks[0], checks[5]], "run_id": "run-check-replay"})
+    assert (replay["verified_count"], replay["replayed_count"]) == (0, 2)
+    assert call("list_recent_writes", {"run_id": "run-check-replay"})["total_count"] == 0
+
+
+@pytest.mark.parametrize("name", ["upsert_opportunities", "verify_opportunities"])
+@pytest.mark.parametrize("size", [0, 51])
+def test_opportunity_batches_reject_invalid_outer_size_before_writing(tools, db, name, size):
+    with pytest.raises(ToolError):
+        call(name, {"items": [{}] * size})
+    assert call("list_recent_writes", {})["total_count"] == 0
+
+
+@pytest.mark.parametrize("name", ["upsert_opportunities", "verify_opportunities"])
+@pytest.mark.parametrize("post_commit", [False, True])
+def test_opportunity_batches_contain_internal_errors_continue_and_resolve_retries(tools, db, monkeypatch, name, post_commit):
+    if name == "upsert_opportunities":
+        entries = [batch_upsert_entry(i) for i in range(3)]
+        function_name = "write_opportunity"
+        def fails(kwargs):
+            return kwargs["data"].event_name == "一括募集1"
+    else:
+        items = [seed(db, event_name=f"内部エラー確認{i}") for i in range(3)]
+        entries = [batch_verify_entry(item) for item in items]
+        function_name = "verify_opportunity"
+        def fails(kwargs):
+            return kwargs["opportunity_id"] == items[1].id
+    original = getattr(mcp_server, function_name)
+
+    def fail_one(db, **kwargs):
+        if fails(kwargs) and not post_commit:
+            raise RuntimeError("private-sql-before-commit")
+        result = original(db, **kwargs)
+        if fails(kwargs):
+            raise RuntimeError("private-sql-after-commit")
+        return result
+
+    monkeypatch.setattr(mcp_server, function_name, fail_one)
+    arguments = {"items": entries, "run_id": "run-batch-error"}
+    result = call(name, arguments)
+    assert (result["succeeded_count"], result["failed_count"], result["unknown_count"]) == (2, 0, 1)
+    assert result["items"][1]["success"] is None
+    assert result["items"][2]["success"] is True
+    assert "private-sql" not in json.dumps(result)
+    history = call("list_recent_writes", {"run_id": arguments["run_id"]})
+    assert history["unknown_count"] == 1
+    assert history["succeeded_count"] == (3 if post_commit else 2)
+    monkeypatch.setattr(mcp_server, function_name, original)
+    replay = call(name, arguments)
+    assert replay["succeeded_count"] == 3
+    assert replay["unknown_count"] == 0
+    assert replay["replayed_count"] == (3 if post_commit else 2)
+    actual_count = replay["created_count"] if name == "upsert_opportunities" else replay["verified_count"]
+    assert actual_count == (0 if post_commit else 1)
+
+
+@pytest.mark.parametrize("name", ["upsert_opportunities", "verify_opportunities"])
+def test_opportunity_batches_bound_rejected_audit_metadata_and_continue(tools, db, name):
+    if name == "upsert_opportunities":
+        entries = [batch_upsert_entry(0), batch_upsert_entry(1)]
+        metadata = entries[0]["payload"]
+    else:
+        entries = [batch_verify_entry(seed(db, event_name=f"不正監査{i}")) for i in range(2)]
+        metadata = entries[0]
+    metadata.update(request_id="r" * 101, client_name="c" * 101, source_url="https://example.com/" + "x" * 2048)
+    result = call(name, {"items": entries, "run_id": "run-batch-metadata"})
+    assert (result["succeeded_count"], result["failed_count"]) == (1, 1)
+    rejected = db.scalar(select(AuditLog).where(AuditLog.run_id == "run-batch-metadata", AuditLog.success.is_(False)))
+    assert rejected.request_id is None
+    assert rejected.client_name == "mcp-client"
+    assert rejected.source_url is None
+
+
+def test_upsert_batch_preserves_official_source_rules_and_collection_side_effects(tools, db):
+    target = call("add_collection_target", collection_target_args())["target"]
+    first = batch_upsert_entry(0, company_name=target["company"]["name"], source_url="https://example.com/recruit/batch0")
+    first["collection_target_id"] = target["id"]
+    unauthorized = batch_upsert_entry(1, company_name=target["company"]["name"], source_url="https://external.example.org/posting")
+    automatic = batch_upsert_entry(2, company_name=target["company"]["name"], source_url="https://example.com/recruit/batch2")
+    arguments = {"items": [first, unauthorized, automatic], "run_id": "run-batch-collection"}
+    result = call("upsert_opportunities", arguments)
+    assert (result["created_count"], result["failed_count"]) == (2, 1)
+    history = call("list_recent_writes", {"run_id": arguments["run_id"]})
+    assert (history["total_count"], history["succeeded_count"], history["failed_count"]) == (5, 4, 1)
+    assert len(call("list_collection_checks", {"target_id": target["id"]})["items"]) == 2
+    assert call("upsert_opportunities", arguments)["replayed_count"] == 2
+    assert len(call("list_collection_checks", {"target_id": target["id"]})["items"]) == 2
+    duplicate = first | {"payload": first["payload"] | {"request_id": "batch-collection-existing"}}
+    existing = call("upsert_opportunities", {"items": [duplicate], "run_id": "run-existing-collection"})
+    assert (existing["existing_count"], existing["created_count"]) == (1, 0)
+    assert call("list_recent_writes", {"run_id": "run-existing-collection"})["total_count"] == 0
+    assert len(call("list_collection_checks", {"target_id": target["id"]})["items"]) == 2
+
+
+@pytest.mark.parametrize("name", ["upsert_opportunities", "verify_opportunities"])
+def test_opportunity_batch_results_use_the_normalized_request_id(tools, db, name):
+    if name == "upsert_opportunities":
+        entry = batch_upsert_entry(0)
+        metadata = entry["payload"]
+    else:
+        entry = batch_verify_entry(seed(db))
+        metadata = entry
+    metadata["request_id"] = " " * 100 + "normalized-batch-request" + " " * 100
+    arguments = {"items": [entry], "run_id": "run-batch-normalized"}
+    written = call(name, arguments)
+    assert written["items"][0]["request_id"] == "normalized-batch-request"
+    history = call("list_recent_writes", {"run_id": arguments["run_id"]})
+    assert history["items"][0]["request_id"] == written["items"][0]["request_id"]
+    metadata["request_id"] = "normalized-batch-request"
+    replay = call(name, arguments)
+    assert replay["replayed_count"] == 1
+    assert replay["items"][0]["request_id"] == written["items"][0]["request_id"]

@@ -22,6 +22,7 @@
 - `docs/decisions/0026-mcp-maintenance-execution-reporting.md` は収集確認の単位・期限超過の除外・実行IDと監査集計の判断です。MCP保守や書き込み履歴の契約を変更するときに参照してください。
 - `docs/decisions/0027-maintenance-recheck-scheduling.md` は日付矛盾の確認後の待機、未カバー一覧の確認期限、確認不能の再確認間隔の判断です。保守キューと再確認スケジュールを変えるときに参照してください。
 - `docs/decisions/0028-history-archive-and-idempotency-retention.md` は履歴の90日保持と無期限圧縮アーカイブ、再送保証期間の判断です。履歴保存・再送保証・日次保守を変えるときに参照してください。
+- `docs/decisions/0029-batch-opportunity-writes.md` は募集の一括登録・確認の個別保存・部分失敗・再試行と、詳細取得の互換引数・事前検証応答の判断です。募集の一括処理契約を変えるときに参照してください。
 - `frontend/STYLING_STRATEGY.md` は Next.js 側の CSS 配置（単一の `globals.css` と意味クラス）、カスケード、ブレークポイント、モーションの方針です。UI の変更時は `ARCHITECTURE.md` のフロントエンド章と併せて参照してください。
 - `frontend/DESIGN_TOKENS.md` は現在の配色・影・モーションのトークンの参考資料です。新しい UI が既存画面と浮かないよう、色を選ぶ前に読んでください。トークンを変えるときの更新規則は同文書の冒頭にあります。
 - `.github/BRANCH_PROTECTION.md` は `main` の保護設定と必須 CI チェックの記録です。マージ条件や CI ゲートを確認・変更するときに参照してください。

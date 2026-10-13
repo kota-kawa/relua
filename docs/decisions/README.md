@@ -34,5 +34,6 @@
 | [`0026-mcp-maintenance-execution-reporting.md`](./0026-mcp-maintenance-execution-reporting.md) | MCPの確認単位・期限超過除外・実行単位の監査照合を明確にする | Accepted |
 | [`0027-maintenance-recheck-scheduling.md`](./0027-maintenance-recheck-scheduling.md) | 再確認済みの対象を次回期限まで外し、確認不能の再確認間隔を延ばす | Accepted |
 | [`0028-history-archive-and-idempotency-retention.md`](./0028-history-archive-and-idempotency-retention.md) | 履歴を90日後に圧縮アーカイブへ移し、再送保証を90日に限定する | Accepted |
+| [`0029-batch-opportunity-writes.md`](./0029-batch-opportunity-writes.md) | 募集の登録・確認を個別結果付きで最大50件一括処理し、取得引数と検証応答を改善する | Accepted |
 
 新しい判断で既存ADRを置き換える場合は、新しい番号を追加して旧ADRを `Superseded` に更新します。判断が変わっていない限り、日付だけの追記はしません。

@@ -86,7 +86,7 @@ https://<公開ホスト名>/mcp
 | ツール | 認証 | 用途 |
 | --- | --- | --- |
 | `search_opportunity` | 不要 | キーワード・固定値・登録日時・最終編集日時で絞り込んだ概要をカーソル方式で返す |
-| `get_opportunity` | 不要 | IDまたは公開コードで1件を全項目取得する |
+| `get_opportunity` | 不要 | `reference` にIDまたは公開コードを指定して全項目取得する。`opportunity_id` も利用可能 |
 | `get_master_values` | 不要 | 選択可能な固定値マスタを全件返す |
 | `get_sectors` | 不要 | 指定した業界に属する業種だけを返す |
 | `find_similar_opportunities` | 不要 | 同じ企業の登録済み募集を探し、二重登録を防ぐ |
@@ -100,11 +100,11 @@ https://<公開ホスト名>/mcp
 | `list_company_profile_history` | 必要 | 企業IDを指定し、DB内のプロフィール変更履歴を取得する。DB保持は90日、古い記録は運用アーカイブに保存 |
 | `merge_company` | 必要 | 公式情報で同一と確認した重複企業を、募集・別名・分類・収集対象ごと統合する |
 | `delete_company_alias` | 必要 | 誤登録された企業別名を削除する |
-| `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
+| `validate_opportunity` | 必要 | 保存せずにReluaの入力検証を行い、固定値の誤りと重複の疑いを返す |
 | `add_opportunity` | 必要 | 募集情報を1件追加する |
 | `upsert_opportunity` | 必要 | 新規募集の推奨入口。完全な重複は既存を返し、一次情報URLの重複は警告するため、登録前の重複検索は不要 |
 | `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
-| `preview_opportunity_patch` | 必要 | 部分更新を保存せず検証し、変更差分と警告を返す |
+| `preview_opportunity_patch` | 必要 | 部分更新を保存せずReluaの入力検証に通し、変更差分と警告を返す |
 | `patch_opportunity` | 必要 | 楽観ロック付きで指定項目だけを更新する |
 | `update_recruitment_status` | 必要 | 楽観ロック付きで募集状況と締め切りだけを更新する |
 | `verify_opportunity` | 必要 | 一次情報に変更がないことを記録し、公式情報確認日時と日付矛盾の再確認スケジュールを更新する |
@@ -151,6 +151,10 @@ https://<公開ホスト名>/mcp
 同じ内容・`request_id` の再送保証期間は90日です。90日より前の再送防止記録は日次でアーカイブへ移すため、古いIDの再送は再実行される場合があります。古い実行を再開するときは現在の保存状態を確認して、新しい操作のIDを発行してください。
 
 各ツールは `title`、`annotations`（`readOnlyHint` など）、`outputSchema` を公開します。読み取り専用かどうかがクライアント側で判別できるため、ChatGPTやClaudeは読み取りツールの自動承認を判断できます。
+
+詳細取得は `get_opportunity(reference="募集IDまたは公開コード")` を使います。UUIDは `opportunity_id` でも渡せます。少なくとも一方が必要で、両方に異なる値を指定した場合は拒否します。
+
+`validate_opportunity` と `preview_opportunity_patch` の `valid=true` はReluaの入力検証への合格を表し、保存成功を意味しません。クライアント側の安全チェック、認証、実際の保存時の競合は別途起こりえます。保存結果は書き込み応答と監査履歴で確認します。
 
 ### 実行単位の書き込み照合
 

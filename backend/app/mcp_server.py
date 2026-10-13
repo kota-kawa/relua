@@ -674,13 +674,14 @@ def search_opportunity(
     title="募集情報を1件取得",
     description=(
         "IDまたは公開コードで募集情報を1件、全項目つきで取得します。ログインは不要です。"
+        "referenceに指定します。UUIDはopportunity_idでも指定でき、両方指定する場合は同じ値にしてください。"
         "update_opportunityは全項目置換のため、更新前に必ずこのツールで現在値を取得してください。"
     ),
     annotations=READ_ONLY,
 )
 def get_opportunity(
     reference: Annotated[
-        str,
+        str | None,
         Field(
             # Anonymous tool: the only valid values are a 36 character UUID or an 8 character public
             # code, so anything longer is never a lookup that can succeed.
@@ -688,8 +689,17 @@ def get_opportunity(
             max_length=64,
             description="募集情報のid（UUID）または公開コード（8文字）。検索結果のid・public_codeをそのまま渡せます。",
         ),
-    ],
+    ] = None,
+    opportunity_id: Annotated[
+        str | None,
+        Field(min_length=1, max_length=64, description="referenceの代わりに指定できる募集情報のid（UUID）。"),
+    ] = None,
 ) -> OpportunityResponse:
+    if reference is None and opportunity_id is None:
+        raise _json_error({"error": "invalid_arguments", "message": "referenceまたはopportunity_idを指定してください"})
+    if reference is not None and opportunity_id is not None and reference != opportunity_id:
+        raise _json_error({"error": "invalid_arguments", "message": "referenceとopportunity_idには同じ値を指定してください"})
+    reference = reference if reference is not None else opportunity_id
     with SessionLocal() as db:
         item = get_opportunity_by_public_ref(db, reference)
         if item is None:
@@ -1225,9 +1235,9 @@ def validate_opportunity(
             {
                 "valid": True,
                 "message": (
-                    "この内容で登録できます。"
+                    "Reluaの入力検証に合格しました。未保存です。"
                     if not duplicates and not warnings
-                    else "内容は保存できますが、重複または日付・募集状況の確認が必要です。"
+                    else "Reluaの入力検証に合格しました。未保存です。重複または日付・募集状況の確認が必要です。"
                 ),
                 "duplicates": [opportunity_summary(item) for item in duplicates],
                 "warnings": warnings,
@@ -1466,7 +1476,11 @@ def preview_opportunity_patch_tool(
         return MCPOpportunityPreviewResponse.model_validate(
             {
                 "valid": True,
-                "message": "変更内容を保存できます。" if not warnings else "保存できますが、確認が必要な警告があります。",
+                "message": (
+                    "Reluaの入力検証に合格しました。未保存です。"
+                    if not warnings
+                    else "Reluaの入力検証に合格しました。未保存です。確認が必要な警告があります。"
+                ),
                 "expected_updated_at": item.updated_at,
                 "changes": diff,
                 "warnings": warnings,

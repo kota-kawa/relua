@@ -404,6 +404,39 @@ def test_get_opportunity_resolves_both_references_and_returns_every_field(tools,
     assert tool_error("get_opportunity", {"reference": "ZZZZZZZZ"})["error"] == "not_found"
 
 
+def test_get_opportunity_accepts_opportunity_id_and_rejects_ambiguous_arguments(tools, db):
+    item = seed(db)
+    assert call("get_opportunity", {"opportunity_id": item.id})["id"] == item.id
+    assert call("get_opportunity", {"reference": item.id, "opportunity_id": item.id})["id"] == item.id
+    for arguments in ({}, {"reference": item.public_code, "opportunity_id": item.id}):
+        assert tool_error("get_opportunity", arguments)["error"] == "invalid_arguments"
+    with pytest.raises(ToolError):
+        call("get_opportunity", {"opportunity_id": "x" * 65})
+
+
+def test_validation_and_patch_preview_report_validation_without_claiming_a_save(tools, db):
+    item = seed(db)
+    updated_at = call("get_opportunity", {"reference": item.id})["updated_at"]
+    validated = call("validate_opportunity", write_args(event_name="検証専用イベント"))
+    preview = call(
+        "preview_opportunity_patch",
+        {
+            "opportunity_id": item.id,
+            "changes": {"event_name": "プレビュー専用イベント"},
+            "expected_updated_at": updated_at,
+            "request_id": "preview-message-0001",
+        },
+    )
+    for response in (validated, preview):
+        assert response["valid"] is True
+        assert "入力検証に合格" in response["message"]
+        assert "未保存" in response["message"]
+    current = call("get_opportunity", {"reference": item.id})
+    assert current["updated_at"] == updated_at
+    assert current["event_name"] == item.event_name
+    assert call("search_opportunity", {})["total"] == 1
+
+
 def test_get_sectors_narrows_the_choices_to_one_industry(tools, db):
     result = call("get_sectors", {"industry": "IT・通信"})
 

@@ -135,7 +135,7 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | 収集キュー | target/source/check の一覧、確認状況フィルター、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
 | OAuth接続管理 | `backend/app/scripts/mcp_connections.py` | サーバー上の運用コマンド |
 
-書き込みツールは、入力を [`backend/app/schemas.py`](./backend/app/schemas.py) で検証し、ドメインエラーを構造化して返します。実際の保存や整合性処理は `mcp_server.py` に複製せず `backend/app/services/` へ委譲します。
+詳細取得の `get_opportunity` は `reference` または互換引数 `opportunity_id` を受け取り、両方の値が異なる場合は拒否します。書き込みツールは、入力を [`backend/app/schemas.py`](./backend/app/schemas.py) で検証し、ドメインエラーを構造化して返します。事前検証の合格応答は未保存を明示します。実際の保存や整合性処理は `mcp_server.py` に複製せず `backend/app/services/` へ委譲します。
 
 ### 3.4 ドメインサービス
 

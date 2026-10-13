@@ -916,6 +916,41 @@ class MCPUpdateRequest(OpportunityUpdate):
     client_name: ClientName = "mcp-client"
 
 
+class OpportunityBatchUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payload: MCPWriteRequest
+    collection_target_id: int | None = Field(default=None, ge=1, description="新規登録に紐付ける収集対象ID。")
+
+
+class OpportunityBatchVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    opportunity_id: str = Field(min_length=1, max_length=64, description="確認した募集のUUID。")
+    checked_at: datetime = Field(description="公式ページを確認した日時。未来の日時は指定できません。")
+    source_url: str = Field(min_length=1, max_length=2048, description="実際に確認した登録済み一次情報URL。")
+    request_id: RequestId
+    client_name: ClientName = "mcp-client"
+
+
+OpportunityBatchUpserts = Annotated[
+    list[dict[str, Any]],
+    Field(min_length=1, max_length=50, description="公式情報を確認済みの募集。各payloadに固有のrequest_idを指定します。"),
+    WithJsonSchema({
+        "type": "array", "minItems": 1, "maxItems": 50,
+        "items": _inline_model_schema(OpportunityBatchUpsertRequest),
+    }),
+]
+OpportunityBatchChecks = Annotated[
+    list[dict[str, Any]],
+    Field(min_length=1, max_length=50, description="一次情報に変更がないことを確認済みの募集。各件に固有のrequest_idを指定します。"),
+    WithJsonSchema({
+        "type": "array", "minItems": 1, "maxItems": 50,
+        "items": _inline_model_schema(OpportunityBatchVerifyRequest),
+    }),
+]
+
+
 #: MCP tools take the write payload as a plain dict carrying the model's own JSON Schema.
 #: A typed parameter would make FastMCP validate the arguments itself and answer with a raw pydantic
 #: message, bypassing the structured field/expected/example errors an agent can act on. Publishing the
@@ -1090,6 +1125,33 @@ class MCPValidationResponse(BaseModel):
     message: str
     duplicates: list[OpportunitySummary]
     warnings: list[ErrorItem] = []
+
+
+class OpportunityBatchResult(BaseModel):
+    index: int
+    request_id: str | None
+    success: bool | None = Field(description="trueは処理成功、falseは拒否、nullは内部エラーで保存結果の確認が必要。")
+    result: Literal["created", "existing", "verified"] | None = None
+    idempotent_replay: bool = False
+    opportunity_id: str | None = None
+    public_code: str | None = None
+    url: str | None = None
+    updated_at: datetime | None = None
+    source_checked_at: datetime | None = None
+    warnings: list[ErrorItem] = Field(default_factory=list)
+    error: dict[str, Any] | None = None
+
+
+class MCPOpportunityBatchWriteResponse(BaseModel):
+    total: int
+    succeeded_count: int
+    failed_count: int
+    unknown_count: int
+    created_count: int
+    existing_count: int
+    verified_count: int
+    replayed_count: int
+    items: list[OpportunityBatchResult]
 
 
 class CompanyBusinessAreaItem(BaseModel):

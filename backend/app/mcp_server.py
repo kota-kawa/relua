@@ -66,6 +66,7 @@ from app.schemas import (
     MCPDeletePreviewResponse,
     MCPDeleteResponse,
     MCPDuplicateResponse,
+    MCPOpportunityBatchWriteResponse,
     MCPOpportunityPreviewResponse,
     MCPRestoreResponse,
     MCPSearchResponse,
@@ -78,6 +79,11 @@ from app.schemas import (
     MCPWriteHistoryResponse,
     MCPWriteRequest,
     MCPWriteResponse,
+    OpportunityBatchChecks,
+    OpportunityBatchResult,
+    OpportunityBatchUpsertRequest,
+    OpportunityBatchUpserts,
+    OpportunityBatchVerifyRequest,
     OpportunityInput,
     OpportunityPatchPayload,
     OpportunityResponse,
@@ -206,6 +212,9 @@ mcp = FastMCP(
         "日本のインターン・本選考情報を検索・登録・更新・削除・復元するMCPです。"
         "検索はsearch_opportunityで概要を取り、全文が必要な1件はget_opportunityで取得します。"
         "募集の追加・更新の前にget_master_valuesとget_sectorsで固定値を確認してください。同じ実行内で取得済みの固定値は再利用できます。"
+        "調査済みの複数募集はupsert_opportunitiesで最大50件を個別保存できます。"
+        "内容に変更がない複数募集はverify_opportunitiesで最大50件の確認を個別記録できます。"
+        "一括応答は成功・拒否・結果未確認を分けます。既存返却や再試行を新規登録実績に数えないでください。"
         "新規募集は原則upsert_opportunityで登録してください。完全な重複は既存を返し、新規登録時は一次情報URLの重複もwarningsで通知するため、"
         "登録前のfind_similar_opportunitiesとfind_opportunities_by_source_urlは不要です。既存募集の内容を確認・更新する必要がある場合だけ検索します。"
         "同名イベントでも対象学年・実施日・対象職種のいずれかが異なれば別募集として登録されます"
@@ -407,7 +416,7 @@ def _parse_collection_payload(raw: dict[str, Any], model: type[Any], action: str
         ) from exc
 
 
-def _company_audit_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+def _bounded_audit_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     """Keep rejected inputs from exceeding the audit columns' storage bounds."""
     request_id = raw.get("request_id") if isinstance(raw, dict) else None
     client_name = raw.get("client_name") if isinstance(raw, dict) else None
@@ -427,7 +436,7 @@ def _parse_company_payload(raw: dict[str, Any], model: type[Any], action: str) -
             action=action,
             errors=pydantic_errors(exc, raw),
             entity_type="company",
-            **_company_audit_metadata(raw),
+            **_bounded_audit_metadata(raw),
         ) from exc
 
 
@@ -674,13 +683,14 @@ def search_opportunity(
     title="募集情報を1件取得",
     description=(
         "IDまたは公開コードで募集情報を1件、全項目つきで取得します。ログインは不要です。"
+        "referenceに指定します。UUIDはopportunity_idでも指定でき、両方指定する場合は同じ値にしてください。"
         "update_opportunityは全項目置換のため、更新前に必ずこのツールで現在値を取得してください。"
     ),
     annotations=READ_ONLY,
 )
 def get_opportunity(
     reference: Annotated[
-        str,
+        str | None,
         Field(
             # Anonymous tool: the only valid values are a 36 character UUID or an 8 character public
             # code, so anything longer is never a lookup that can succeed.
@@ -688,8 +698,17 @@ def get_opportunity(
             max_length=64,
             description="募集情報のid（UUID）または公開コード（8文字）。検索結果のid・public_codeをそのまま渡せます。",
         ),
-    ],
+    ] = None,
+    opportunity_id: Annotated[
+        str | None,
+        Field(min_length=1, max_length=64, description="referenceの代わりに指定できる募集情報のid（UUID）。"),
+    ] = None,
 ) -> OpportunityResponse:
+    if reference is None and opportunity_id is None:
+        raise _json_error({"error": "invalid_arguments", "message": "referenceまたはopportunity_idを指定してください"})
+    if reference is not None and opportunity_id is not None and reference != opportunity_id:
+        raise _json_error({"error": "invalid_arguments", "message": "referenceとopportunity_idには同じ値を指定してください"})
+    reference = reference if reference is not None else opportunity_id
     with SessionLocal() as db:
         item = get_opportunity_by_public_ref(db, reference)
         if item is None:
@@ -990,7 +1009,7 @@ def update_company_profiles_tool(updates: CompanyProfileBatchUpdates, run_id: Ru
                     action="company_profile_update",
                     entity_type="company",
                     errors=[{"field": "入力全体", "reason": INTERNAL_ERROR["message"], "code": "internal_error"}],
-                    **_company_audit_metadata(raw),
+                    **_bounded_audit_metadata(raw),
                 )
         else:
             result.company_id = written.company.id
@@ -1225,9 +1244,9 @@ def validate_opportunity(
             {
                 "valid": True,
                 "message": (
-                    "この内容で登録できます。"
+                    "Reluaの入力検証に合格しました。未保存です。"
                     if not duplicates and not warnings
-                    else "内容は保存できますが、重複または日付・募集状況の確認が必要です。"
+                    else "Reluaの入力検証に合格しました。未保存です。重複または日付・募集状況の確認が必要です。"
                 ),
                 "duplicates": [opportunity_summary(item) for item in duplicates],
                 "warnings": warnings,
@@ -1466,7 +1485,11 @@ def preview_opportunity_patch_tool(
         return MCPOpportunityPreviewResponse.model_validate(
             {
                 "valid": True,
-                "message": "変更内容を保存できます。" if not warnings else "保存できますが、確認が必要な警告があります。",
+                "message": (
+                    "Reluaの入力検証に合格しました。未保存です。"
+                    if not warnings
+                    else "Reluaの入力検証に合格しました。未保存です。確認が必要な警告があります。"
+                ),
                 "expected_updated_at": item.updated_at,
                 "changes": diff,
                 "warnings": warnings,
@@ -1690,6 +1713,114 @@ def verify_opportunity_tool(
         ) from exc
     except LookupError as exc:
         raise _json_error({"error": "not_found", "message": "指定された募集情報が見つかりません"}) from exc
+
+
+def _run_opportunity_batch(
+    items: list[dict[str, Any]],
+    *,
+    model: type[OpportunityBatchUpsertRequest] | type[OpportunityBatchVerifyRequest],
+    execute: Callable[..., MCPUpsertResponse | MCPWriteResponse],
+    action: str,
+) -> MCPOpportunityBatchWriteResponse:
+    def metadata(raw: dict[str, Any]) -> dict[str, Any]:
+        return _bounded_audit_metadata(raw.get("payload") if action == "create" else raw)
+
+    def run_item(raw: dict[str, Any]) -> tuple[MCPUpsertResponse | MCPWriteResponse, str]:
+        try:
+            request = model.model_validate(raw)
+        except ValidationError as exc:
+            raise _record_failure(action=action, errors=pydantic_errors(exc, raw), **metadata(raw)) from exc
+        request_id = request.payload.request_id if isinstance(request, OpportunityBatchUpsertRequest) else request.request_id
+        return execute(**request.model_dump()), request_id
+
+    guarded = _guarded(f"{action}_opportunities.item", run_item)
+    results = []
+    for index, raw in enumerate(items):
+        audit_metadata = metadata(raw)
+        result = OpportunityBatchResult(index=index, request_id=audit_metadata["request_id"], success=False)
+        try:
+            written, request_id = guarded(raw)
+        except ToolError as exc:
+            result.error = json.loads(str(exc))
+            if result.error["error"] in {"internal_error", "not_found"}:
+                unknown = result.error["error"] == "internal_error"
+                result.success = None if unknown else False
+                _record_failure(
+                    action=action,
+                    errors=[{
+                        "field": "入力全体" if unknown else "募集情報ID",
+                        "reason": result.error["message"],
+                        "code": result.error["error"],
+                    }],
+                    **audit_metadata,
+                )
+        else:
+            item = written.opportunity
+            result.success = True
+            result.request_id = request_id
+            result.result = written.result if isinstance(written, MCPUpsertResponse) else "verified"
+            result.idempotent_replay = written.idempotent_replay
+            result.opportunity_id = item.id
+            result.public_code = item.public_code
+            result.url = item.url
+            result.updated_at = item.updated_at
+            result.source_checked_at = item.source_checked_at
+            result.warnings = written.warnings
+        results.append(result)
+    return MCPOpportunityBatchWriteResponse(
+        total=len(results),
+        succeeded_count=sum(item.success is True for item in results),
+        failed_count=sum(item.success is False for item in results),
+        unknown_count=sum(item.success is None for item in results),
+        created_count=sum(item.result == "created" and not item.idempotent_replay for item in results),
+        existing_count=sum(item.result == "existing" for item in results),
+        verified_count=sum(item.result == "verified" and not item.idempotent_replay for item in results),
+        replayed_count=sum(item.idempotent_replay for item in results),
+        items=results,
+    )
+
+
+@mcp.tool(
+    name="upsert_opportunities",
+    title="複数募集を個別結果付きで登録",
+    description=(
+        "公式情報を確認済みの募集を1〜50件、個別にupsert_opportunityと同じ検証・重複判定で登録します。"
+        "itemsの各件にpayload（固有のrequest_idを含む全項目）と任意のcollection_target_idを指定します。"
+        "完全な重複はexistingとして既存を返し、内容・確認日時を変更しません。新規登録には収集確認が付随する場合があります。"
+        "失敗しても他の項目を続け、成功分を保持します。応答itemsは入力順で、本文を再送せずID・URL・警告を返します。"
+        "succeeded_countは既存返却と再試行を含む処理成功数です。created_countだけが今回の新規登録数です。"
+        "failed_countは拒否数、unknown_countとsuccess=nullは内部エラーで保存結果未確認です。"
+        "通信失敗・結果未確認は同じ内容と各payloadのrequest_idで再送し、入力修正には新しいrequest_idを使ってください。"
+        "run_idはトップレベルで指定します。少数件の調査と保存を完了してから次へ進んでください。認証が必要です。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def upsert_opportunities_tool(
+    items: OpportunityBatchUpserts, run_id: RunId | None = None,
+) -> MCPOpportunityBatchWriteResponse:
+    return _run_opportunity_batch(items, model=OpportunityBatchUpsertRequest, execute=upsert_opportunity, action="create")
+
+
+@mcp.tool(
+    name="verify_opportunities",
+    title="複数募集の確認のみを個別結果付きで記録",
+    description=(
+        "登録済み一次情報を実際に確認し、内容に変更がない募集を1〜50件、個別にverify_opportunityと同じルールで記録します。"
+        "各件にopportunity_id、checked_at、確認したsource_url、固有のrequest_idと任意のclient_nameを指定します。"
+        "登録済み一次情報URLとの一致を検証し、source_checked_atと再確認スケジュールを更新します。募集内容とupdated_atは変更しません。"
+        "内容に変更がある募集は先にpatch_opportunity等で修正してください。企業の採用トップページだけでは個別募集を確認済みにできません。"
+        "失敗しても他の項目を続け、成功分を保持します。応答itemsは入力順で、本文を再送せずID・URL・確認日時を返します。"
+        "succeeded_countは再試行を含む処理成功数、verified_countは再試行を除いた今回の確認記録数です。"
+        "failed_countは拒否数、unknown_countとsuccess=nullは内部エラーで保存結果未確認です。"
+        "通信失敗・結果未確認は同じ内容と各件のrequest_idで再送し、入力修正には新しいrequest_idを使ってください。"
+        "run_idはトップレベルで指定します。認証が必要です。"
+    ),
+    annotations=APPEND_ONLY,
+)
+def verify_opportunities_tool(
+    items: OpportunityBatchChecks, run_id: RunId | None = None,
+) -> MCPOpportunityBatchWriteResponse:
+    return _run_opportunity_batch(items, model=OpportunityBatchVerifyRequest, execute=verify_opportunity_tool, action="verify")
 
 
 @mcp.tool(

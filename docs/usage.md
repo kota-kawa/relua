@@ -86,7 +86,7 @@ https://<公開ホスト名>/mcp
 | ツール | 認証 | 用途 |
 | --- | --- | --- |
 | `search_opportunity` | 不要 | キーワード・固定値・登録日時・最終編集日時で絞り込んだ概要をカーソル方式で返す |
-| `get_opportunity` | 不要 | IDまたは公開コードで1件を全項目取得する |
+| `get_opportunity` | 不要 | `reference` にIDまたは公開コードを指定して全項目取得する。`opportunity_id` も利用可能 |
 | `get_master_values` | 不要 | 選択可能な固定値マスタを全件返す |
 | `get_sectors` | 不要 | 指定した業界に属する業種だけを返す |
 | `find_similar_opportunities` | 不要 | 同じ企業の登録済み募集を探し、二重登録を防ぐ |
@@ -100,14 +100,16 @@ https://<公開ホスト名>/mcp
 | `list_company_profile_history` | 必要 | 企業IDを指定し、DB内のプロフィール変更履歴を取得する。DB保持は90日、古い記録は運用アーカイブに保存 |
 | `merge_company` | 必要 | 公式情報で同一と確認した重複企業を、募集・別名・分類・収集対象ごと統合する |
 | `delete_company_alias` | 必要 | 誤登録された企業別名を削除する |
-| `validate_opportunity` | 必要 | 保存せずに検証し、固定値の誤りと重複の疑いを返す |
+| `validate_opportunity` | 必要 | 保存せずにReluaの入力検証を行い、固定値の誤りと重複の疑いを返す |
 | `add_opportunity` | 必要 | 募集情報を1件追加する |
 | `upsert_opportunity` | 必要 | 新規募集の推奨入口。完全な重複は既存を返し、一次情報URLの重複は警告するため、登録前の重複検索は不要 |
+| `upsert_opportunities` | 必要 | 最大50件を個別に登録し、既存返却・再試行・拒否・結果未確認を区別して返す |
 | `update_opportunity` | 必要 | 既存の募集情報を全項目置換で更新する |
-| `preview_opportunity_patch` | 必要 | 部分更新を保存せず検証し、変更差分と警告を返す |
+| `preview_opportunity_patch` | 必要 | 部分更新を保存せずReluaの入力検証に通し、変更差分と警告を返す |
 | `patch_opportunity` | 必要 | 楽観ロック付きで指定項目だけを更新する |
 | `update_recruitment_status` | 必要 | 楽観ロック付きで募集状況と締め切りだけを更新する |
 | `verify_opportunity` | 必要 | 一次情報に変更がないことを記録し、公式情報確認日時と日付矛盾の再確認スケジュールを更新する |
+| `verify_opportunities` | 必要 | 最大50件の一次情報確認を個別に記録し、募集内容を変えずに確認日時と再確認スケジュールを更新する |
 | `preview_delete_opportunity` | 必要 | 削除対象と公開表示・関連履歴への影響を保存せず確認する |
 | `delete_opportunity` | 必要 | 楽観ロック付きで募集情報を公開データから論理削除する |
 | `restore_opportunity` | 必要 | 論理削除した募集を同じID・公開コードのまま復元する |
@@ -151,6 +153,31 @@ https://<公開ホスト名>/mcp
 同じ内容・`request_id` の再送保証期間は90日です。90日より前の再送防止記録は日次でアーカイブへ移すため、古いIDの再送は再実行される場合があります。古い実行を再開するときは現在の保存状態を確認して、新しい操作のIDを発行してください。
 
 各ツールは `title`、`annotations`（`readOnlyHint` など）、`outputSchema` を公開します。読み取り専用かどうかがクライアント側で判別できるため、ChatGPTやClaudeは読み取りツールの自動承認を判断できます。
+
+詳細取得は `get_opportunity(reference="募集IDまたは公開コード")` を使います。UUIDは `opportunity_id` でも渡せます。少なくとも一方が必要で、両方に異なる値を指定した場合は拒否します。
+
+`validate_opportunity` と `preview_opportunity_patch` の `valid=true` はReluaの入力検証への合格を表し、保存成功を意味しません。クライアント側の安全チェック、認証、実際の保存時の競合は別途起こりえます。保存結果は書き込み応答と監査履歴で確認します。
+
+### 募集の一括登録・確認
+
+調査済みの募集をまとめて保存する場合は `upsert_opportunities`、一次情報に変更がない複数募集を確認済みにする場合は `verify_opportunities` を使います。どちらも `items` に1〜50件、`run_id` はトップレベルに指定します。少数件ずつ調査と保存を完了し、50件揃うまで保存を待つ必要はありません。
+
+- `upsert_opportunities` の各項目は `payload`（単件の `upsert_opportunity` と同じ全項目と固有の `request_id`）、任意の `collection_target_id` です。新規登録時の公式URL検証・重複判定・付随する収集確認は単件と同じです。完全な重複は `result=existing` として既存を返し、内容・確認日時を変更しません。
+- `verify_opportunities` の各項目は `opportunity_id`、`checked_at`、実際に確認した `source_url`、固有の `request_id`、任意の `client_name` です。登録済み一次情報URLとの一致・日時を検証し、募集内容と `updated_at` を維持します。内容が変わっている募集は先に更新し、確認記録は別の操作で保存します。
+
+各件を個別に検証・保存するため、一部の拒否で他の成功分は取り消されません。外側の件数・オブジェクト型・`run_id` が不正な場合は、項目の実行前に呼び出し全体を拒否します。応答の `items` は入力順で、`index`、`request_id`、`success`、`result`、`idempotent_replay`、募集ID・公開コード・URL・更新日時・公式情報確認日時・警告・エラーを返します。説明文などの全文は再送しません。
+
+| 集計 | 意味 |
+| --- | --- |
+| `succeeded_count` | 処理成功数。既存返却・処理済みの再試行を含むため、保存実績と同一ではない |
+| `created_count` | 今回新しく登録した数。既存返却・再試行を除く |
+| `existing_count` | 完全な重複で既存を返した数。書き込み・確認記録を行っていない |
+| `verified_count` | 今回新しく記録した確認数。再試行を除く |
+| `replayed_count` | 同じ内容・`request_id` による処理済みの再試行数 |
+| `failed_count` | 入力不備・対象不明などで拒否した数 |
+| `unknown_count` | 内部エラーで保存結果未確認の数。個別の `success` は `null` |
+
+一括処理全体は単一トランザクションではありません。通信失敗・結果未確認は同じ内容・各件の `request_id` で再送し、入力を直す場合は新しい `request_id` を使います。保存後の応答エラーでは成功と結果未確認の監査記録が共存することもあります。実績は個別結果と `list_recent_writes(run_id=...)` を照合します。既存返却と処理済みの再試行は新しい成功監査記録を作りません。一括化は呼び出し回数を減らしますが、クライアント側の安全チェックや公式ページ調査の上限を変更しません。
 
 ### 実行単位の書き込み照合
 

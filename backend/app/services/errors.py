@@ -3,6 +3,10 @@ from typing import Any
 from pydantic import ValidationError
 
 FIELD_LABELS = {
+    "payload": "募集情報",
+    "checked_at": "公式情報確認日時",
+    "request_id": "リクエストID",
+    "client_name": "クライアント名",
     "run_id": "実行ID",
     "recruitment_status": "募集状況",
     "company_name": "企業名",

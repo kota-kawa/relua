@@ -130,14 +130,16 @@ RESTの検索はページ番号を返します。既定では公開中かつ東�
 | --- | --- | --- |
 | 検索・詳細・マスタ | `search_opportunity`, `get_opportunity`, `get_master_values`, `get_sectors` | 不要（OAuth有効時の匿名公開にも対応）。募集検索は登録・最終編集日時の両端を含む範囲指定ができる |
 | 重複・企業同一性・プロフィール | `find_similar_opportunities`, `find_opportunities_by_source_url`, `resolve_company`, `add_company_alias`, `set_company_industries`, `update_company_profile`, `list_companies_missing_profile`, `list_company_profile_history`, `merge_company`, `get_company_maintenance_context` | 前者2つは不要。企業の候補確認、プロフィール欠落一覧、プロフィール履歴、保守コンテキストと書き込みは認証が必要 |
-| 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `update_opportunity`, patch/status/verify | 必要 |
+| 募集書き込み | `validate_opportunity`, `add_opportunity`, `upsert_opportunity`, `upsert_opportunities`, `update_opportunity`, patch/status/verify、`verify_opportunities` | 必要 |
 | 削除・履歴 | delete preview/delete/restore/recent writes | 必要 |
 | 収集キュー | target/source/check の一覧、確認状況フィルター、未監視企業の検出、キュー、追加、更新、確認記録 | 必要 |
 | OAuth接続管理 | `backend/app/scripts/mcp_connections.py` | サーバー上の運用コマンド |
 
-書き込みツールは、入力を [`backend/app/schemas.py`](./backend/app/schemas.py) で検証し、ドメインエラーを構造化して返します。実際の保存や整合性処理は `mcp_server.py` に複製せず `backend/app/services/` へ委譲します。
+詳細取得の `get_opportunity` は `reference` または互換引数 `opportunity_id` を受け取り、両方の値が異なる場合は拒否します。書き込みツールは、入力を [`backend/app/schemas.py`](./backend/app/schemas.py) で検証し、ドメインエラーを構造化して返します。事前検証の合格応答は未保存を明示します。実際の保存や整合性処理は `mcp_server.py` に複製せず `backend/app/services/` へ委譲します。
 
 ### 3.4 ドメインサービス
+
+募集の一括登録・確認は `upsert_opportunities` / `verify_opportunities` で最大50件を受け取り、単件と同じ処理で各件を個別保存する。応答は本文を省いた個別結果と新規登録・既存返却・確認・再試行・拒否・結果未確認の集計で、部分失敗時も成功分を保持する。新規登録と確認は別の入口のままにする（ADR-0029）。
 
 企業プロフィールの一括更新は `update_company_profiles` で最大50社を受け取り、各社を既存のプロフィール更新サービスで個別に検証・保存する。各社の更新日時を照合し、冪等記録と監査ログを保持する。応答は保存成功・拒否・結果未確認の個別結果と集計で、本文の全文は再送しない（ADR-0025）。
 
@@ -324,7 +326,7 @@ MCP client
 | 起動時の必須設定・信頼するプロキシ | `backend/app/config.py`, `docker-compose.yml`, `frontend/lib/site.ts`, `frontend/lib/api.ts` | `.env.example`, `relua.conf`, `test_security.py`, `test_rate_limit.py`、ADR-0019 |
 | 保存・共有・QR | `frontend/lib/local-data.ts`, `components/saved-dashboard.tsx` | `backend/app/services/serialization.py`, local-data/UI tests |
 | RESTのレスポンス | `backend/app/api/`, `schemas.py`, `services/serialization.py` | `frontend/lib/types.ts`, API呼び出し、認証ヘッダー |
-| 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py`。日時フィルターはカーソル条件にも含める |
+| 検索・重複・書き込み | `backend/app/services/opportunities.py` | `schemas.py`, `mcp_server.py`, `test_opportunities.py`, `test_mcp_tools.py`。日時フィルターはカーソル条件にも含める。一括登録・確認は単件処理を再利用し、結果と実績を区別する（ADR-0029） |
 | 企業同一性・プロフィール更新・履歴 | `services/companies.py`, `company_industries.py` | `schemas.py`, `mcp_server.py`, `test_companies.py`, `test_mcp_tools.py`、`models.py` の `AuditLog`、関連ADR。一括更新は企業ごとの検証・更新日時照合・保存・結果集計 |
 | 収集キュー・再確認間隔 | `services/collection_targets.py`, `services/maintenance.py` | `models.py`, `test_collection_targets.py`, `test_mcp_tools.py`, `test_maintenance_schedule_migration.py`, MCP tool definitions。無効な確認URL・重複追加のエラーは既存の情報源IDと状態を返す。確認状況は履歴列から導出し、確認期限と連続回数で巡回を制御する |
 | 実行単位の書き込み履歴 | `services/write_history.py`, `app/audit_context.py`, `models.py` の `AuditLog` | `mcp_server.py`, `schemas.py`, `test_mcp_tools.py`, `test_audit_context.py`, `test_audit_run_migration.py`、ADR-0026 |
